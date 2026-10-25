@@ -1,0 +1,112 @@
+//! Entity occlusion affects mesh submission, never entity ticking or interaction.
+use super::{Game, Vertex};
+use horizon_client::chunk::MIN_Y;
+use horizon_client::{
+    blocks::{RenderShape, StateFacts},
+    entity_culling::Culler,
+};
+
+fn opaque(facts: &StateFacts) -> bool {
+    facts.render_shape == RenderShape::Model
+        && facts.can_occlude
+        && facts.solid_render
+        && facts.full_collision
+}
+
+impl Game<'_> {
+    pub(super) fn prepare_entity_culling(&mut self, camera: glam::DVec3) {
+        let at = camera.to_array().map(|v| v.floor() as i32);
+        self.entity_culler = (self.settings.horizon.entity_culling
+            // Packs can replace an opaque block's model or texture.
+            && self.settings.resource_packs.iter().all(|id| id == "vanilla")
+            && self.player.is_some()
+            && !self.spectator()
+            && !opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2]))))
+        .then(|| Culler::new(camera.to_array(), 8_192));
+    }
+
+    /// Use complete generated geometry so equipment, animation and custom
+    /// models cannot stick out of an assumed collision-sized culling box.
+    pub(super) fn cull_entity_vertices(&self, vertices: &mut Vec<Vertex>, start: usize) {
+        if let Some(culler) = &self.entity_culler {
+            culler.cull_vertices(vertices, start, |pos| {
+                let state = self.world.block(pos[0], pos[1], pos[2]);
+                if !opaque(self.res.facts().get(state)) {
+                    return false;
+                }
+                let Some(y) = pos[1].checked_sub(MIN_Y) else {
+                    return false;
+                };
+                let section = (pos[0] >> 4, y.div_euclid(16), pos[2] >> 4);
+                // Newly edited or not-yet-uploaded terrain is not an occluder.
+                self.renderer
+                    .as_ref()
+                    .is_some_and(|r| r.has_section(section))
+                    && !self.world.dirty_sections.contains(&section)
+                    && !self.streaming.is_meshing(section)
+                    && !self.pending_uploads.iter().any(|(key, _)| *key == section)
+            });
+        }
+    }
+}
+
+/// Entity.shouldRenderAtSqrDistance's default range: 64 times the bounding
+/// box's mean edge, scaled by the entity distance option.
+pub(super) fn default_range(size: glam::DVec3, view_scale: f32) -> f64 {
+    let edge = (size.x + size.y + size.z) / 3.0;
+    let edge = if edge.is_nan() { 1.0 } else { edge };
+    edge * 64.0 * f64::from(view_scale)
+}
+
+impl Game<'_> {
+    /// EntityRenderer.shouldRender: the entity within `range` blocks of the
+    /// camera, measured from its current `position`, and its culling box
+    /// (`lo`..`hi`, interpolated, in world space) grown by 0.5 in the view.
+    pub(super) fn entity_in_view(
+        &self,
+        camera: glam::DVec3,
+        position: glam::DVec3,
+        range: f64,
+        lo: glam::DVec3,
+        hi: glam::DVec3,
+    ) -> bool {
+        if (position - camera).length_squared() >= range * range {
+            return false;
+        }
+        self.view_frustum.as_ref().is_none_or(|view| {
+            view.intersects(
+                (lo - camera - glam::DVec3::splat(0.5)).as_vec3(),
+                (hi - camera + glam::DVec3::splat(0.5)).as_vec3(),
+            )
+        })
+    }
+}
+
+/// An entity's position as a `DVec3`.
+pub(super) fn at(p: horizon_core::geometry::Vec3) -> glam::DVec3 {
+    glam::DVec3::new(p.x, p.y, p.z)
+}
+
+impl Game<'_> {
+    /// `entity_in_view` for an entity whose box stands on its position,
+    /// `width` wide and `height` tall, interpolated by `alpha` and grown by
+    /// `grow` (a renderer's getBoundingBoxForCulling).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn standing_entity_in_view(
+        &self,
+        camera: glam::DVec3,
+        previous: glam::DVec3,
+        position: glam::DVec3,
+        alpha: f64,
+        width: f64,
+        height: f64,
+        range: f64,
+        grow: f64,
+    ) -> bool {
+        let p = previous.lerp(position, alpha);
+        let half = glam::DVec3::new(width / 2.0 + grow, grow, width / 2.0 + grow);
+        let lo = p - half;
+        let hi = p + glam::DVec3::new(half.x, height + grow, half.z);
+        self.entity_in_view(camera, position, range, lo, hi)
+    }
+}
