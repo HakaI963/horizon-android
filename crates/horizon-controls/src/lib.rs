@@ -393,7 +393,7 @@ impl Hud {
     /// turn the camera.
     pub fn down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let hit = self
-            .front_to_back(width, height)
+            .buttons(width, height)
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action);
