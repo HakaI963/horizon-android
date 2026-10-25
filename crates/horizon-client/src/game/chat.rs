@@ -481,13 +481,16 @@ impl Game<'_> {
         }
         // A key with no physical code still typed something: a phone's keyboard
         // commits a word the player never pressed a key for, and vanilla's
-        // `charTyped` takes the text on its own. `KeyCode::Unknown` matches none of
-        // the shortcuts below, so what is left of such an event is its text.
-        let key = match event.physical_key {
-            PhysicalKey::Code(key) => key,
-            _ => KeyCode::Unknown,
-        };
-        self.chat_key_code(key, event.text.as_deref());
+        // `charTyped` takes the text on its own. There is no `KeyCode` for such an
+        // event, so nothing is left to bind but the text itself.
+        match event.physical_key {
+            PhysicalKey::Code(key) => self.chat_key_code(key, event.text.as_deref()),
+            PhysicalKey::Unidentified(_) => {
+                if let Some(text) = event.text.as_deref().filter(|text| !text.is_empty()) {
+                    self.chat_type(text);
+                }
+            }
+        }
     }
     /// A key (and the text it typed) while the chat screen is open.
     pub(super) fn chat_key_code(&mut self, key: KeyCode, typed_text: Option<&str>) {
