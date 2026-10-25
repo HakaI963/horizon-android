@@ -23,7 +23,8 @@ use horizon_client::{
 };
 use horizon_controls::Action;
 use std::sync::atomic::{AtomicBool, Ordering};
-use winit::event::{Touch, TouchPhase};
+use winit::event::{Touch, TouchPhase, WindowEvent};
+use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
 use winit::window::Window;
 
 impl Game<'_> {
@@ -229,4 +230,20 @@ fn typing(game: &Game<'_>) -> bool {
             Screen::Chat | Screen::Options | Screen::WorldOptions | Screen::CommandBlock
         )
         || (game.screen == Screen::Creative && game.creative_screen.tab().search)
+}
+
+/// `AKEYCODE_BACK`, said as the game's own Escape.
+///
+/// Back is the one key on a phone that the touch layout does not draw, and winit's
+/// Android table has no `KeyCode` for it, so it would come in as an unidentified key
+/// that nothing listens for. Every screen already answers Escape, which is what a
+/// player means when they reach for back.
+pub(super) fn back_as_escape(mut event: WindowEvent) -> WindowEvent {
+    const BACK: u32 = 4;
+    if let WindowEvent::KeyboardInput { event, .. } = &mut event
+        && let PhysicalKey::Unidentified(NativeKeyCode::Android(BACK)) = event.physical_key
+    {
+        event.physical_key = PhysicalKey::Code(KeyCode::Escape);
+    }
+    event
 }

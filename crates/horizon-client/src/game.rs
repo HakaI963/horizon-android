@@ -10782,6 +10782,10 @@ impl ApplicationHandler for Game<'_> {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        // Said as Escape before anything reads the key, so the back button closes a
+        // screen wherever Escape already does.
+        #[cfg(target_os = "android")]
+        let event = touch::back_as_escape(event);
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {

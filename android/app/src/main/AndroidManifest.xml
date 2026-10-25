@@ -14,9 +14,17 @@
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="true" />
 
+    <!--
+        Predictive back is the default for an app that targets SDK 35, and it takes the
+        back button away from the game: android-activity registers no
+        OnBackInvokedCallback, so the system would finish the activity instead of ever
+        delivering AKEYCODE_BACK. Opting out keeps the key, which the engine then says
+        as Escape.
+    -->
     <application
         android:allowBackup="false"
         android:appCategory="game"
+        android:enableOnBackInvokedCallback="false"
         android:hasFragileUserData="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
