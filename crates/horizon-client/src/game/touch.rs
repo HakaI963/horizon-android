@@ -8,6 +8,10 @@
 //! is what makes the layout editable without touching the game: the buttons are only
 //! another way to press `W`.
 //!
+//! The keyboard is the other half of having no keys. A phone gives one call about it —
+//! show the keyboard, or hide it — so this asks for one on the screens that read typed
+//! text and keeps it away from the world, where it would sit on top of the buttons.
+//!
 //! The overlay itself lives on the thread rather than on the renderer, because the
 //! engine builds a device for the loading screen and another for the world, and imgui
 //! panics when a thread is given a second context.
@@ -18,13 +22,20 @@ use horizon_client::{
     mouse::Rotation,
 };
 use horizon_controls::Action;
+use std::sync::atomic::{AtomicBool, Ordering};
 use winit::event::{Touch, TouchPhase};
+use winit::window::Window;
 
 impl Game<'_> {
     /// What the fingers did since the last frame. Called where the game reads its
     /// keyboard, before anything moves, so a press is in the simulation the frame it
     /// was made and not one after it.
     pub(super) fn touch_frame(&mut self) -> Result<()> {
+        // The keyboard before anything else: the screen has just changed, and nobody
+        // should wait a frame for the keys to come up when they have opened chat.
+        if let Some(window) = self.window.as_ref() {
+            keyboard(window, typing(self));
+        }
         let Some((edges, look)) =
             horizon_overlay::with(|overlay| (overlay.presses(), overlay.look()))
         else {
@@ -178,4 +189,44 @@ pub(super) fn finger(game: &Game<'_>, touch: &Touch) {
         TouchPhase::Moved => overlay.finger_move(id, x, y, width as f32, height as f32),
         TouchPhase::Ended | TouchPhase::Cancelled => overlay.finger_up(id),
     });
+}
+
+/// Whether the phone's keyboard is up, so that only a change costs a call into the
+/// activity. A new window starts with the keyboard away, and `keyboard_off` says so.
+static KEYBOARD_UP: AtomicBool = AtomicBool::new(false);
+
+/// A window has just been made, and with it a keyboard nobody has asked for yet. The
+/// flag belongs to the window, not to the process: leaving it as the old window set it
+/// would mean the new one never hears from the game again.
+pub(super) fn keyboard_off(window: &Window) {
+    window.set_ime_allowed(false);
+    KEYBOARD_UP.store(false, Ordering::Relaxed);
+}
+
+/// Put the phone's keyboard up or away, on the one change since the last frame.
+fn keyboard(window: &Window, wanted: bool) {
+    if KEYBOARD_UP.swap(wanted, Ordering::Relaxed) != wanted {
+        window.set_ime_allowed(wanted);
+    }
+}
+
+/// Whether whatever is on the screen takes letters, which on a phone is the only
+/// question about the keyboard: winit's Android backend has no caret to aim a composed
+/// word at and sends no `Ime` events, so `set_ime_allowed` — show it, or hide it — is
+/// the whole of the interface.
+///
+/// The screens are the ones whose arms in `window_event` pass `event.text` on, so a
+/// field that can be written in is a keyboard by the same rule. Over the world the
+/// keyboard stays away: it would cover the buttons the player moves with.
+fn typing(game: &Game<'_>) -> bool {
+    game.title.is_some()
+        || game.sign_edit.is_some()
+        || game.book.is_some()
+        || game.station_typing()
+        || game.recipe_search_focused()
+        || matches!(
+            game.screen,
+            Screen::Chat | Screen::Options | Screen::WorldOptions | Screen::CommandBlock
+        )
+        || (game.screen == Screen::Creative && game.creative_screen.tab().search)
 }

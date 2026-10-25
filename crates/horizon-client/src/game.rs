@@ -156,7 +156,10 @@ mod subtitle_hud;
 mod sulfur_cubes;
 mod titles;
 mod tnt;
-// The phone's keyboard: the touch layout's presses, said as the game's own keys.
+// The two seams a phone has and a desktop does not: the touch layout's presses, said as
+// the game's own keys, and the surface Android takes back when the activity stops.
+#[cfg(target_os = "android")]
+mod lifecycle;
 #[cfg(target_os = "android")]
 mod touch;
 mod totem;
@@ -10761,9 +10764,19 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         }
+        // A new window starts with the phone's keyboard put away, and the flag that
+        // remembers whether it is up has to agree with the window it belongs to.
+        #[cfg(target_os = "android")]
+        touch::keyboard_off(&window);
         self.window = Some(window);
         self.apply_settings();
         self.previous = Instant::now();
+    }
+    /// Android has destroyed the window under the game, and every Vulkan object made
+    /// from its surface with it: see `game::lifecycle`.
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        lifecycle::suspend(self, event_loop);
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
@@ -11227,13 +11240,18 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::Chat && self.title.is_none() =>
                 {
+                    // The held set is physical, so a key with no code belongs to none of
+                    // it; its text still belongs to the chat line, which is what a
+                    // phone's keyboard commits when it finishes a word.
                     if let PhysicalKey::Code(key) = event.physical_key {
                         if event.state == ElementState::Pressed {
                             self.keys.insert(key);
-                            self.chat_key(&event);
                         } else {
                             self.keys.remove(&key);
                         }
+                    }
+                    if event.state == ElementState::Pressed {
+                        self.chat_key(&event);
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.sign_edit.is_some() => {
@@ -12968,6 +12986,14 @@ impl Loading {
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
     }
+    /// The phone took the window the loading screen draws to: give the surface up so
+    /// `resumed` builds a new one. See `game::lifecycle`.
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        lifecycle::suspend_loading(self, event_loop);
+        #[cfg(not(target_os = "android"))]
+        let _ = event_loop;
+    }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
@@ -13143,6 +13169,17 @@ impl ApplicationHandler for App {
         match self {
             App::Loading(loading) => loading.resumed(event_loop),
             App::Ready(game) => game.resumed(event_loop),
+        }
+    }
+    /// winit only ever sends this on Android and the web, where the platform takes the
+    /// windows back rather than hiding them. Both handlers give up everything made from
+    /// the surface, which is what lets `resumed` notice there is nothing left and build
+    /// new ones; without it the app keeps presenting to a window that no longer exists
+    /// and comes back to a black screen.
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            App::Loading(loading) => loading.suspended(event_loop),
+            App::Ready(game) => game.suspended(event_loop),
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
