@@ -42,7 +42,14 @@
             android:keepScreenOn="true"
             android:label="@string/app_name"
             android:resizeableActivity="true"
-            android:theme="@style/Horizon">
+            android:theme="@style/Horizon"
+            android:windowSoftInputMode="adjustResize">
+            <!--
+                The keyboard shortens the window rather than covering the game, so the
+                engine's text screens lay out above it. Without a mode the system picks
+                adjustPan, which has nothing to pan for: the focused view is a 1x1 field
+                in the corner, so the keyboard would cover the bottom of the game.
+            -->
             <!-- The engine library NativeActivity loads; it exports android_main. -->
             <meta-data
                 android:name="android.app.lib_name"

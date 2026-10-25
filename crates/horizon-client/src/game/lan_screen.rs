@@ -1024,7 +1024,9 @@ impl Game<'_> {
             return;
         };
         if let Some(rules) = o.rules.as_mut().filter(|r| r.typing()) {
-            rules.edit(|b| b.shortcut(shortcut, &mut self.clipboard));
+            rules.edit(|b| {
+                b.shortcut(shortcut, &mut self.clipboard);
+            });
             return;
         }
         if o.view == View::Options && o.port.focused {
