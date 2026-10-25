@@ -5,11 +5,11 @@
 //! ordinary imgui — windows, sliders, checkboxes — driven by the one pointer imgui
 //! knows, which is the first finger down. The HUD is not: a HUD has to answer to
 //! three fingers at once and a mouse has only one, so the buttons are rectangles
-//! this file places and hit-tests itself, drawn into an imgui window's draw list so
-//! that they still arrive in imgui's one submission with its one font atlas. While
-//! the layout is being edited the same rectangles become imgui windows, because
-//! dragging a button to where your thumb actually reaches is the one thing a phone
-//! cannot do without widgets.
+//! [`horizon_controls`] hit-tests from the raw touches, drawn into an imgui window's
+//! draw list so that they still arrive in imgui's one submission with its one font
+//! atlas. Editing the layout is the same rectangles with the same fingers: a button
+//! follows the thumb that picked it up, which is the one thing a phone cannot do
+//! without a mouse.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -185,7 +185,7 @@ impl Overlay {
     /// to imgui when there is a window to click.
     pub fn finger_down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let inside_panel = self.panel_rect.is_some_and(|rect| rect.contains(x, y));
-        if self.hud.edit || !inside_panel {
+        if !inside_panel {
             self.hud.down(id, x, y, width, height);
         }
         if self.interactive() && (self.pointer.finger.is_none() || inside_panel) {
@@ -201,8 +201,8 @@ impl Overlay {
         }
     }
 
-    pub fn finger_move(&mut self, id: u64, x: f32, y: f32) {
-        self.hud.drag(id, x, y);
+    pub fn finger_move(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
+        self.hud.drag(id, x, y, width, height);
         if self.pointer.finger == Some(id) {
             self.pointer.position = [x, y];
         }
@@ -234,7 +234,7 @@ impl Overlay {
         status: &str,
     ) -> Result<Vec<(Action, bool)>, Box<dyn Error>> {
         let edges = self.hud.take_edges();
-        for (action, down) in edges.iter().filter(|(action, _)| *action == &Action::Menu) {
+        for (action, down) in edges.iter().filter(|(action, _)| *action == Action::Menu) {
             if *down {
                 self.panel = !self.panel;
                 log::info!(
@@ -277,9 +277,9 @@ impl Overlay {
             }
         }
 
-        // Everything the panel and the editor can change is taken out of the layout
-        // into a local first: the closure that draws a window holds the borrow imgui
-        // just gave us, and `self` is not in it to be borrowed twice.
+        // Everything the panel can change is taken out of the layout into a local
+        // first: the closure that draws a window holds the borrow imgui just gave us,
+        // and `self` is not in it to be borrowed twice.
         let mut edit = hud.edit;
         let mut opacity = hud.layout.opacity;
         let mut scale = hud.layout.scale;
@@ -289,14 +289,33 @@ impl Overlay {
         let mut reset = false;
         let mut close = false;
         let buttons = hud.buttons(width, height);
-        let held = hud.pressed_actions();
-        let mut moved = Vec::new();
-        let mut panel_now = None;
+        // What is lit this frame: the buttons a finger holds while playing, and while
+        // the layout is being arranged the one button a finger has picked up.
+        let lit = if edit {
+            hud.grabbed().into_iter().collect::<Vec<_>>()
+        } else {
+            hud.pressed_actions()
+        };
+        let mut panel_now: Option<Rect> = None;
 
         {
             let ui = imgui.new_frame();
+            hud_buttons(
+                ui,
+                &buttons,
+                &lit,
+                opacity,
+                *dpi,
+                *show_status,
+                status,
+                width,
+                height,
+            );
+            // The panel comes after the buttons, so it is drawn on top of them: a
+            // slider you cannot see because a "MINE" is over it is a slider you cannot
+            // find on a phone, where there is no hover to discover it with.
             if *panel {
-                panel_now = settings(
+                panel_now = Some(settings(
                     ui,
                     status,
                     &mut scale,
@@ -309,22 +328,7 @@ impl Overlay {
                     &mut reset,
                     &mut close,
                     *dpi,
-                );
-            }
-            if edit {
-                moved = editor(ui, &buttons);
-            } else {
-                hud_buttons(
-                    ui,
-                    &buttons,
-                    &held,
-                    opacity,
-                    *dpi,
-                    *show_status,
-                    status,
-                    width,
-                    height,
-                );
+                ));
             }
         }
 
@@ -332,10 +336,13 @@ impl Overlay {
         hud.layout.opacity = opacity;
         hud.layout.look_sensitivity = sensitivity;
         hud.layout.drag_to_look = drag_to_look;
-        hud.edit = edit;
-        for (action, center) in moved {
-            hud.move_button(action, center, width, height);
+        if hud.edit != edit {
+            // Changing the mode under a finger that was pressing something has to let
+            // it go, or the player arranges the layout with a character walking into a
+            // wall for the next hour.
+            hud.release_all();
         }
+        hud.edit = edit;
         if reset {
             hud.layout = Layout::default();
             log::info!("overlay: the layout is the one the build ships with");
@@ -403,12 +410,14 @@ fn rgba(color: [u8; 3], alpha: f32) -> ImColor32 {
     ImColor32::from_rgba(red, green, blue, (255.0 * alpha.clamp(0.0, 1.0)) as u8)
 }
 
-/// The HUD while it is being used: one window the size of the screen that takes no
-/// input at all, so that imgui is the painter and never the player.
+/// The HUD: one window the size of the screen that takes no input at all, so that
+/// imgui is the painter and never the player. The fingers it answers to came from
+/// `horizon_controls`, and it is painted back to front — the list is front to back —
+/// which is why a small button on top of a big one is both visible and pressable.
 fn hud_buttons(
     ui: &Ui,
     buttons: &[(Action, Rect)],
-    held: &[Action],
+    lit: &[Action],
     opacity: f32,
     dpi: f32,
     show_status: bool,
@@ -416,7 +425,10 @@ fn hud_buttons(
     width: f32,
     height: f32,
 ) {
-    ui.window("Horizon controls")
+    // A window with no decoration cannot be collapsed, so its contents always run;
+    // the `Option` imgui hands back is only that promise, and there is nothing to do
+    // with it.
+    let _ = ui.window("Horizon controls")
         .flags(
             WindowFlags::NO_BACKGROUND
                 | WindowFlags::NO_DECORATION
@@ -430,8 +442,8 @@ fn hud_buttons(
         .size([width, height], Condition::Always)
         .build(|| {
             let draw = ui.get_window_draw_list();
-            for (action, rect) in buttons {
-                paint(&draw, ui, *action, *rect, held.contains(action), opacity);
+            for (action, rect) in buttons.iter().rev() {
+                paint(&draw, ui, *action, *rect, lit.contains(action), opacity);
             }
             if show_status {
                 // The line a frame dump reads instead of logcat: what the loop is
@@ -443,38 +455,6 @@ fn hud_buttons(
                 );
             }
         });
-}
-
-/// The HUD while it is being edited: every button is a window of its own, and a
-/// window with no title bar is one you can drag by its body. The positions come back
-/// out of imgui, because the point of the exercise is that the player, not the build,
-/// decides where a button is.
-fn editor(ui: &Ui, buttons: &[(Action, Rect)]) -> Vec<(Action, [f32; 2])> {
-    let mut moved = Vec::new();
-    for (action, rect) in buttons {
-        let label = format!("##{}", action.text());
-        ui.window(&label)
-            .flags(
-                WindowFlags::NO_RESIZE
-                    | WindowFlags::NO_SCROLLBAR
-                    | WindowFlags::NO_TITLE_BAR
-                    | WindowFlags::NO_COLLAPSE
-                    | WindowFlags::NO_NAV
-                    | WindowFlags::NO_FOCUS_ON_APPEARING,
-            )
-            .position([rect.x, rect.y], Condition::Always)
-            .size([rect.width, rect.height], Condition::Always)
-            .bg_alpha(0.2)
-            .movable(true)
-            .build(|| {
-                let draw = ui.get_window_draw_list();
-                paint(&draw, ui, *action, *rect, false, 1.0);
-                let [x, y] = ui.window_pos();
-                let [width, height] = ui.window_size();
-                moved.push((*action, [x + width / 2.0, y + height / 2.0]));
-            });
-    }
-    moved
 }
 
 /// The settings panel. Everything a player can reach without a file manager and
@@ -493,9 +473,11 @@ fn settings(
     close: &mut bool,
     dpi: f32,
 ) -> Rect {
-    let mut rect = Rect {
-        x: 0.0,
-        y: 0.0,
+    // Where the panel is put and what it is when it has not been laid out: a window
+    // that never opened claims no pixels, so a finger cannot land inside it.
+    let unmeasured = Rect {
+        x: 12.0 * dpi,
+        y: 12.0 * dpi,
         width: 0.0,
         height: 0.0,
     };
@@ -530,12 +512,12 @@ fn settings(
             }
             let [x, y] = ui.window_pos();
             let [width, height] = ui.window_size();
-            rect = Rect {
+            Rect {
                 x,
                 y,
                 width,
                 height,
-            };
-        });
-    rect
+            }
+        })
+        .unwrap_or(unmeasured)
 }

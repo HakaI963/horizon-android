@@ -402,11 +402,11 @@ impl Screen {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(());
+                return Ok(Vec::new());
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
-                return Ok(());
+                return Ok(Vec::new());
             }
             wgpu::CurrentSurfaceTexture::Lost => return Err("the surface was lost".into()),
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -557,12 +557,23 @@ impl ApplicationHandler for BringUp {
                             location.y,
                             force
                         );
-                        self.overlay
-                            .finger_down(id, location.x as f32, location.y as f32, width as f32, height as f32);
+                        self.overlay.finger_down(
+                            id,
+                            location.x as f32,
+                            location.y as f32,
+                            width as f32,
+                            height as f32,
+                        );
                     }
                     TouchPhase::Moved => {
                         self.touch = Some((location.x, location.y));
-                        self.overlay.finger_move(id, location.x as f32, location.y as f32);
+                        self.overlay.finger_move(
+                            id,
+                            location.x as f32,
+                            location.y as f32,
+                            width as f32,
+                            height as f32,
+                        );
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.fingers = self.fingers.saturating_sub(1);
