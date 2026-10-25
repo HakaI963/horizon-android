@@ -29,9 +29,19 @@ fn log(prio: c_int, tag: &CStr, text: &str) {
 
 struct Logcat;
 
+/// The shader compiler logs one line per WGSL instruction and wgpu one per
+/// resource. On a phone that fills the ring buffer in a second and buries the
+/// engine's own lines, which is the reason the log is being read at all. Their
+/// warnings and errors still come through.
+fn chatty(target: &str) -> bool {
+    target.starts_with("naga") || target.starts_with("wgpu") || target.starts_with("gpu_allocator")
+}
+
 impl log::Log for Logcat {
-    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-        true
+    fn enabled(&self, meta: &log::Metadata<'_>) -> bool {
+        // `Level` orders itself with the noisiest last, so "not above Info" is
+        // "still important".
+        !chatty(meta.target()) || meta.level() <= log::Level::Info
     }
     fn log(&self, record: &log::Record<'_>) {
         let prio = match record.level() {

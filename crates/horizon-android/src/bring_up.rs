@@ -54,6 +54,19 @@ fn surface_format(
     .unwrap_or(default)
 }
 
+/// The alpha mode to ask for. Desktop compositors list `Opaque` and prefer it —
+/// the game is edge to edge, so its alpha is nobody else's business. Android's
+/// Vulkan driver lists only `Inherit`, and asking for anything else is a
+/// validation error, not a preference.
+fn alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
+    modes
+        .iter()
+        .copied()
+        .find(|mode| *mode == wgpu::CompositeAlphaMode::Opaque)
+        .or_else(|| modes.first().copied())
+        .unwrap_or_default()
+}
+
 fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn Error>> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = wgpu::Backends::VULKAN;
@@ -89,13 +102,14 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
         .ok_or("the surface has no supported configuration")?;
     config.format = surface_format(&capabilities.formats, config.format);
     config.view_formats = vec![config.format.remove_srgb_suffix()];
-    config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
+    config.alpha_mode = alpha_mode(&capabilities.alpha_modes);
     config.present_mode = wgpu::PresentMode::Fifo;
     log::info!(
-        "bring-up: configuring {}x{} {:?} {:?}, scale {}, content {:?}, sdk {}",
+        "bring-up: configuring {}x{} {:?} {:?} {:?}, scale {}, content {:?}, sdk {}",
         config.width,
         config.height,
         config.format,
+        config.alpha_mode,
         config.present_mode,
         window.scale_factor(),
         app.content_rect(),
@@ -281,8 +295,14 @@ impl ApplicationHandler for BringUp {
         }
     }
 
+    /// The activity is backgrounded: the platform has destroyed the window's
+    /// surface, and every Vulkan object made from it is now invalid. Both go
+    /// before this callback returns, and `resumed` makes new ones. Keeping them
+    /// alive is the classic "black screen after Alt-Tab" on Android.
     fn suspended(&mut self, _: &ActiveEventLoop) {
-        log::info!("bring-up: activity suspended");
+        self.screen = None;
+        self.window = None;
+        log::info!("bring-up: activity suspended, the surface is gone");
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
