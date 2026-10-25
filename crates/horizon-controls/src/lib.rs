@@ -204,32 +204,38 @@ impl Default for Layout {
     /// The arrangement every launcher of this kind converged on, because a thumb
     /// resting on the bottom-left corner reaches a cross of four buttons without
     /// moving, and the one on the right reaches a cluster of them: movement left,
-    /// the two mouse buttons and jump right, the inventory row along the top, and
-    /// the keys nobody presses while playing down the right edge.
+    /// the two mouse buttons and jump right, the hotbar and the key row along the
+    /// top, and the two buttons nobody presses while playing in the corners.
+    ///
+    /// The numbers are the landscape a phone is held in, and they are chosen so that
+    /// no button's middle falls inside another's: a row of hotbar squares in the same
+    /// band as the inventory row swallows the taps meant for the row behind it, which
+    /// is the one mistake a HUD layout cannot be recovered from by a player who
+    /// cannot see why the bag will not open.
     fn default() -> Self {
         let mut controls = vec![
-            control(Action::Forward, 0.10, 0.72, 0.115),
-            control(Action::Left, 0.045, 0.835, 0.115),
-            control(Action::Right, 0.155, 0.835, 0.115),
-            control(Action::Back, 0.10, 0.95, 0.115),
-            control(Action::Sneak, 0.235, 0.935, 0.105),
-            control(Action::Sprint, 0.235, 0.80, 0.095),
+            control(Action::Forward, 0.10, 0.70, 0.105),
+            control(Action::Left, 0.045, 0.815, 0.105),
+            control(Action::Right, 0.155, 0.815, 0.105),
+            control(Action::Back, 0.10, 0.93, 0.105),
+            control(Action::Sneak, 0.235, 0.93, 0.095),
+            control(Action::Sprint, 0.235, 0.80, 0.09),
             control(Action::Mine, 0.855, 0.885, 0.155),
             control(Action::Use, 0.70, 0.885, 0.125),
-            control(Action::Jump, 0.925, 0.72, 0.125),
-            control(Action::Up, 0.80, 0.66, 0.095),
-            control(Action::Down, 0.945, 0.60, 0.095),
-            control(Action::Fly, 0.675, 0.72, 0.095),
-            control(Action::Pick, 0.955, 0.475, 0.085),
-            control(Action::Inventory, 0.55, 0.06, 0.085),
-            control(Action::Drop, 0.645, 0.06, 0.085),
-            control(Action::Chat, 0.74, 0.06, 0.085),
-            control(Action::Command, 0.835, 0.06, 0.085),
-            control(Action::TabList, 0.93, 0.06, 0.085),
-            control(Action::Debug, 0.93, 0.155, 0.075),
-            control(Action::View, 0.835, 0.155, 0.075),
-            control(Action::Pause, 0.045, 0.175, 0.075),
+            control(Action::Jump, 0.925, 0.72, 0.12),
+            control(Action::Up, 0.80, 0.66, 0.09),
+            control(Action::Down, 0.945, 0.60, 0.09),
+            control(Action::Fly, 0.675, 0.72, 0.09),
+            control(Action::Pick, 0.96, 0.47, 0.08),
             control(Action::Menu, 0.045, 0.05, 0.075),
+            control(Action::Pause, 0.045, 0.155, 0.075),
+            control(Action::Inventory, 0.55, 0.155, 0.08),
+            control(Action::Drop, 0.63, 0.155, 0.08),
+            control(Action::Chat, 0.71, 0.155, 0.08),
+            control(Action::Command, 0.79, 0.155, 0.08),
+            control(Action::TabList, 0.87, 0.155, 0.08),
+            control(Action::Debug, 0.95, 0.155, 0.08),
+            control(Action::View, 0.95, 0.05, 0.075),
         ];
         for slot in 1..=9u8 {
             controls.push(control(
@@ -311,9 +317,10 @@ impl Layout {
             .collect()
     }
 
-    /// The same rectangles in the order they are drawn, and the order a finger is
-    /// matched against them: the last one hit wins, so the smaller of an overlapping
-    /// pair has to come later.
+    /// The same rectangles front to back: the smallest first, so that the first one a
+    /// finger is matched against is the one it can see most of, and the one it gets.
+    /// Painting walks the list backwards for the same reason — the button that wins
+    /// the tap has to be the one drawn on top.
     pub fn front_to_back(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
         let mut buttons = self.buttons(width, height);
         buttons.sort_by(|a, b| {
@@ -397,13 +404,14 @@ impl Hud {
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action);
-        if self.edit {
-            // Dragging the layout is the panel's business, not the game's.
-            return;
-        }
-        let looking = hit.is_none() && self.layout.drag_to_look;
-        if let Some(action) = hit {
-            self.press(action);
+        // While the layout is being arranged a finger picks its button up instead of
+        // pressing it, and turns nothing: editing a HUD must not mine a block.
+        let editing = self.edit;
+        let looking = !editing && hit.is_none() && self.layout.drag_to_look;
+        if !editing {
+            if let Some(action) = hit {
+                self.press(action);
+            }
         }
         self.fingers.push(Finger {
             id,
@@ -415,6 +423,7 @@ impl Hud {
         log::info!(
             "controls: finger {id} down at {x:.0}x{y:.0} on {}",
             match hit {
+                Some(action) if editing => format!("{} being moved", action.text()),
                 Some(action) => format!("{}", action.text()),
                 None if looking => "the look area".to_owned(),
                 None => "nothing".to_owned(),
@@ -422,9 +431,21 @@ impl Hud {
         );
     }
 
-    /// Slide a finger that is already down. Where it lands matters only if it is
-    /// still on a button; how far it travelled is what turns the camera.
-    pub fn drag(&mut self, id: u64, x: f32, y: f32) {
+    /// Slide a finger that is already down. While the layout is being edited this
+    /// moves the button the finger picked up; otherwise where it lands matters only
+    /// if it is still on a button, and how far it travelled is what turns the camera.
+    pub fn drag(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
+        if self.edit {
+            if let Some(action) = self
+                .fingers
+                .iter()
+                .find(|finger| finger.id == id)
+                .and_then(|finger| finger.control)
+            {
+                self.move_button(action, [x, y], width, height);
+            }
+            return;
+        }
         let Some(finger) = self.fingers.iter_mut().find(|finger| finger.id == id) else {
             return;
         };
@@ -498,8 +519,16 @@ impl Hud {
         self.layout.front_to_back(width, height)
     }
 
-    /// The editor moved a button to the centre of a widget that is itself placed in
-    /// pixels on this screen. Fractions come back out of it.
+    /// The button the layout is being dragged by, if a finger has hold of one. The
+    /// overlay draws that one brighter, because a picked-up button that looks like
+    /// every other one reads as a control that is not answering.
+    pub fn grabbed(&self) -> Option<Action> {
+        self.fingers.iter().find_map(|finger| finger.control)
+    }
+
+    /// Put a button's centre at `center`, in the pixels of this screen. Fractions come
+    /// back out of it, and nonsense is clamped: a button dragged off the glass can be
+    /// dragged back, but one that is nowhere cannot.
     pub fn move_button(&mut self, action: Action, center: [f32; 2], width: f32, height: f32) {
         if let Some(control) = self
             .layout
@@ -596,7 +625,7 @@ mod tests {
             .map(|(_, rect)| rect)
             .unwrap();
         hud.down(1, rect.x + 1.0, rect.y + 1.0, WIDTH, HEIGHT);
-        hud.drag(1, rect.x + 4000.0, rect.y + 4000.0);
+        hud.drag(1, rect.x + 4000.0, rect.y + 4000.0, WIDTH, HEIGHT);
         assert!(hud.is_held(Action::Forward));
         assert_eq!(hud.take_look(), [0.0, 0.0]);
         hud.up(1);
@@ -609,7 +638,7 @@ mod tests {
         // The middle of the screen: nothing is there in the default layout.
         hud.down(1, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT);
         assert_eq!(hud.pressed_actions(), vec![]);
-        hud.drag(1, WIDTH * 0.5 + 30.0, HEIGHT * 0.5 + 12.0);
+        hud.drag(1, WIDTH * 0.5 + 30.0, HEIGHT * 0.5 + 12.0, WIDTH, HEIGHT);
         hud.up(1);
         let [yaw, pitch] = hud.take_look();
         assert!(
@@ -625,23 +654,27 @@ mod tests {
     fn editing_the_layout_moves_buttons_and_sends_nothing() {
         let mut hud = hud();
         hud.edit = true;
-        let rect = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .map(|(_, rect)| rect)
-            .unwrap();
-        hud.down(1, rect.center()[0], rect.center()[1], WIDTH, HEIGHT);
-        assert_eq!(hud.take_edges(), vec![], "editing must not mine anything");
-        hud.edit = false;
-        hud.move_button(Action::Jump, [100.0, 100.0], WIDTH, HEIGHT);
-        let moved = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .map(|(_, rect)| rect.center())
-            .unwrap();
-        assert!((moved[0] - 100.0).abs() < 1.0 && (moved[1] - 100.0).abs() < 1.0, "{moved:?}");
+        let jump = |hud: &Hud| {
+            hud.buttons(WIDTH, HEIGHT)
+                .into_iter()
+                .find(|(action, _)| *action == Action::Jump)
+                .map(|(_, rect)| rect.center())
+                .unwrap()
+        };
+        let before = jump(&hud);
+        hud.down(1, before[0], before[1], WIDTH, HEIGHT);
+        assert_eq!(hud.grabbed(), Some(Action::Jump));
+        assert_eq!(hud.take_edges(), vec![], "picking a button up is not pressing it");
+        hud.drag(1, 100.0, 100.0, WIDTH, HEIGHT);
+        hud.up(1);
+        assert_eq!(hud.take_edges(), vec![], "letting go of a button is not pressing it");
+        assert_eq!(hud.grabbed(), None);
+        let after = jump(&hud);
+        assert!(
+            (after[0] - 100.0).abs() < 1.0 && (after[1] - 100.0).abs() < 1.0,
+            "the button should have followed the finger from {before:?} to [100,100], got {after:?}"
+        );
+        assert_eq!(hud.take_look(), [0.0, 0.0], "editing never turns the camera");
     }
 
     #[test]
@@ -715,6 +748,18 @@ mod tests {
             assert!(rect.y + rect.height <= HEIGHT + 0.01, "{action:?}: {rect:?}");
             assert!(!action.text().is_empty(), "{action:?} has no legend");
         }
+        // The middle of every button has to answer to that button. Two rows in the
+        // same band pass every check above and still steal each other's taps, and on a
+        // phone there is no right-click to find out which one a player pressed.
+        let front = layout.front_to_back(WIDTH, HEIGHT);
+        for (action, rect) in &buttons {
+            let [x, y] = rect.center();
+            let hit = front
+                .iter()
+                .find(|(_, other)| other.contains(x, y))
+                .map(|(other, _)| *other);
+            assert_eq!(hit, Some(*action), "{action:?} loses its own middle at {x:.0}x{y:.0}");
+        }
         for slot in 1..=9u8 {
             assert!(
                 buttons.iter().any(|(action, _)| *action == Action::Hotbar(slot)),
@@ -741,17 +786,28 @@ mod tests {
     #[test]
     fn releasing_every_finger_lets_every_button_go() {
         let mut hud = hud();
-        let buttons = hud.buttons(WIDTH, HEIGHT);
-        for (index, (action, rect)) in buttons.iter().take(4).enumerate() {
+        let held: Vec<(Action, Rect)> = hud
+            .buttons(WIDTH, HEIGHT)
+            .into_iter()
+            .filter(|(action, _)| !action.momentary())
+            .take(4)
+            .collect();
+        assert_eq!(held.len(), 4, "the default layout has four buttons to hold");
+        for (index, (action, rect)) in held.iter().enumerate() {
             let [x, y] = rect.center();
             hud.down(index as u64, x, y, WIDTH, HEIGHT);
-            assert!(hud.is_held(*action) || action.momentary(), "{action:?}");
+            assert!(hud.is_held(*action), "{action:?}");
         }
+        // The presses themselves are the game's business and it has taken them; what
+        // is left after the window goes away is the question.
+        assert_eq!(hud.take_edges().len(), 4, "each finger pressed once");
         hud.release_all();
         assert_eq!(hud.pressed_actions(), vec![]);
         assert_eq!(hud.fingers(), 0);
+        let edges = hud.take_edges();
+        assert_eq!(edges.len(), 4, "every held button was let go");
         assert!(
-            hud.take_edges().iter().all(|(_, down)| !down),
+            edges.iter().all(|(_, down)| !down),
             "everything released, nothing pressed"
         );
     }
