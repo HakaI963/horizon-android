@@ -63,26 +63,29 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
 /// Run the game, or what stands in for it until the game can run.
 ///
 /// A phone gives no terminal and keeps no exit status: whatever goes wrong has to
-/// leave something on screen that the tools can still look at. So a missing
-/// resource pack is decided before the event loop is handed to the engine — winit
-/// builds exactly one loop per activity — and the answer is the bring-up card,
-/// which keeps the window, the touch path and the frame server alive.
+/// leave something on screen that the tools can still look at. So the engine is
+/// tried first even when its pack is missing — the adapter it picks, the window it
+/// makes and the error it finally gives are worth more on a screen than a
+/// prediction of them — and what is left when it stops is the bring-up card, which
+/// keeps the window, the touch path and the frame server alive.
 fn play(app: &winit::platform::android::activity::AndroidApp) {
     let pack = paths::resources_dir(app).join("horizon-resources.json");
     if !pack.is_file() {
-        log::warn!(
-            "Horizon for Android: no prepared resource pack at {}; the engine cannot start. \
-             Run `horizon-prepare` on a computer and put its `horizon-client/{}` folder at {}",
-            pack.display(),
-            paths::INSTANCE,
-            paths::import_dir(app).display()
-        );
-        if let Err(error) = bring_up::run(app) {
-            log::error!("Horizon for Android: the bring-up card stopped: {error}");
-        }
-        return;
+        log::warn!("Horizon for Android: no prepared pack at {}", pack.display());
     }
     if let Err(error) = engine::run(app) {
         log::error!("Horizon for Android: the engine stopped: {error}");
+    } else {
+        return;
+    }
+    log::error!(
+        "Horizon for Android: showing the bring-up card instead. Prepare the pack on a computer \
+         with `horizon-prepare` — it drives a JVM, so it cannot be done here — and copy its \
+         `.local/horizon-client/{}` folder to {}",
+        paths::INSTANCE,
+        paths::import_dir(app).display()
+    );
+    if let Err(error) = bring_up::run(app) {
+        log::error!("Horizon for Android: the bring-up card stopped: {error}");
     }
 }
