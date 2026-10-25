@@ -109,11 +109,11 @@ impl Card {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 16,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &ATTRIBUTES,
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -171,7 +171,7 @@ pub struct BringUp {
     touches: u64,
     fingers: u32,
     /// Where the most recent touch landed, while at least one finger is down.
-    touch: Option<(f32, f32)>,
+    touch: Option<(f64, f64)>,
     started: Instant,
 }
 
@@ -296,7 +296,7 @@ impl Screen {
     /// display can be rotated while the framebuffer is not, the driver can
     /// present one frame and then stop, and touch can arrive in a coordinate
     /// space that is not the framebuffer's.
-    fn blocks(&self, frame: u64, fingers: u32, touch: Option<(f32, f32)>) -> Vec<Block> {
+    fn blocks(&self, frame: u64, fingers: u32, touch: Option<(f64, f64)>) -> Vec<Block> {
         let (width, height) = (self.config.width, self.config.height);
         let shortest = width.min(height);
         // Never longer than the axis it is measured against: the corner blocks
@@ -383,7 +383,7 @@ impl Screen {
         &mut self,
         frame: u64,
         fingers: u32,
-        touch: Option<(f32, f32)>,
+        touch: Option<(f64, f64)>,
         dump: &FrameDump,
     ) -> Result<(), Box<dyn Error>> {
         let acquired = match self.surface.get_current_texture() {
