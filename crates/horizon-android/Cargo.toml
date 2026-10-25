@@ -23,6 +23,8 @@ winit = { version = "0.30.13", default-features = false, features = [
 ] }
 pollster = "0.4"
 log = "0.4"
+# The frame server's one dependency: enough to write a PNG the tools can open.
+png = "0.18"
 
 [lints]
 workspace = true

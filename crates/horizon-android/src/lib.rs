@@ -13,6 +13,8 @@
 #[cfg(target_os = "android")]
 mod bring_up;
 #[cfg(target_os = "android")]
+mod frame_dump;
+#[cfg(target_os = "android")]
 mod logcat;
 #[cfg(target_os = "android")]
 mod paths;

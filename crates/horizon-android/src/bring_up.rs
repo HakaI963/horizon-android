@@ -20,6 +20,9 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 use winit::window::{Window, WindowId};
 
+use crate::frame_dump::FrameDump;
+use crate::paths;
+
 /// The device and the swapchain it presents to.
 struct Screen {
     surface: wgpu::Surface<'static>,
@@ -32,6 +35,7 @@ pub struct BringUp {
     app: AndroidApp,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
+    dump: Arc<FrameDump>,
     frames: u64,
     touches: u64,
     fingers: u32,
@@ -104,6 +108,13 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
     config.view_formats = vec![config.format.remove_srgb_suffix()];
     config.alpha_mode = alpha_mode(&capabilities.alpha_modes);
     config.present_mode = wgpu::PresentMode::Fifo;
+    // The frame server reads the presented image back; a driver that will not
+    // let it is reported rather than forced.
+    if capabilities.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+        config.usage |= wgpu::TextureUsages::COPY_SRC;
+    } else {
+        log::warn!("bring-up: this swapchain cannot be copied out");
+    }
     log::info!(
         "bring-up: configuring {}x{} {:?} {:?} {:?}, scale {}, content {:?}, sdk {}",
         config.width,
@@ -136,7 +147,12 @@ impl Screen {
         }
     }
 
-    fn draw(&mut self, frame: u64, fingers: u32) -> Result<(), Box<dyn Error>> {
+    fn draw(
+        &mut self,
+        frame: u64,
+        fingers: u32,
+        dump: &FrameDump,
+    ) -> Result<(), Box<dyn Error>> {
         let acquired = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -177,6 +193,15 @@ impl Screen {
             }),
         );
         self.queue.submit([encoder.finish()]);
+        // Read before `present`: after it, the driver owns the image again and
+        // there is nothing left to copy. Does nothing unless someone asked.
+        dump.capture(
+            &self.device,
+            &self.queue,
+            &acquired.texture,
+            self.config.width,
+            self.config.height,
+        );
         // No `pre_present_notify()`: that paces winit's Wayland frame callbacks,
         // and Android's ANativeWindow queue paces FIFO by itself.
         self.queue.present(acquired);
@@ -271,7 +296,7 @@ impl ApplicationHandler for BringUp {
                     return;
                 };
                 self.frames += 1;
-                if let Err(error) = screen.draw(self.frames, self.fingers) {
+                if let Err(error) = screen.draw(self.frames, self.fingers, &self.dump) {
                     log::error!("bring-up: frame failed: {error}");
                     event_loop.exit();
                     return;
@@ -331,6 +356,7 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
         app: app.clone(),
         window: None,
         screen: None,
+        dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),
         frames: 0,
         touches: 0,
         fingers: 0,
