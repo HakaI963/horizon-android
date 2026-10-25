@@ -13134,9 +13134,20 @@ impl Loading {
         };
         // The glass, read once a frame: the buttons for the panel, the keys for a
         // field, and the turn nobody has walked into yet. The title screen is a window
-        // of its own and never reaches `touch_frame`, so this is where it asks.
+        // of its own and never reaches `touch_frame`, so this is where it asks — and
+        // the keyboard is asked for here too, because this screen knows which field
+        // has the focus.
         #[cfg(target_os = "android")]
-        touch::menu_frame(self.window.as_deref(), self.menu_typing());
+        {
+            let typing = self.menu_typing();
+            if touch::keyboard(self.window.as_deref(), typing) == Some(true) {
+                self.menu_ime_select_all();
+            }
+            if typing {
+                self.menu_ime();
+            }
+            touch::menu_frame();
+        }
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
         let mut frame = loading_frame(&batch);

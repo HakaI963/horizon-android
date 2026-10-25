@@ -1,5 +1,6 @@
-// Packages the Rust engine as an APK. There is nothing to compile here: the
-// `.so` comes from cargo, and this file only says how it ships.
+// Packages the Rust engine as an APK. Nothing is compiled here but the activity
+// subclass that hosts the phone keyboard's field; the `.so` comes from cargo, and
+// this file only says how it ships.
 
 plugins {
     id("com.android.application")

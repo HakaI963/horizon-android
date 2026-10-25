@@ -4,6 +4,7 @@
 //! `CommandBlockEditScreen` with what `handleSetCommandBlock` does with it.
 use super::{Game, Screen, commands::execute::Source};
 use horizon_client::{
+    clipboard::EditShortcut,
     command_block::{self, CommandBlock, Mode},
     containers::BlockEntity,
     hud::{HudBatch, rgba},
@@ -571,6 +572,26 @@ impl Game<'_> {
         {
             s.command.insert_text(&allowed);
         }
+    }
+    /// Backspace in the command box, for the phone's keyboard.
+    pub(super) fn command_block_backspace(&mut self) {
+        if let Some(s) = self.command_block_screen.as_mut() {
+            s.command.delete_chars(-1);
+        }
+    }
+    /// Select All in the command box, for the phone's keyboard.
+    pub(super) fn command_block_select_all(&mut self) {
+        if let Some(s) = self.command_block_screen.as_mut() {
+            s.command
+                .shortcut(EditShortcut::SelectAll, &mut self.clipboard);
+        }
+    }
+    /// The keyboard's Enter, which is the screen's Done button.
+    pub(super) fn command_block_confirm(&mut self) {
+        if let Some(s) = self.command_block_screen.take() {
+            self.set_command_block(&s);
+        }
+        self.close_command_block();
     }
     /// `ServerGamePacketListenerImpl.handleSetCommandBlock`.
     fn set_command_block(&mut self, s: &CommandBlockScreen) {

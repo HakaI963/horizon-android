@@ -24,6 +24,7 @@ use horizon_client::{
     Result,
     keybinds::{key_code, mouse_button},
     mouse::Rotation,
+    soft_keyboard,
 };
 use horizon_controls::Action;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,8 +42,20 @@ impl Game<'_> {
     pub(super) fn touch_frame(&mut self) -> Result<()> {
         // The keyboard before anything else: the screen has just changed, and nobody
         // should wait a frame for the keys to come up when they have opened chat.
-        if let Some(window) = self.window.as_ref() {
-            keyboard(window, typing(self));
+        let typing = typing(self);
+        if self.window.is_some() {
+            let opened = keyboard(self.window.as_deref(), typing) == Some(true);
+            // A computer's keyboard is a real one: nothing is selected for it. Only a
+            // phone's field, which starts empty over a game field that does not.
+            #[cfg(target_os = "android")]
+            if opened {
+                self.ime_select_all();
+            }
+            #[cfg(not(target_os = "android"))]
+            let _ = opened;
+        }
+        if typing {
+            self.ime_frame()?;
         }
         let Some((edges, look)) =
             horizon_overlay::with(|overlay| (overlay.presses(), overlay.look()))
@@ -54,6 +67,133 @@ impl Game<'_> {
         }
         self.touch_look(look);
         Ok(())
+    }
+
+    /// The words the phone's keyboard committed since the last frame, said as the
+    /// edits the focused screen already takes. Enter is the screen's own Enter: chat
+    /// submits, a sign moves to its next line, a book starts a line or saves.
+    fn ime_frame(&mut self) -> Result<()> {
+        let Some(input) = soft_keyboard::poll() else {
+            return Ok(());
+        };
+        if self.title.is_none() && self.screen == Screen::Chat {
+            for _ in 0..input.backspaces {
+                self.chat_key_code(KeyCode::Backspace, None);
+            }
+            if !input.text.is_empty() {
+                self.chat_type(&input.text);
+            }
+            if input.enter {
+                self.chat_key_code(KeyCode::Enter, None);
+            }
+        } else if self.sign_edit.is_some() {
+            for _ in 0..input.backspaces {
+                self.sign_input(Some(KeyCode::Backspace), None);
+            }
+            if !input.text.is_empty() {
+                self.sign_input(None, Some(&input.text));
+            }
+            if input.enter {
+                self.sign_input(Some(KeyCode::Enter), None);
+                // Every line of a sign is a field of its own: the phone's one field
+                // is emptied, or the next word would be appended to the line left.
+                soft_keyboard::reset();
+            }
+        } else if self.book_typing() {
+            for _ in 0..input.backspaces {
+                self.book_input(Some(KeyCode::Backspace), None);
+            }
+            if !input.text.is_empty() {
+                self.book_input(None, Some(&input.text));
+            }
+            if input.enter {
+                self.book_input(Some(KeyCode::Enter), None);
+            }
+        } else if self.screen == Screen::Creative && self.creative_screen.tab().search {
+            for _ in 0..input.backspaces {
+                self.creative_search_edit(None, true);
+            }
+            if !input.text.is_empty() {
+                self.creative_search_edit(Some(&input.text), false);
+            }
+        } else if self.recipe_search_focused() {
+            for _ in 0..input.backspaces {
+                self.recipe_text(None, true);
+            }
+            if !input.text.is_empty() {
+                self.recipe_text(Some(&input.text), false);
+            }
+        } else if self.station_typing() {
+            for _ in 0..input.backspaces {
+                self.station_text(None, true);
+            }
+            if !input.text.is_empty() {
+                self.station_text(Some(&input.text), false);
+            }
+        } else if self.screen == Screen::WorldOptions && self.world_options_typing() {
+            for _ in 0..input.backspaces {
+                self.world_options_text(None);
+            }
+            if !input.text.is_empty() {
+                self.world_options_text(Some(&input.text));
+            }
+        } else if self.screen == Screen::CommandBlock {
+            for _ in 0..input.backspaces {
+                self.command_block_backspace();
+            }
+            if !input.text.is_empty() {
+                self.command_block_type(&input.text);
+            }
+            if input.enter {
+                self.command_block_confirm();
+            }
+        } else if self.screen == Screen::Options && self.options_typing() {
+            for _ in 0..input.backspaces {
+                self.options_key(KeyCode::Backspace, None)?;
+            }
+            if !input.text.is_empty() {
+                self.options_text(&input.text);
+            }
+        } else if self.title.is_some() {
+            for _ in 0..input.backspaces {
+                self.title_edit(None, true);
+            }
+            if !input.text.is_empty() {
+                self.title_edit(Some(&input.text), false);
+            }
+            if input.enter && let Some(title) = self.title.as_mut() {
+                title.confirm_edit();
+            }
+        }
+        Ok(())
+    }
+
+    /// Select All in the focused screen's field, on the frame the keyboard opens.
+    /// The edits above are relative, so what is selected is still the game's text
+    /// even though the phone's empty field knows nothing about it.
+    fn ime_select_all(&mut self) {
+        let all = horizon_client::clipboard::EditShortcut::SelectAll;
+        if self.title.is_none() && self.screen == Screen::Chat {
+            self.chat_select_all();
+        } else if self.sign_edit.is_some() {
+            self.sign_shortcut(all);
+        } else if self.book_typing() {
+            self.book_shortcut(all);
+        } else if self.screen == Screen::Creative && self.creative_screen.tab().search {
+            self.creative_search_shortcut(all);
+        } else if self.recipe_search_focused() {
+            self.recipe_shortcut(all);
+        } else if self.station_typing() {
+            self.station_shortcut(all);
+        } else if self.screen == Screen::WorldOptions && self.world_options_typing() {
+            self.world_options_shortcut(all);
+        } else if self.screen == Screen::CommandBlock {
+            self.command_block_select_all();
+        } else if self.screen == Screen::Options && self.options_typing() {
+            self.options_shortcut(all);
+        } else if self.title.is_some() {
+            self.title_shortcut(all);
+        }
     }
 
     /// The line in the corner of the controls. A phone has no title bar to read a frame
@@ -239,13 +379,9 @@ pub(super) fn finger(
 /// panel, and a title screen that cannot open the panel is a phone with no way to move
 /// a button sitting where a menu wants to be. The drag is dropped with them: there is
 /// no world to walk yet, and a turn saved up would be spent as a camera jerk the frame
-/// the player finally gets one. And the keys, because a field on the screen is the only
-/// reason a phone should be asked for them, and the title's world list has three of
-/// them.
-pub(super) fn menu_frame(window: Option<&Window>, wants_keys: bool) {
-    if let Some(window) = window {
-        keyboard(window, wants_keys);
-    }
+/// the player finally gets one. The keyboard is the loading screen's own, in
+/// `Loading::draw`: it is the screen that knows which field has the focus.
+pub(super) fn menu_frame() {
     let _ = horizon_overlay::with(|overlay| (overlay.presses(), overlay.look()));
 }
 
@@ -259,13 +395,26 @@ static KEYBOARD_UP: AtomicBool = AtomicBool::new(false);
 pub(super) fn keyboard_off(window: &Window) {
     window.set_ime_allowed(false);
     KEYBOARD_UP.store(false, Ordering::Relaxed);
+    // The field the old window's keyboard wrote into is empty for the new one too.
+    soft_keyboard::hide();
 }
 
 /// Put the phone's keyboard up or away, on the one change since the last frame.
-fn keyboard(window: &Window, wanted: bool) {
-    if KEYBOARD_UP.swap(wanted, Ordering::Relaxed) != wanted {
+/// `Some(true)` says it was just opened — the caller selects the field it opens over —
+/// `Some(false)` that it was just put away, `None` that it was already as asked.
+pub(super) fn keyboard(window: Option<&Window>, wanted: bool) -> Option<bool> {
+    if let Some(window) = window {
         window.set_ime_allowed(wanted);
     }
+    if KEYBOARD_UP.swap(wanted, Ordering::Relaxed) == wanted {
+        return None;
+    }
+    if wanted {
+        soft_keyboard::show();
+    } else {
+        soft_keyboard::hide();
+    }
+    Some(wanted)
 }
 
 /// Whether whatever is on the screen takes letters, which on a phone is the only
@@ -274,19 +423,24 @@ fn keyboard(window: &Window, wanted: bool) {
 /// the whole of the interface.
 ///
 /// The screens are the ones whose arms in `window_event` pass `event.text` on, so a
-/// field that can be written in is a keyboard by the same rule. Over the world the
-/// keyboard stays away: it would cover the buttons the player moves with.
-fn typing(game: &Game<'_>) -> bool {
-    game.title.is_some()
+/// field that can be written in is a keyboard by the same rule. Each one also has to
+/// have a focused field: the title's main menu and an options page between searches
+/// are screens no keyboard belongs over. Over the world the keyboard stays away: it
+/// would cover the buttons the player moves with.
+fn typing(game: &mut Game<'_>) -> bool {
+    (game.title.is_none() && game.screen == Screen::Chat)
         || game.sign_edit.is_some()
-        || game.book.is_some()
-        || game.station_typing()
-        || game.recipe_search_focused()
-        || matches!(
-            game.screen,
-            Screen::Chat | Screen::Options | Screen::WorldOptions | Screen::CommandBlock
-        )
+        || game.book_typing()
         || (game.screen == Screen::Creative && game.creative_screen.tab().search)
+        || game.recipe_search_focused()
+        || game.station_typing()
+        || (game.screen == Screen::WorldOptions && game.world_options_typing())
+        || game.screen == Screen::CommandBlock
+        || (game.screen == Screen::Options && game.options_typing())
+        || game
+            .title
+            .as_mut()
+            .is_some_and(|title| title.focused_field().is_some())
 }
 
 /// `AKEYCODE_BACK`, said as the game's own Escape.

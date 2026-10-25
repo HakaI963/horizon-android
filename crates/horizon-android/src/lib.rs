@@ -19,6 +19,8 @@ mod engine;
 #[cfg(target_os = "android")]
 mod frame_dump;
 #[cfg(target_os = "android")]
+mod ime;
+#[cfg(target_os = "android")]
 mod logcat;
 #[cfg(target_os = "android")]
 mod paths;
@@ -41,6 +43,8 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     let _ = APP.set(app.clone());
     // The clipboard's JNI goes through `APP`, so it can only be registered after it.
     clipboard::install();
+    // The soft keyboard's JNI too: the editable view lives on the activity.
+    ime::install();
     paths::enter_app_storage(&app);
     log::info!(
         "Horizon for Android starting: sdk {}, {} {}, import dir {}",

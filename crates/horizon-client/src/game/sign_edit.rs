@@ -198,7 +198,7 @@ impl Game<'_> {
     /// `TextFieldHelper.keyPressed`'s shortcuts on the edited line: a paste
     /// (formatting and carriage returns removed) is taken whole or not at
     /// all, as the line must stay within the sign's width.
-    fn sign_shortcut(&mut self, shortcut: horizon_client::clipboard::EditShortcut) {
+    pub(super) fn sign_shortcut(&mut self, shortcut: horizon_client::clipboard::EditShortcut) {
         let Some(edit) = self.sign_edit.as_ref() else {
             return;
         };

@@ -298,6 +298,10 @@ impl Game<'_> {
             None => {}
         }
     }
+    /// Whether the open book takes typing: an edit screen, not a page being read.
+    pub(super) fn book_typing(&self) -> bool {
+        matches!(self.book, Some(BookScreen::Edit { .. }))
+    }
     /// Typing for `horizon-ctl type` (`\n` is a line break).
     pub(super) fn book_type(&mut self, text: &str) {
         let text = text.replace("\\n", "\n");

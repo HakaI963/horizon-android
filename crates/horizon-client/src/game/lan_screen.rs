@@ -1006,6 +1006,31 @@ impl Game<'_> {
             }
         }
     }
+    /// Whether the phone's keyboard belongs to this screen: the port field, or
+    /// a game rule being edited (both take the words the keyboard commits).
+    pub(super) fn world_options_typing(&self) -> bool {
+        self.world_options.as_ref().is_some_and(|o| {
+            o.rules.as_ref().is_some_and(|r| r.typing())
+                || (o.view == View::Options && o.port.focused)
+        })
+    }
+    /// Select All on the frame the phone's keyboard opens: the rules box being
+    /// edited when there is one, else the port.
+    pub(super) fn world_options_shortcut(
+        &mut self,
+        shortcut: horizon_client::clipboard::EditShortcut,
+    ) {
+        let Some(o) = self.world_options.as_mut() else {
+            return;
+        };
+        if let Some(rules) = o.rules.as_mut().filter(|r| r.typing()) {
+            rules.edit(|b| b.shortcut(shortcut, &mut self.clipboard));
+            return;
+        }
+        if o.view == View::Options && o.port.focused {
+            o.port.shortcut(shortcut, &mut self.clipboard);
+        }
+    }
 
     /// The world options of a world run in the frame.
     fn local_server_options(&self) -> ServerOptions {

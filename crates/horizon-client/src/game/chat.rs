@@ -575,6 +575,23 @@ impl Game<'_> {
             screen.type_text(&m, &c, text);
         }
     }
+    /// Select All in the chat box: the phone's keyboard opens with everything
+    /// the player had typed selected, so the first word replaces it.
+    pub(super) fn chat_select_all(&mut self) {
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote, &self.mods),
+            registries: &self.ui.registries,
+        };
+        if let Some(screen) = self.ui.chat_screen.as_mut() {
+            screen.shortcut(
+                &m,
+                &c,
+                horizon_client::clipboard::EditShortcut::SelectAll,
+                &mut self.clipboard,
+            );
+        }
+    }
     /// ChatScreen.handleChatInput: history, then a command or a chat line.
     pub(super) fn handle_chat_input(&mut self, message: &str) {
         self.ui.chat.add_recent(message);

@@ -1115,6 +1115,23 @@ impl OptionsUi {
         self.settings_search.focused
             && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
     }
+    /// Whether a search box has the focus, which on a phone is the only reason the
+    /// keyboard belongs over the options. A page between searches, or a key waiting
+    /// to be bound, takes no typed text at all.
+    pub fn typing(&self) -> bool {
+        if self.resource_error.is_some() || self.selected_key.is_some() {
+            return false;
+        }
+        match self.page() {
+            Page::Packs => self
+                .pack_screen
+                .as_ref()
+                .is_some_and(|screen| screen.search_focused()),
+            Page::Language => self.language_search.focused,
+            Page::Video | Page::Controls | Page::KeyBinds => self.settings_search.focused,
+            _ => false,
+        }
+    }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
     }

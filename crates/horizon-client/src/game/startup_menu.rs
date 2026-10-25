@@ -199,6 +199,44 @@ impl StartupMenu {
             }
         }
     }
+
+    /// Whether a text field has the focus, which on a phone is the only reason the
+    /// keyboard should cover the menu. The main title's list and an options page
+    /// between searches have none.
+    fn typing(&mut self) -> bool {
+        if self.win.is_some() || self.pending.is_some() {
+            return false;
+        }
+        if self.options_open {
+            return self.options.typing();
+        }
+        self.title
+            .as_mut()
+            .is_some_and(|title| title.focused_field().is_some())
+    }
+
+    /// Select All in the title's focused field. The phone's field is empty, so this
+    /// is what makes the next word replace what the game already has.
+    #[cfg(target_os = "android")]
+    fn ime_select_all(&mut self) {
+        let Some(title) = self.title.as_mut() else {
+            return;
+        };
+        if title.has_caret_field() {
+            title.field_shortcut(clipboard::EditShortcut::SelectAll, &mut self.clipboard);
+        } else if let Some((id, value, max)) = title.focused_field() {
+            let changed = self.selection.apply(
+                id,
+                value,
+                clipboard::EditShortcut::SelectAll,
+                &mut self.clipboard,
+                |v, t| clipboard::append_limited(v, t, max),
+            );
+            if changed {
+                title.search_changed();
+            }
+        }
+    }
 }
 
 /// Each generation has its own channel and progress. Pack changes wait for the
@@ -424,8 +462,75 @@ impl Loading {
     /// Whether whatever is on the screen takes letters — the same question the world
     /// asks for the phone's keyboard. The title's list has its fields, and the options
     /// screen a search box, and neither has a hardware key to fall back on.
-    pub(super) fn menu_typing(&self) -> bool {
-        self.menu.title.is_some() || self.menu.options_open
+    pub(super) fn menu_typing(&mut self) -> bool {
+        self.menu.typing()
+    }
+
+    /// The phone's keyboard over the loading screen's menu: the title's focused
+    /// field, or the options' search box. The words are given to the same handlers
+    /// the menu's own keys go to, so the screen never learns where they came from.
+    #[cfg(target_os = "android")]
+    pub(super) fn menu_ime(&mut self) {
+        let Some(input) = horizon_client::soft_keyboard::poll() else {
+            return;
+        };
+        if self.gui.is_none() || self.menu.pending.is_some() || self.menu.win.is_some() {
+            return;
+        }
+        if self.menu.options_open {
+            for _ in 0..input.backspaces {
+                let Some(gui) = &self.gui else { return };
+                let events =
+                    self.menu
+                        .options
+                        .key(&mut self.settings, &gui.atlas, KeyCode::Backspace, None);
+                self.menu_option_events(events);
+            }
+            if !input.text.is_empty() {
+                let Some(gui) = &self.gui else { return };
+                self.menu.options.type_text(&gui.atlas, &input.text);
+            }
+            if input.enter {
+                let Some(gui) = &self.gui else { return };
+                let events = self
+                    .menu
+                    .options
+                    .key(&mut self.settings, &gui.atlas, KeyCode::Enter, None);
+                self.menu_option_events(events);
+            }
+            return;
+        }
+        let Some(title) = self.menu.title.as_mut() else {
+            return;
+        };
+        for _ in 0..input.backspaces {
+            title.backspace();
+        }
+        if !input.text.is_empty() {
+            title.type_text(&input.text);
+        }
+        if input.enter {
+            title.confirm_edit();
+        }
+        self.save_menu_address();
+    }
+
+    /// Select All in the field the keyboard is about to write into: the phone's
+    /// field is empty, and the game's is the whole value the first word replaces.
+    #[cfg(target_os = "android")]
+    pub(super) fn menu_ime_select_all(&mut self) {
+        if self.menu.options_open {
+            let Some(gui) = &self.gui else { return };
+            if self.menu.options.typing() {
+                self.menu.options.shortcut(
+                    &gui.atlas,
+                    clipboard::EditShortcut::SelectAll,
+                    &mut self.menu.clipboard,
+                );
+            }
+            return;
+        }
+        self.menu.ime_select_all();
     }
 
     pub(super) fn menu_event(

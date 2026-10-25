@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The activity is the platform's own NativeActivity: it creates the ANativeWindow
-    the Vulkan swapchain presents to and loads libhorizon_android.so by name, so the
-    app has no Java or Kotlin code at all.
+    The activity is Horizon's own subclass of the platform's NativeActivity: it
+    creates the ANativeWindow the Vulkan swapchain presents to, loads
+    libhorizon_android.so by name, and hosts the one invisible EditText that gives
+    the phone's keyboard something to type into. There is no engine code in Java.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -35,7 +36,7 @@
             recreating the activity is what keeps the swapchain alive.
         -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="dev.horizon.android.HorizonActivity"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|density|navigation|layoutDirection|locale|fontScale"
             android:exported="true"
             android:keepScreenOn="true"

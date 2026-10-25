@@ -171,6 +171,7 @@ pub mod shadows;
 pub mod signs;
 pub mod skins;
 pub mod snbt;
+pub mod soft_keyboard;
 pub mod sound_engine;
 pub mod sound_events;
 pub mod spans;

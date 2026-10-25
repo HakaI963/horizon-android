@@ -178,6 +178,14 @@ impl Game<'_> {
             .options
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
+    /// Whether a search box has the focus, so the phone's keyboard belongs here.
+    pub(super) fn options_typing(&self) -> bool {
+        self.ui.options.typing()
+    }
+    /// Typed text into whichever search box has the focus (the phone's keyboard).
+    pub(super) fn options_text(&mut self, text: &str) {
+        self.ui.options.type_text(&self.gui.atlas, text);
+    }
     pub(super) fn options_scroll(&mut self, amount: f32) {
         let size = self.gui_size();
         self.ui
