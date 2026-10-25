@@ -40,6 +40,91 @@ env:
   CARGO_TARGET: aarch64-linux-android
 
 jobs:
+  # What the engine itself needs before it can run on a phone. `cargo check` is
+  # the cheapest way to ask: it compiles every `cfg`, so each Unix-ism, each
+  # crate without an Android backend and each desktop-only API shows up as an
+  # error with a file and a line. The list is the porting plan, and it is only
+  # honest when produced by a real rustc for aarch64-linux-android.
+  engine:
+    name: engine check (aarch64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Android NDK
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort | tail -1)"
+          fi
+          NDK="$(ls "$ANDROID_HOME/ndk" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          if [ -z "$NDK" ]; then
+            NDK="$("$SDKMANAGER" --sdk_root="$ANDROID_HOME" --list 2>/dev/null \
+              | grep -oE 'ndk;[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 | cut -d';' -f2)"
+          fi
+          test -n "$NDK"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "ndk;$NDK" > /dev/null
+          LLVM_BIN="$ANDROID_HOME/ndk/$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK"
+            echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK"
+            echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK"
+            echo "CC_aarch64_linux_android=$LLVM_BIN/aarch64-linux-android26-clang"
+            echo "CXX_aarch64_linux_android=$LLVM_BIN/aarch64-linux-android26-clang++"
+            echo "AR_aarch64_linux_android=$LLVM_BIN/llvm-ar"
+          } >> "$GITHUB_ENV"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$CARGO_TARGET"
+
+      - name: Cache the crates registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ env.CARGO_TARGET }}-
+          restore-keys: cargo-${{ env.CARGO_TARGET }}-
+
+      - name: Check the engine for aarch64-linux-android
+        run: |
+          set -uo pipefail
+          # No default features: `controllers` is evdev/libudev and GameInput, and
+          # `mods` is wasmtime, which is both a quarter of the build and W^X-hostile
+          # on Android. Both come later, if they come at all.
+          cargo check --target "$CARGO_TARGET" --profile fast \
+            -p horizon-client --no-default-features --features audio \
+            --message-format=short > /tmp/engine.log 2>&1
+          echo "exit: $?" >> /tmp/engine.log
+          echo "## errors, grouped"
+          grep -E 'error(\[|:)' /tmp/engine.log | \
+            sed -E 's/^[^ ]+: error: //' | sort | uniq -c | sort -rn | head -60
+          echo "## first 80 error lines"
+          grep -E 'error(\[|:)' /tmp/engine.log | head -80
+          echo "## tail"
+          tail -30 /tmp/engine.log
+          cp /tmp/engine.log engine-check.log
+          # The job stays green on purpose: this is a survey of what the port has
+          # to fix, and the APK job is the one that says whether Stage A works.
+          if grep -qE 'error(\[|:)' /tmp/engine.log; then
+            echo "::warning::the engine does not check for aarch64-linux-android yet; see the engine-check artifact"
+          fi
+
+      - name: Upload the whole check
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-check
+          path: engine-check.log
+          if-no-files-found: ignore
+
   apk:
     name: arm64-v8a (${{ github.event.inputs.cargo_profile || 'fast' }})
     runs-on: ubuntu-24.04
