@@ -527,18 +527,6 @@ impl ApplicationHandler for BringUp {
         }
     }
 
-    /// Android took the window, and with it the `ANativeWindow` the surface was
-    /// built on. Everything made from that surface is now a draw that will fail, so
-    /// it goes here rather than waiting to be told the texture is lost — which is a
-    /// frame later, and by then the only honest answer is to quit. `resumed` builds
-    /// all of it again, and its guard is what makes that safe.
-    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        horizon_overlay::with(|overlay| overlay.detach());
-        self.screen = None;
-        self.window = None;
-        event_loop.set_control_flow(ControlFlow::Wait);
-    }
-
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
@@ -676,10 +664,13 @@ impl ApplicationHandler for BringUp {
     /// surface, and every Vulkan object made from it is now invalid. Both go
     /// before this callback returns, and `resumed` makes new ones. Keeping them
     /// alive is the classic "black screen after Alt-Tab" on Android.
-    fn suspended(&mut self, _: &ActiveEventLoop) {
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         horizon_overlay::with(|overlay| overlay.detach());
         self.screen = None;
         self.window = None;
+        // `Poll` here spins the loop at full tilt drawing nothing, on a thread the
+        // phone expected to be idle. `resumed` asks for Poll back with the new window.
+        event_loop.set_control_flow(ControlFlow::Wait);
         log::info!("bring-up: activity suspended, the surface is gone");
     }
 
