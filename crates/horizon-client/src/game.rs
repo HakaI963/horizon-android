@@ -156,6 +156,9 @@ mod subtitle_hud;
 mod sulfur_cubes;
 mod titles;
 mod tnt;
+// The phone's keyboard: the touch layout's presses, said as the game's own keys.
+#[cfg(target_os = "android")]
+mod touch;
 mod totem;
 mod trading;
 mod trial_spawner;
@@ -10817,6 +10820,7 @@ impl ApplicationHandler for Game<'_> {
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. }
                 | WindowEvent::CursorMoved { .. }
+                | WindowEvent::Touch(_)
         ) {
             self.last_input = Instant::now();
         }
@@ -10842,6 +10846,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::CloseRequested
                     | WindowEvent::Resized(_)
                     | WindowEvent::RedrawRequested
+                    | WindowEvent::Touch(_)
             )
         {
             return;
@@ -11380,6 +11385,13 @@ impl ApplicationHandler for Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    // The touch layout first: a press belongs to this frame's input, and
+                    // a thumb that has left the glass should not have the character keep
+                    // running for another frame to find out.
+                    #[cfg(target_os = "android")]
+                    self.touch_frame()?;
+                    #[cfg(target_os = "android")]
+                    self.overlay_line();
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
                     if self.screen == Screen::Playing
@@ -11550,6 +11562,10 @@ impl ApplicationHandler for Game<'_> {
                         }
                     }
                 }
+                // A finger on the glass, for the touch layout. Where it lands and what
+                // it presses is the overlay's question, not the game's.
+                #[cfg(target_os = "android")]
+                WindowEvent::Touch(touch) => touch::finger(self, &touch),
                 _ => {}
             }
 

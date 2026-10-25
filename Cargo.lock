@@ -383,6 +383,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "chlorine"
+version = "1.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c00d31b1d19317b4777ec879192d3745bd97d05262b4b19cb1dda284b9d22f19"
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1220,6 +1226,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-android"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-controls",
+ "horizon-core",
+ "horizon-overlay",
+ "log",
+ "png",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "horizon-assets"
 version = "0.1.0"
 dependencies = [
@@ -1289,6 +1310,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-controls"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "horizon-core"
 version = "0.1.0"
 dependencies = [
@@ -1320,6 +1350,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-imgui"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "imgui",
+ "log",
+ "smallvec",
+ "wgpu",
+]
+
+[[package]]
 name = "horizon-mod-sdk"
 version = "0.1.0"
 dependencies = [
@@ -1347,6 +1388,17 @@ name = "horizon-mods-test-guest"
 version = "0.1.0"
 dependencies = [
  "horizon-mod-sdk",
+]
+
+[[package]]
+name = "horizon-overlay"
+version = "0.1.0"
+dependencies = [
+ "horizon-controls",
+ "horizon-imgui",
+ "imgui",
+ "log",
+ "wgpu",
 ]
 
 [[package]]
@@ -1621,6 +1673,31 @@ checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "imgui"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8addafa5cecf0515812226e806913814e02ce38d10215778082af5174abe5669"
+dependencies = [
+ "bitflags 1.3.2",
+ "cfg-if",
+ "imgui-sys",
+ "mint",
+ "parking_lot",
+]
+
+[[package]]
+name = "imgui-sys"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ead193f9f4b60398e8b8f4ab1483e2321640d87aeebdaa3e5f44c55633ccd804"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "chlorine",
+ "mint",
 ]
 
 [[package]]
@@ -1946,6 +2023,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mint"
+version = "0.5.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
 name = "multiversion_no_op"

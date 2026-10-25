@@ -45,6 +45,9 @@ pub fn enter_app_storage(app: &AndroidApp) {
         // its pack is. `Options::read` reads it before the working-directory
         // default, which would otherwise point inside private storage.
         std::env::set_var("HORIZON_RESOURCES", &resources);
+        // The touch layout, the same way: the engine has no command line and no way to
+        // be handed a path, and it needs one to know where a player's buttons live.
+        std::env::set_var("HORIZON_CONTROLS", controls_path(app));
     }
     match std::env::set_current_dir(&instance) {
         Ok(()) => log::info!(

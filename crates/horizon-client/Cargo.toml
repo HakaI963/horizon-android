@@ -67,6 +67,14 @@ arboard = { version = "3.6.1", default-features = false, features = [
     "wayland-data-control",
 ] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# The phone's keyboard and mouse: the layout that says where a button is and what
+# pressing it means, and the imgui layer that draws both. The renderer draws the HUD in
+# its own pass and the game reads the presses where it reads its keys, so a tap on
+# "JUMP" is the spacebar as far as the simulation knows.
+horizon-controls = { path = "../horizon-controls" }
+horizon-overlay = { path = "../horizon-overlay" }
+
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
 rustix = { version = "1", default-features = false, features = ["std", "time"] }

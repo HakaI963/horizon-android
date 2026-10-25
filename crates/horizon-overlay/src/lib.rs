@@ -16,6 +16,7 @@
 //! surface appears, and calls [`Overlay::frame`] with a render pass already begun
 //! and the size of the glass; what comes back is the presses the game should route.
 
+use std::cell::RefCell;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -82,6 +83,10 @@ pub struct Overlay {
     dpi: f32,
     fonts_added: bool,
     show_status: bool,
+    /// The diagnostic line drawn in a corner, set by whoever knows what the frame
+    /// cost. The platform layer owns it because the overlay cannot know the frame
+    /// rate, and a phone whose controls do not answer needs a number that says so.
+    status: String,
     frame_started: Instant,
 }
 
@@ -108,6 +113,7 @@ impl Overlay {
             dpi: 1.0,
             fonts_added: false,
             show_status: true,
+            status: String::new(),
             frame_started: Instant::now(),
         }
     }
@@ -120,6 +126,12 @@ impl Overlay {
 
     /// The device is here: choose the text size and the style from the screen it has
     /// been given, and hand imgui a pipeline that writes this swapchain's format.
+    ///
+    /// Every attach builds a new renderer, because a pipeline belongs to the device it
+    /// was made on and a phone changes device more than once — the activity loses its
+    /// surface when it is backgrounded, and the engine makes a second device when the
+    /// loading screen hands over to the world. The style and the font atlas are the
+    /// parts that must not be done twice.
     pub fn attach(
         &mut self,
         device: &wgpu::Device,
@@ -128,39 +140,37 @@ impl Overlay {
         width: u32,
         height: u32,
     ) {
-        if self.renderer.is_none() {
+        if !self.fonts_added {
             // A phone and a tablet want different text; the short edge is the one that
             // decides, because it is the axis a thumb crosses.
             self.dpi = (width.min(height) as f32 / 720.0).clamp(0.8, 2.5);
             self.imgui.style_mut().scale_all_sizes(self.dpi);
-            if !self.fonts_added {
-                self.imgui.fonts().add_font(&[FontSource::DefaultFontData {
-                    config: Some(FontConfig {
-                        size_pixels: (13.0 * self.dpi).max(13.0),
-                        pixel_snap_h: true,
-                        ..Default::default()
-                    }),
-                }]);
-                self.fonts_added = true;
-            }
-            let mut config = horizon_imgui::RendererConfig::new_srgb();
-            // The colors imgui hands over are already in the space the game writes:
-            // the swapchain is a non-sRGB target by design, so the shader must not
-            // encode them a second time. The output format is the attachment's own.
-            config.texture_format = format;
-            self.renderer = Some(horizon_imgui::Renderer::new(
-                &mut self.imgui,
-                device,
-                queue,
-                config,
-            ));
-            log::info!(
-                "overlay: imgui draws at {width}x{height} scale {}, {} buttons, {}",
-                self.dpi,
-                self.hud.layout.controls.len(),
-                self.path.display()
-            );
+            self.imgui.fonts().add_font(&[FontSource::DefaultFontData {
+                config: Some(FontConfig {
+                    size_pixels: (13.0 * self.dpi).max(13.0),
+                    pixel_snap_h: true,
+                    ..Default::default()
+                }),
+            }]);
+            self.fonts_added = true;
         }
+        let mut config = horizon_imgui::RendererConfig::new_srgb();
+        // The colors imgui hands over are already in the space the game writes:
+        // the swapchain is a non-sRGB target by design, so the shader must not
+        // encode them a second time. The output format is the attachment's own.
+        config.texture_format = format;
+        self.renderer = Some(horizon_imgui::Renderer::new(
+            &mut self.imgui,
+            device,
+            queue,
+            config,
+        ));
+        log::info!(
+            "overlay: imgui draws at {width}x{height} scale {}, {} buttons, {}",
+            self.dpi,
+            self.hud.layout.controls.len(),
+            self.path.display()
+        );
         self.resize(width, height);
     }
 
@@ -256,7 +266,6 @@ impl Overlay {
         pass: &mut wgpu::RenderPass<'_>,
         width: f32,
         height: f32,
-        status: &str,
     ) -> Result<(), Box<dyn Error>> {
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
@@ -269,6 +278,7 @@ impl Overlay {
             pointer,
             dpi,
             show_status,
+            status,
             frame_started,
             renderer,
             ..
@@ -317,7 +327,7 @@ impl Overlay {
                 opacity,
                 *dpi,
                 *show_status,
-                status,
+                status.as_str(),
                 width,
                 height,
             );
@@ -327,7 +337,7 @@ impl Overlay {
             if *panel {
                 panel_now = Some(settings(
                     ui,
-                    status,
+                    status.as_str(),
                     &mut scale,
                     &mut opacity,
                     &mut sensitivity,
@@ -383,11 +393,23 @@ impl Overlay {
         pass: &mut wgpu::RenderPass<'_>,
         width: f32,
         height: f32,
-        status: &str,
     ) -> Result<Vec<(Action, bool)>, Box<dyn Error>> {
         let game = self.presses();
-        self.paint(device, queue, pass, width, height, status)?;
+        self.paint(device, queue, pass, width, height)?;
         Ok(game)
+    }
+
+    /// How far the fingers turned the camera since the last call, in degrees: `x` a
+    /// turn to the right, `y` a pitch down. The layout's own sensitivity has already
+    /// been divided out, so what the game turns by is this and nothing else.
+    pub fn look(&mut self) -> [f32; 2] {
+        self.hud.take_look()
+    }
+
+    /// The line in the corner. Empty turns the "Show the frame line" checkbox off
+    /// as far as the screen is concerned.
+    pub fn set_status(&mut self, text: impl Into<String>) {
+        self.status = text.into();
     }
 
     pub fn hud(&self) -> &Hud {
@@ -557,4 +579,32 @@ fn settings(
             }
         })
         .unwrap_or(unmeasured)
+}
+
+thread_local! {
+    /// The overlay of this thread, if the platform has installed one.
+    static SHARED: RefCell<Option<Overlay>> = const { RefCell::new(None) };
+}
+
+/// Put an overlay on this thread, unless one is already there.
+///
+/// It cannot live on the renderer that draws it: the engine builds one device for the
+/// loading screen and another for the world, and imgui panics when a thread is handed a
+/// second context. So the overlay outlives both, and every layer that has a finger or a
+/// render pass reaches it through [`with`].
+pub fn install(path: &Path) {
+    SHARED.with(|shared| {
+        let missing = shared.borrow().is_none();
+        if missing {
+            *shared.borrow_mut() = Some(Overlay::load(path.to_path_buf()));
+        }
+    });
+}
+
+/// Reach this thread's overlay. `None` is the ordinary answer everywhere that there are
+/// no touch controls to reach.
+///
+/// `f` must not call `with` itself: the overlay is borrowed for the length of the call.
+pub fn with<T>(f: impl FnOnce(&mut Overlay) -> T) -> Option<T> {
+    SHARED.with(|shared| shared.borrow_mut().as_mut().map(f))
 }

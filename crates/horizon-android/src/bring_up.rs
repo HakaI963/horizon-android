@@ -169,10 +169,6 @@ pub struct BringUp {
     app: AndroidApp,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
-    /// The on-screen controls, which are what the player has instead of a keyboard
-    /// from the first frame onward — so the card that proves the platform carries
-    /// them, and so does every frame after it.
-    overlay: Overlay,
     dump: Arc<FrameDump>,
     frames: u64,
     touches: u64,
@@ -443,13 +439,13 @@ impl Screen {
             // The controls go over the card, in the same pass and after it: the card is
             // what says the platform works, and it is worth looking at only until the
             // HUD is on top of it.
+            overlay.set_status(status);
             edges = overlay.frame(
                 &self.device,
                 &self.queue,
                 &mut pass,
                 self.config.width as f32,
                 self.config.height as f32,
-                status,
             )?;
         }
         self.queue.submit([encoder.finish()]);
@@ -504,13 +500,15 @@ impl ApplicationHandler for BringUp {
         );
         match open_screen(&window, &self.app) {
             Ok(screen) => {
-                self.overlay.attach(
-                    &screen.device,
-                    &screen.queue,
-                    screen.config.format,
-                    screen.config.width,
-                    screen.config.height,
-                );
+                horizon_overlay::with(|overlay| {
+                    overlay.attach(
+                        &screen.device,
+                        &screen.queue,
+                        screen.config.format,
+                        screen.config.width,
+                        screen.config.height,
+                    );
+                });
                 self.screen = Some(screen);
                 self.window = Some(window);
                 self.started = Instant::now();
@@ -532,7 +530,7 @@ impl ApplicationHandler for BringUp {
                 if let Some(screen) = self.screen.as_mut() {
                     screen.resize(size.width, size.height);
                 }
-                self.overlay.resize(size.width, size.height);
+                horizon_overlay::with(|overlay| overlay.resize(size.width, size.height));
             }
             WindowEvent::Touch(Touch {
                 phase,
@@ -557,28 +555,32 @@ impl ApplicationHandler for BringUp {
                             location.y,
                             force
                         );
-                        self.overlay.finger_down(
-                            id,
-                            location.x as f32,
-                            location.y as f32,
-                            width as f32,
-                            height as f32,
-                        );
+                        horizon_overlay::with(|overlay| {
+                            overlay.finger_down(
+                                id,
+                                location.x as f32,
+                                location.y as f32,
+                                width as f32,
+                                height as f32,
+                            );
+                        });
                     }
                     TouchPhase::Moved => {
                         self.touch = Some((location.x, location.y));
-                        self.overlay.finger_move(
-                            id,
-                            location.x as f32,
-                            location.y as f32,
-                            width as f32,
-                            height as f32,
-                        );
+                        horizon_overlay::with(|overlay| {
+                            overlay.finger_move(
+                                id,
+                                location.x as f32,
+                                location.y as f32,
+                                width as f32,
+                                height as f32,
+                            );
+                        });
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.fingers = self.fingers.saturating_sub(1);
                         log::info!("bring-up: touch {id} up ({} fingers left)", self.fingers);
-                        self.overlay.finger_up(id);
+                        horizon_overlay::with(|overlay| overlay.finger_up(id));
                     }
                 }
             }
@@ -596,22 +598,23 @@ impl ApplicationHandler for BringUp {
                     fps,
                     self.fingers,
                     self.touches,
-                    self.overlay.hud().pressed_actions().len()
+                    horizon_overlay::with(|overlay| overlay.hud().pressed_actions().len())
+                        .unwrap_or(0)
                 );
-                let edges = match screen.draw(
-                    &mut self.overlay,
-                    &status,
-                    self.frames,
-                    self.fingers,
-                    self.touch,
-                    &self.dump,
-                ) {
-                    Ok(edges) => edges,
-                    Err(error) => {
+                let (frames, fingers, touch, dump) =
+                    (self.frames, self.fingers, self.touch, self.dump.clone());
+                let edges = match horizon_overlay::with(|overlay| {
+                    screen.draw(overlay, &status, frames, fingers, touch, &dump)
+                }) {
+                    Some(Ok(edges)) => edges,
+                    Some(Err(error)) => {
                         log::error!("bring-up: frame failed: {error}");
                         event_loop.exit();
                         return;
                     }
+                    // The card can still run without the controls; the reason it would
+                    // is that no overlay was ever installed, which is a bug in `run`.
+                    None => Vec::new(),
                 };
                 // Nothing runs a game here yet, so what a press did is written down and
                 // thrown away: the line is the proof that a tap reached a button.
@@ -652,7 +655,7 @@ impl ApplicationHandler for BringUp {
     /// before this callback returns, and `resumed` makes new ones. Keeping them
     /// alive is the classic "black screen after Alt-Tab" on Android.
     fn suspended(&mut self, _: &ActiveEventLoop) {
-        self.overlay.detach();
+        horizon_overlay::with(|overlay| overlay.detach());
         self.screen = None;
         self.window = None;
         log::info!("bring-up: activity suspended, the surface is gone");
@@ -668,11 +671,14 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
     builder.with_android_app(app.clone());
     let event_loop = builder.build()?;
     log::info!("bring-up: running the event loop");
+    // The on-screen controls are what the player has instead of a keyboard from the
+    // first frame onward, so the card carries them: the same thread-global overlay the
+    // game would have used, and the only way to tell a dead button from a dead engine.
+    horizon_overlay::install(&paths::controls_path(app));
     event_loop.run_app(&mut BringUp {
         app: app.clone(),
         window: None,
         screen: None,
-        overlay: Overlay::load(paths::controls_path(app)),
         dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),
         frames: 0,
         touches: 0,

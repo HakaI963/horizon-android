@@ -897,6 +897,19 @@ impl Renderer {
         [self.arena.bytes(), vertices * stride]
     }
 }
+/// Where the touch layout lives. The activity names it, because a `NativeActivity`
+/// gets no command line and the engine's working directory is one instance's saves,
+/// not the place a player can drop a file from a file manager.
+#[cfg(target_os = "android")]
+fn controls_path() -> std::path::PathBuf {
+    std::env::var_os("HORIZON_CONTROLS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join("controls.json")
+        })
+}
 impl Renderer {
     pub async fn new(
         window: Arc<Window>,
@@ -2174,6 +2187,22 @@ impl Renderer {
             config.format.remove_srgb_suffix(),
             panorama_faces,
         );
+        // The controls are drawn on this device, so this is where they get it. The
+        // overlay is the thread's rather than the renderer's, because this runs a
+        // second time for the world on a device the loading screen's renderer does not
+        // survive, and imgui panics when a thread is handed a second context.
+        #[cfg(target_os = "android")]
+        horizon_overlay::install(&controls_path());
+        #[cfg(target_os = "android")]
+        horizon_overlay::with(|overlay| {
+            overlay.attach(
+                &device,
+                &queue,
+                config.format.remove_srgb_suffix(),
+                config.width,
+                config.height,
+            );
+        });
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -2443,6 +2472,9 @@ impl Renderer {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
         self.depth = Self::depth(&self.device, &self.config, self.cull.as_ref());
+        // The buttons are placed in the glass's own pixels, so they move with it.
+        #[cfg(target_os = "android")]
+        horizon_overlay::with(|overlay| overlay.resize(width, height));
     }
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -2858,6 +2890,35 @@ impl Renderer {
         }
         rendered
     }
+    /// The touch controls, in a pass that writes only colour. Everything on the glass
+    /// is a flat alpha-blended quad, so there is no depth to test and nothing of the
+    /// world's to keep: `Load` and `Store` leave the frame under it exactly as it was.
+    #[cfg(target_os = "android")]
+    fn draw_overlay(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        let attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Touch controls"),
+            color_attachments: &attachments,
+            ..Default::default()
+        });
+        let device = &self.device;
+        let queue = &self.queue;
+        let (width, height) = (self.config.width as f32, self.config.height as f32);
+        if let Some(Err(error)) = horizon_overlay::with(|overlay| {
+            overlay.paint(device, queue, &mut pass, width, height)
+        }) {
+            log::warn!("gfx: no controls this frame: {error}");
+        }
+    }
+
     fn draw_frame(&mut self, frame: &Frame) -> Result<bool> {
         self.arena.trim();
         self.sorted_indices.trim();
@@ -4005,6 +4066,11 @@ impl Renderer {
             [self.config.width, self.config.height],
             blur_at..frame.hud.vertices.len() as u32,
         );
+        // Last of all, so that nothing on the screen can hide a button: on a phone
+        // these are the keyboard and the mouse, and ones you cannot see are a game
+        // that cannot be played.
+        #[cfg(target_os = "android")]
+        self.draw_overlay(&mut encoder, &view_target);
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
