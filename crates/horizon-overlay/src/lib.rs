@@ -76,6 +76,11 @@ pub struct Overlay {
     /// imgui has just laid out.
     panel_rect: Option<Rect>,
     pointer: Pointer,
+    /// The finger the game gets as its pointer: the first to land on bare glass, with
+    /// neither a layout button nor the panel under it. A phone has no mouse, and the
+    /// screens the game draws for itself are hit-tested from a cursor and a button, so
+    /// something has to say which finger means that. A button's finger does not.
+    game_pointer: Option<u64>,
     /// One style and one font size for the life of the process, decided from the
     /// first screen the activity gets. Rebuilding a font atlas mid-session to chase a
     /// rotation would cost a texture upload on a phone that is already rotating, and
@@ -110,6 +115,7 @@ impl Overlay {
             panel: false,
             panel_rect: None,
             pointer: Pointer::idle(),
+            game_pointer: None,
             dpi: 1.0,
             fonts_added: false,
             show_status: true,
@@ -179,6 +185,7 @@ impl Overlay {
     pub fn detach(&mut self) {
         self.renderer = None;
         self.pointer = Pointer::idle();
+        self.game_pointer = None;
         self.hud.release_all();
     }
 
@@ -197,12 +204,12 @@ impl Overlay {
     }
 
     /// A finger went down. It goes to the layout unless the panel already has it, and
-    /// to imgui when there is a window to click.
+    /// to imgui when there is a window to click. The finger that took neither is the
+    /// game's, and whoever is drawing a screen the player means to tap has to be able
+    /// to ask which one that was.
     pub fn finger_down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let inside_panel = self.panel_rect.is_some_and(|rect| rect.contains(x, y));
-        if !inside_panel {
-            self.hud.down(id, x, y, width, height);
-        }
+        let on_button = !inside_panel && self.hud.down(id, x, y, width, height);
         if self.interactive() && (self.pointer.finger.is_none() || inside_panel) {
             let was_down = self.pointer.down;
             self.pointer = Pointer {
@@ -214,6 +221,18 @@ impl Overlay {
                 self.imgui.io_mut().add_mouse_button_event(MouseButton::Left, true);
             }
         }
+        // Only while nothing of the overlay's own wants the screen: a finger that is
+        // arranging buttons must not click whatever is drawn behind them.
+        if !on_button && !self.interactive() && self.game_pointer.is_none() {
+            self.game_pointer = Some(id);
+        }
+    }
+
+    /// Whether `id` is the finger the game should read as its pointer. The overlay
+    /// decides which finger that is, and keeps it across the moves and the lift, so a
+    /// menu gets one click rather than one click per finger on the glass.
+    pub fn finger_is_pointer(&self, id: u64) -> bool {
+        self.game_pointer == Some(id)
     }
 
     pub fn finger_move(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
@@ -225,6 +244,9 @@ impl Overlay {
 
     pub fn finger_up(&mut self, id: u64) {
         self.hud.up(id);
+        if self.game_pointer == Some(id) {
+            self.game_pointer = None;
+        }
         if self.pointer.finger == Some(id) {
             self.pointer.finger = None;
             self.pointer.down = false;

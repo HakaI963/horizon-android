@@ -421,6 +421,13 @@ impl Loading {
         self.save_menu_address();
     }
 
+    /// Whether whatever is on the screen takes letters — the same question the world
+    /// asks for the phone's keyboard. The title's list has its fields, and the options
+    /// screen a search box, and neither has a hardware key to fall back on.
+    pub(super) fn menu_typing(&self) -> bool {
+        self.menu.title.is_some() || self.menu.options_open
+    }
+
     pub(super) fn menu_event(
         &mut self,
         event_loop: &ActiveEventLoop,

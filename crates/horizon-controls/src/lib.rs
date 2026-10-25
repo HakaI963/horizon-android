@@ -394,11 +394,13 @@ impl Hud {
         }
     }
 
-    /// A finger went down at `x`x`y` on a `width`x`height` screen. Which button, if
-    /// any, it landed on is decided here and never revisited: a finger that slides
-    /// off keeps the button it pressed, and one that lands on nothing is free to
-    /// turn the camera.
-    pub fn down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
+    /// A finger went down at `x`x`y` on a `width`x`height` screen, and says whether a
+    /// button of the layout caught it. Which button, if any, it landed on is decided
+    /// here and never revisited: a finger that slides off keeps the button it pressed,
+    /// and one that lands on nothing is free to turn the camera. The glass it landed on
+    /// nothing with is otherwise the game's to have, so whoever is told about the
+    /// finger needs the answer to that question, not just the button.
+    pub fn down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) -> bool {
         let hit = self
             .buttons(width, height)
             .into_iter()
@@ -429,6 +431,7 @@ impl Hud {
                 None => "nothing".to_owned(),
             }
         );
+        hit.is_some()
     }
 
     /// Slide a finger that is already down. While the layout is being edited this
@@ -575,7 +578,10 @@ mod tests {
             .expect("the default layout has a jump button");
         assert_eq!(jump, Action::Jump);
         let [x, y] = rect.center();
-        hud.down(1, x, y, WIDTH, HEIGHT);
+        assert!(
+            hud.down(1, x, y, WIDTH, HEIGHT),
+            "a finger on the jump button is the layout's, not the screen behind it"
+        );
         assert!(hud.is_held(Action::Jump));
         assert_eq!(hud.take_edges(), vec![(Action::Jump, true)]);
         hud.up(1);
@@ -636,7 +642,10 @@ mod tests {
     fn a_drag_on_empty_glass_turns_the_camera() {
         let mut hud = hud();
         // The middle of the screen: nothing is there in the default layout.
-        hud.down(1, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT);
+        assert!(
+            !hud.down(1, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT),
+            "a finger on bare glass belongs to the game"
+        );
         assert_eq!(hud.pressed_actions(), vec![]);
         hud.drag(1, WIDTH * 0.5 + 30.0, HEIGHT * 0.5 + 12.0, WIDTH, HEIGHT);
         hud.up(1);

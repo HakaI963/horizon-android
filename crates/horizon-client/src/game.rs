@@ -11584,10 +11584,23 @@ impl ApplicationHandler for Game<'_> {
                         }
                     }
                 }
-                // A finger on the glass, for the touch layout. Where it lands and what
-                // it presses is the overlay's question, not the game's.
+                // A finger on the glass, for the touch layout — and, over a screen of
+                // the game's own, for the pointer that screen is hit-tested with. Where
+                // the finger belongs is the overlay's question, not the game's.
                 #[cfg(target_os = "android")]
-                WindowEvent::Touch(touch) => touch::finger(self, &touch),
+                WindowEvent::Touch(touch) => {
+                    let events = touch::finger(
+                        &touch,
+                        self.window.as_deref(),
+                        self.renderer
+                            .as_ref()
+                            .map_or([1, 1], |r| [r.config.width, r.config.height]),
+                        self.screen != Screen::Playing || self.title.is_some(),
+                    );
+                    for event in events {
+                        self.window_event(event_loop, id, event);
+                    }
+                }
                 _ => {}
             }
 
@@ -12988,6 +13001,12 @@ impl Loading {
                 .clamp_gui_scale([r.config.width as i32, r.config.height as i32]);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
+        // A new window starts with the phone's keyboard put away. The title screen is
+        // the first place the game asks for one, and the flag has to agree with the
+        // window it is about: a title left after a backgrounding would otherwise keep
+        // the keyboard of the window that is gone.
+        #[cfg(target_os = "android")]
+        touch::keyboard_off(&window);
         self.window = Some(window);
     }
     /// The phone took the window the loading screen draws to: give the surface up so
@@ -13001,6 +13020,25 @@ impl Loading {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
+        }
+        // The glass is the mouse here. Android sends no pointer events of any kind, and
+        // the title screen is hit-tested from a cursor and a button, so without this a
+        // phone has a panorama it cannot leave.
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event {
+            for pointer in touch::finger(
+                touch,
+                self.window.as_deref(),
+                self.renderer
+                    .as_ref()
+                    .map_or([1, 1], |r| [r.config.width, r.config.height]),
+                true,
+            ) {
+                if let Err(error) = self.menu_event(event_loop, pointer) {
+                    self.error = Some(error);
+                    event_loop.exit();
+                }
+            }
         }
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
@@ -13064,6 +13102,11 @@ impl Loading {
         else {
             return;
         };
+        // The glass, read once a frame: the buttons for the panel, the keys for a
+        // field, and the turn nobody has walked into yet. The title screen is a window
+        // of its own and never reaches `touch_frame`, so this is where it asks.
+        #[cfg(target_os = "android")]
+        touch::menu_frame(self.window.as_deref(), self.menu_typing());
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
         let mut frame = loading_frame(&batch);

@@ -8,6 +8,10 @@
 //! is what makes the layout editable without touching the game: the buttons are only
 //! another way to press `W`.
 //!
+//! A menu is the exception. A screen the game draws for itself is hit-tested from a
+//! cursor and a button, and Android sends neither, so over one of those a finger on
+//! bare glass is said as both — which is the only way a phone can reach Singleplayer.
+//!
 //! The keyboard is the other half of having no keys. A phone gives one call about it —
 //! show the keyboard, or hide it — so this asks for one on the screens that read typed
 //! text and keeps it away from the world, where it would sit on top of the buttons.
@@ -23,9 +27,12 @@ use horizon_client::{
 };
 use horizon_controls::Action;
 use std::sync::atomic::{AtomicBool, Ordering};
-use winit::event::{Touch, TouchPhase, WindowEvent};
-use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
-use winit::window::Window;
+use winit::{
+    dpi::PhysicalPosition,
+    event::{DeviceId, ElementState, MouseButton, Touch, TouchPhase, WindowEvent},
+    keyboard::{KeyCode, NativeKeyCode, PhysicalKey},
+    window::Window,
+};
 
 impl Game<'_> {
     /// What the fingers did since the last frame. Called where the game reads its
@@ -164,32 +171,82 @@ fn mapping(action: Action) -> Option<String> {
     Some(name.to_owned())
 }
 
-/// A finger on the glass, for the overlay that owns the layout.
+/// A finger on the glass, for the overlay that owns the layout — and, over a menu, the
+/// pointer that menu is drawn for.
 ///
-/// The game's own pointer stays out of it: on a phone the buttons *are* the input, and a
-/// tap that also moved a cursor nobody can see would take the finger off the button it
-/// landed on.
-pub(super) fn finger(game: &Game<'_>, touch: &Touch) {
-    let (width, height) = game
-        .renderer
-        .as_ref()
-        .map_or((1, 1), |r| (r.config.width, r.config.height));
-    // A finger is reported in logical pixels and the buttons are placed in the
-    // framebuffer's own, which is the space the overlay draws into.
-    let scale = game
-        .window
-        .as_ref()
-        .map_or(1.0, |window| window.scale_factor()) as f32;
+/// The game's own pointer stays out of the world: on a phone the buttons *are* the
+/// input, and a tap that also moved a cursor nobody can see would take the finger off
+/// the button it landed on. A screen the game draws for itself is the other case. winit
+/// sends no `CursorMoved` and no `MouseInput` on Android at all, and those screens
+/// hit-test a cursor position and a button, so without this the title is a panorama a
+/// phone can look at and never leave.
+///
+/// What comes back is for the caller to say to its own handler: the world and the
+/// loading screen are two different windows on the same glass. `screen` is the picture
+/// the buttons are placed in, `menu` whether a screen of the game's own is on it.
+pub(super) fn finger(
+    touch: &Touch,
+    window: Option<&Window>,
+    screen: [u32; 2],
+    menu: bool,
+) -> Vec<WindowEvent> {
+    // A finger is reported in logical pixels; the buttons, the menus and a frame dump
+    // are all in the framebuffer's own, which is the space `CursorMoved` is read in.
+    let scale = window.map_or(1.0, |window| window.scale_factor()) as f32;
     let (x, y) = (
         touch.location.x as f32 * scale,
         touch.location.y as f32 * scale,
     );
+    let (width, height) = (screen[0] as f32, screen[1] as f32);
     let id = touch.id;
-    horizon_overlay::with(|overlay| match touch.phase {
-        TouchPhase::Started => overlay.finger_down(id, x, y, width as f32, height as f32),
-        TouchPhase::Moved => overlay.finger_move(id, x, y, width as f32, height as f32),
-        TouchPhase::Ended | TouchPhase::Cancelled => overlay.finger_up(id),
+    let pointer = horizon_overlay::with(|overlay| match touch.phase {
+        TouchPhase::Started => {
+            overlay.finger_down(id, x, y, width, height);
+            overlay.finger_is_pointer(id)
+        }
+        TouchPhase::Moved => {
+            overlay.finger_move(id, x, y, width, height);
+            overlay.finger_is_pointer(id)
+        }
+        TouchPhase::Ended | TouchPhase::Cancelled => {
+            // Asked before the lift, which is the moment the overlay lets the finger go.
+            let was = overlay.finger_is_pointer(id);
+            overlay.finger_up(id);
+            was
+        }
     });
+    if !menu || !pointer.unwrap_or(false) {
+        return Vec::new();
+    }
+    let moved = || WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(f64::from(x), f64::from(y)),
+    };
+    let button = |state| WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state,
+        button: MouseButton::Left,
+    };
+    match touch.phase {
+        TouchPhase::Started => vec![moved(), button(ElementState::Pressed)],
+        TouchPhase::Moved => vec![moved()],
+        TouchPhase::Ended | TouchPhase::Cancelled => vec![button(ElementState::Released)],
+    }
+}
+
+/// The title screen's pass over the glass, in the one place the world's own
+/// (`touch_frame`) does not run. The buttons have to be read or MENU never opens the
+/// panel, and a title screen that cannot open the panel is a phone with no way to move
+/// a button sitting where a menu wants to be. The drag is dropped with them: there is
+/// no world to walk yet, and a turn saved up would be spent as a camera jerk the frame
+/// the player finally gets one. And the keys, because a field on the screen is the only
+/// reason a phone should be asked for them, and the title's world list has three of
+/// them.
+pub(super) fn menu_frame(window: Option<&Window>, wants_keys: bool) {
+    if let Some(window) = window {
+        keyboard(window, wants_keys);
+    }
+    let _ = horizon_overlay::with(|overlay| (overlay.presses(), overlay.look()));
 }
 
 /// Whether the phone's keyboard is up, so that only a change costs a call into the

@@ -93,6 +93,11 @@ its mouse behaviour (drags, sliders, scrollbars, hover highlights) with no
 controller code of its own, and both modes reach every screen. Moving the
 real mouse hands control back at once.
 
+A phone does the same from the other end: Android sends no pointer events,
+so `game/touch.rs` turns a touch on bare glass into those same two events
+and every screen is tappable, while a touch that landed on one of the
+on-screen buttons stays the layout's.
+
 ### Focus navigation
 
 Every interactive rectangle a screen draws registers itself as a focus
