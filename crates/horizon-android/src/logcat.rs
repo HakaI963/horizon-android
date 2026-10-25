@@ -44,6 +44,11 @@ impl log::Log for Logcat {
         !chatty(meta.target()) || meta.level() <= log::Level::Info
     }
     fn log(&self, record: &log::Record<'_>) {
+        // The `log!` macro only consults the static max level, never `enabled`,
+        // so the filter has to be checked here as well.
+        if !self.enabled(record.metadata()) {
+            return;
+        }
         let prio = match record.level() {
             log::Level::Trace => VERBOSE,
             log::Level::Debug => DEBUG,

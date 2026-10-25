@@ -282,16 +282,28 @@ impl ApplicationHandler for BringUp {
                         self.started.elapsed(),
                         self.app.config().sdk_version()
                     );
-                } else if self.frames % 300 == 0 {
+                } else if self.frames % 120 == 0 {
+                    let elapsed = self.started.elapsed();
                     log::info!(
-                        "bring-up: {} frames, {} touch(es) seen",
+                        "bring-up: {} frames in {elapsed:?} ({} fps), {} touch(es) seen",
                         self.frames,
+                        self.frames as f64 / elapsed.as_secs_f64(),
                         self.touches
                     );
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
+        }
+    }
+
+    /// Android's backend delivers `RedrawRequested` only when something asked for
+    /// it: `ControlFlow::Poll` makes the loop wake up immediately, but it does not
+    /// request a redraw by itself. Without this the app draws one frame and then
+    /// sits in a loop that has nothing to do.
+    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 
