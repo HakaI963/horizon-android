@@ -48,6 +48,12 @@ pub fn enter_app_storage(app: &AndroidApp) {
         // The touch layout, the same way: the engine has no command line and no way to
         // be handed a path, and it needs one to know where a player's buttons live.
         std::env::set_var("HORIZON_CONTROLS", controls_path(app));
+        // The agent endpoint too — and as a JSON file describing a localhost port, not
+        // a `.sock`. A Unix socket lives in this app's private storage, which is the
+        // one thing on the phone nobody else can reach; a port can be reached from the
+        // other side of the glass by whoever can read this file, and the token in it is
+        // what says they may.
+        std::env::set_var("HORIZON_CONTROL", control_path(app));
     }
     match std::env::set_current_dir(&instance) {
         Ok(()) => log::info!(
@@ -83,4 +89,11 @@ pub fn resources_dir(app: &AndroidApp) -> PathBuf {
 /// phone.
 pub fn controls_path(app: &AndroidApp) -> PathBuf {
     import_dir(app).join("controls.json")
+}
+
+/// Where the game writes the agent endpoint when Agent Control is on: the same
+/// reachable folder as the layout, because the reader is on the other side of a
+/// cable, not in this process.
+pub fn control_path(app: &AndroidApp) -> PathBuf {
+    import_dir(app).join("horizon-control.json")
 }

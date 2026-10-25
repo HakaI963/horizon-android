@@ -196,7 +196,10 @@ sockets: there the game listens on a random `127.0.0.1` port and writes
 `{"transport":"tcp","port":N,"token":"..."}` to the endpoint path
 (`%TEMP%\horizon-control.json` by default), readable only by its user; the
 client's first line must be `auth TOKEN`. Any endpoint path ending in `.json`
-selects that transport on Linux and macOS too.
+selects that transport on Linux and macOS too. Android sets `HORIZON_CONTROL` to
+`import/horizon-control.json` in its own storage for exactly that reason: a Unix
+socket there could not be connected to from anywhere else on the phone, and the
+token in that file is what says a reader may drive the game.
 
 `tools/agent_control_e2e.py` checks it all on a virtual screen: it creates a
 world through the title menus, walks to a tree, breaks a log, crafts planks in
