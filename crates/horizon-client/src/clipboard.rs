@@ -110,8 +110,13 @@ pub trait Clipboard {
 /// data-control protocol and falls back to X11 (XWayland) on compositors
 /// without it. When no system clipboard can be reached, text copied in the
 /// game can still be pasted in the game.
+///
+/// Android has no arboard backend, so there it is the in-game clipboard only:
+/// copy and paste work between text fields, and nothing reaches
+/// `ClipboardManager` or crosses into other apps.
 #[derive(Default)]
 pub struct SystemClipboard {
+    #[cfg(not(target_os = "android"))]
     system: Option<arboard::Clipboard>,
     /// The text Horizon last copied (`horizon-ctl status`).
     copied: Option<String>,
@@ -122,6 +127,8 @@ impl SystemClipboard {
     pub fn copied(&self) -> Option<&str> {
         self.copied.as_deref()
     }
+
+    #[cfg(not(target_os = "android"))]
     fn system(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.system.is_none() {
             self.system = arboard::Clipboard::new().ok();
@@ -130,6 +137,7 @@ impl SystemClipboard {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> String {
         let Some(system) = self.system() else {
@@ -154,6 +162,18 @@ impl Clipboard for SystemClipboard {
             && system.set_text(text.to_owned()).is_err()
         {
             self.system = None;
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Clipboard for SystemClipboard {
+    fn get(&mut self) -> String {
+        self.copied.clone().unwrap_or_default()
+    }
+    fn set(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.copied = Some(text.to_owned());
         }
     }
 }

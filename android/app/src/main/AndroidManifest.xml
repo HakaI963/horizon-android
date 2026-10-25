@@ -23,7 +23,10 @@
         android:theme="@style/Horizon">
         <activity
             android:name="android.app.NativeActivity"
-            android:configChanges="orientation|screenOrientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|density|navigation|layoutDirection|locale|fontScale"
+            <!-- There is no `screenOrientation` flag: AAPT rejects it, and `orientation`
+                 already covers rotating the device. Handling the change here rather than
+                 by recreating the activity is what keeps the swapchain alive. -->
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|density|navigation|layoutDirection|locale|fontScale"
             android:exported="true"
             android:keepScreenOn="true"
             android:label="@string/app_name"
