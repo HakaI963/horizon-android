@@ -31,6 +31,14 @@ png = "0.18"
 horizon-client = { path = "../horizon-client", default-features = false, features = ["audio"] }
 # Only for `VANILLA_VERSION`, the single source of truth for the resource folder's name.
 horizon-core = { path = "../horizon-core" }
+# The touch layout and what a press means, drawn here but tested where there is a
+# host that can run a test.
+horizon-controls = { path = "../horizon-controls" }
+# The on-screen controls are imgui's: the widgets are the settings panel, and the
+# draw list is the HUD. `imgui` is the Rust port of Dear ImGui; the wgpu backend is
+# this workspace's own `horizon-imgui`, because the published one stops at wgpu 29.
+imgui = "0.12"
+horizon-imgui = { path = "../horizon-imgui" }
 
 [lints]
 workspace = true

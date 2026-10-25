@@ -1,0 +1,25 @@
+[package]
+name = "horizon-imgui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "Dear ImGui's wgpu backend: imgui-wgpu 0.28.0 (MIT OR Apache-2.0) vendored and reworked for wgpu 30"
+
+# The published backend stops at wgpu 29, and this workspace is on 30.0.1, so the
+# renderer is vendored here rather than taken from crates.io. `imgui` is Dear ImGui
+# itself; the wgpu feature set is the phone's: Vulkan and WGSL and nothing else.
+[dependencies]
+imgui = "0.12"
+wgpu = { version = "30.0.1", default-features = false, features = [
+    "std",
+    "parking_lot",
+    "vulkan",
+    "wgsl",
+] }
+bytemuck = { version = "1", features = ["derive"] }
+smallvec = "1"
+log = "0.4"
+
+[lints]
+workspace = true

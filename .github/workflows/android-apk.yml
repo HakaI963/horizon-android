@@ -40,6 +40,29 @@ env:
   CARGO_TARGET: aarch64-linux-android
 
 jobs:
+  # The touch layout is the part of the port a person argues with, and it needs no
+  # phone to be wrong: a button that cannot be pressed, a saved layout that does not
+  # read back, a drag that turns the camera the wrong way are all questions a host
+  # test answers in seconds. The engine and the activity cannot be tested here — the
+  # crate that holds them does not even build without an Android target — but this
+  # one does, so it is its own crate and its own job.
+  model:
+    name: touch layout (host tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Test the layout, the hit-testing and the actions
+        run: cargo test --package horizon-controls
+
   # What the engine itself needs before it can run on a phone. `cargo check` is
   # the cheapest way to ask: it compiles every `cfg`, so each Unix-ism, each
   # crate without an Android backend and each desktop-only API shows up as an

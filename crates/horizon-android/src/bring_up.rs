@@ -20,7 +20,10 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 use winit::window::{Window, WindowId};
 
+use horizon_controls::Action;
+
 use crate::frame_dump::FrameDump;
+use crate::overlay::Overlay;
 use crate::paths;
 
 /// A block of the test card, placed in the top-left pixel coordinates the touch
@@ -166,6 +169,10 @@ pub struct BringUp {
     app: AndroidApp,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
+    /// The on-screen controls, which are what the player has instead of a keyboard
+    /// from the first frame onward — so the card that proves the platform carries
+    /// them, and so does every frame after it.
+    overlay: Overlay,
     dump: Arc<FrameDump>,
     frames: u64,
     touches: u64,
@@ -384,11 +391,13 @@ impl Screen {
 
     fn draw(
         &mut self,
+        overlay: &mut Overlay,
+        status: &str,
         frame: u64,
         fingers: u32,
         touch: Option<(f64, f64)>,
         dump: &FrameDump,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Vec<(Action, bool)>, Box<dyn Error>> {
         let acquired = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -419,6 +428,7 @@ impl Screen {
                 store: wgpu::StoreOp::Store,
             },
         })];
+        let edges;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon bring-up card"),
@@ -430,6 +440,17 @@ impl Screen {
             for block in self.blocks(frame, fingers, touch) {
                 self.fill(&mut pass, &block);
             }
+            // The controls go over the card, in the same pass and after it: the card is
+            // what says the platform works, and it is worth looking at only until the
+            // HUD is on top of it.
+            edges = overlay.frame(
+                &self.device,
+                &self.queue,
+                &mut pass,
+                self.config.width as f32,
+                self.config.height as f32,
+                status,
+            )?;
         }
         self.queue.submit([encoder.finish()]);
         // Read before `present`: after it, the driver owns the image again and
@@ -444,7 +465,7 @@ impl Screen {
         // No `pre_present_notify()`: that paces winit's Wayland frame callbacks,
         // and Android's ANativeWindow queue paces FIFO by itself.
         self.queue.present(acquired);
-        Ok(())
+        Ok(edges)
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -483,6 +504,13 @@ impl ApplicationHandler for BringUp {
         );
         match open_screen(&window, &self.app) {
             Ok(screen) => {
+                self.overlay.attach(
+                    &screen.device,
+                    &screen.queue,
+                    screen.config.format,
+                    screen.config.width,
+                    screen.config.height,
+                );
                 self.screen = Some(screen);
                 self.window = Some(window);
                 self.started = Instant::now();
@@ -504,6 +532,7 @@ impl ApplicationHandler for BringUp {
                 if let Some(screen) = self.screen.as_mut() {
                     screen.resize(size.width, size.height);
                 }
+                self.overlay.resize(size.width, size.height);
             }
             WindowEvent::Touch(Touch {
                 phase,
@@ -512,6 +541,11 @@ impl ApplicationHandler for BringUp {
                 force,
                 ..
             }) => {
+                let (width, height) = self
+                    .screen
+                    .as_ref()
+                    .map(|screen| (screen.config.width, screen.config.height))
+                    .unwrap_or((1, 1));
                 match phase {
                     TouchPhase::Started => {
                         self.touches += 1;
@@ -523,11 +557,17 @@ impl ApplicationHandler for BringUp {
                             location.y,
                             force
                         );
+                        self.overlay
+                            .finger_down(id, location.x as f32, location.y as f32, width as f32, height as f32);
                     }
-                    TouchPhase::Moved => self.touch = Some((location.x, location.y)),
+                    TouchPhase::Moved => {
+                        self.touch = Some((location.x, location.y));
+                        self.overlay.finger_move(id, location.x as f32, location.y as f32);
+                    }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.fingers = self.fingers.saturating_sub(1);
                         log::info!("bring-up: touch {id} up ({} fingers left)", self.fingers);
+                        self.overlay.finger_up(id);
                     }
                 }
             }
@@ -536,11 +576,36 @@ impl ApplicationHandler for BringUp {
                     return;
                 };
                 self.frames += 1;
-                if let Err(error) = screen.draw(self.frames, self.fingers, self.touch, &self.dump)
-                {
-                    log::error!("bring-up: frame failed: {error}");
-                    event_loop.exit();
-                    return;
+                let elapsed = self.started.elapsed();
+                let fps = self.frames as f64 / elapsed.as_secs_f64().max(0.001);
+                // One line the frame dump can show and logcat does not need: the tools
+                // on a phone read the picture.
+                let status = format!(
+                    "{:.0} fps, {} fingers, {} touches, {}",
+                    fps,
+                    self.fingers,
+                    self.touches,
+                    self.overlay.hud().pressed_actions().len()
+                );
+                let edges = match screen.draw(
+                    &mut self.overlay,
+                    &status,
+                    self.frames,
+                    self.fingers,
+                    self.touch,
+                    &self.dump,
+                ) {
+                    Ok(edges) => edges,
+                    Err(error) => {
+                        log::error!("bring-up: frame failed: {error}");
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                // Nothing runs a game here yet, so what a press did is written down and
+                // thrown away: the line is the proof that a tap reached a button.
+                for (action, down) in edges {
+                    log::info!("bring-up: {} {}", action.text(), if down { "down" } else { "up" });
                 }
                 if self.frames == 1 {
                     log::info!(
@@ -549,12 +614,10 @@ impl ApplicationHandler for BringUp {
                         self.app.config().sdk_version()
                     );
                 } else if self.frames % 120 == 0 {
-                    let elapsed = self.started.elapsed();
                     log::info!(
-                        "bring-up: {} frames in {elapsed:?} ({} fps), {} touch(es) seen",
+                        "bring-up: {} frames in {elapsed:?} ({fps:.0} fps), {} touch(es) seen, {status}",
                         self.frames,
-                        self.frames as f64 / elapsed.as_secs_f64(),
-                        self.touches
+                        self.touches,
                     );
                 }
             }
@@ -578,6 +641,7 @@ impl ApplicationHandler for BringUp {
     /// before this callback returns, and `resumed` makes new ones. Keeping them
     /// alive is the classic "black screen after Alt-Tab" on Android.
     fn suspended(&mut self, _: &ActiveEventLoop) {
+        self.overlay.detach();
         self.screen = None;
         self.window = None;
         log::info!("bring-up: activity suspended, the surface is gone");
@@ -597,6 +661,7 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
         app: app.clone(),
         window: None,
         screen: None,
+        overlay: Overlay::load(paths::controls_path(app)),
         dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),
         frames: 0,
         touches: 0,

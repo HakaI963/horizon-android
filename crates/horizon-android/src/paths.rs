@@ -73,3 +73,11 @@ pub fn import_dir(app: &AndroidApp) -> PathBuf {
 pub fn resources_dir(app: &AndroidApp) -> PathBuf {
     import_dir(app).join("horizon-client").join(INSTANCE)
 }
+
+/// Where the touch layout is kept, in the same folder a file manager can reach: a
+/// player whose thumb does not land on the jump button should be able to move it
+/// with the panel, and then see what they did without pulling anything off the
+/// phone.
+pub fn controls_path(app: &AndroidApp) -> PathBuf {
+    import_dir(app).join("controls.json")
+}

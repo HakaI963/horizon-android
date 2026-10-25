@@ -19,6 +19,8 @@ mod frame_dump;
 #[cfg(target_os = "android")]
 mod logcat;
 #[cfg(target_os = "android")]
+mod overlay;
+#[cfg(target_os = "android")]
 mod paths;
 
 /// The activity, for the seams that need it: the event loop builder, the storage
