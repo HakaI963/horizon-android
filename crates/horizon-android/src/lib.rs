@@ -13,6 +13,8 @@
 #[cfg(target_os = "android")]
 mod bring_up;
 #[cfg(target_os = "android")]
+mod engine;
+#[cfg(target_os = "android")]
 mod frame_dump;
 #[cfg(target_os = "android")]
 mod logcat;
@@ -45,9 +47,8 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     );
     // A panic here would otherwise unwind into the C entry point and abort the
     // process before the hook's log record reached logcat.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bring_up::run(&app))) {
-        Ok(Ok(())) => log::info!("Horizon for Android stopped"),
-        Ok(Err(error)) => log::error!("Horizon for Android stopped: {error}"),
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| play(&app))) {
+        Ok(()) => log::info!("Horizon for Android stopped"),
         Err(panic) => {
             let message = panic
                 .downcast_ref::<String>()
@@ -56,5 +57,32 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
                 .unwrap_or("no message");
             log::error!("Horizon for Android panicked: {message}");
         }
+    }
+}
+
+/// Run the game, or what stands in for it until the game can run.
+///
+/// A phone gives no terminal and keeps no exit status: whatever goes wrong has to
+/// leave something on screen that the tools can still look at. So a missing
+/// resource pack is decided before the event loop is handed to the engine — winit
+/// builds exactly one loop per activity — and the answer is the bring-up card,
+/// which keeps the window, the touch path and the frame server alive.
+fn play(app: &winit::platform::android::activity::AndroidApp) {
+    let pack = paths::resources_dir(app).join("horizon-resources.json");
+    if !pack.is_file() {
+        log::warn!(
+            "Horizon for Android: no prepared resource pack at {}; the engine cannot start. \
+             Run `horizon-prepare` on a computer and put its `horizon-client/{}` folder at {}",
+            pack.display(),
+            paths::INSTANCE,
+            paths::import_dir(app).display()
+        );
+        if let Err(error) = bring_up::run(app) {
+            log::error!("Horizon for Android: the bring-up card stopped: {error}");
+        }
+        return;
+    }
+    if let Err(error) = engine::run(app) {
+        log::error!("Horizon for Android: the engine stopped: {error}");
     }
 }
