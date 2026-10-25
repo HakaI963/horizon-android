@@ -4656,11 +4656,14 @@ impl Game<'_> {
                 // position hint, which the compositor applies as the lock
                 // goes (sway and Hyprland do): set it before ungrabbing.
                 // X11, Windows and macOS warp, so warp again once free
-                // (Wayland refuses that one).
+                // (Wayland refuses that one). Android has no pointer to
+                // move, and refuses the warp as it refuses the grab.
+                #[cfg(not(target_os = "android"))]
                 if self.focused {
                     warp(window);
                 }
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
+                #[cfg(not(target_os = "android"))]
                 if self.focused {
                     warp(window);
                 }
