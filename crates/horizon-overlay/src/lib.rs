@@ -44,7 +44,6 @@ const LEGEND: [u8; 3] = [238, 242, 248];
 struct Pointer {
     /// Which finger this is, so that a second one does not move the cursor.
     finger: Option<u64>,
-    position: [f32; 2],
     down: bool,
 }
 
@@ -52,7 +51,6 @@ impl Pointer {
     fn idle() -> Self {
         Self {
             finger: None,
-            position: [0.0, 0.0],
             down: false,
         }
     }
@@ -214,11 +212,16 @@ impl Overlay {
             let was_down = self.pointer.down;
             self.pointer = Pointer {
                 finger: Some(id),
-                position: [x, y],
                 down: true,
             };
+            // The position goes in with the press, ahead of it: imgui holds back a
+            // mouse move it finds after a button change until the next frame, and a
+            // press judged against the position before it is a press on whatever was
+            // there instead — on a phone, on a panel that has only just opened.
+            let io = self.imgui.io_mut();
+            io.add_mouse_pos_event([x, y]);
             if !was_down {
-                self.imgui.io_mut().add_mouse_button_event(MouseButton::Left, true);
+                io.add_mouse_button_event(MouseButton::Left, true);
             }
         }
         // Only while nothing of the overlay's own wants the screen: a finger that is
@@ -238,7 +241,7 @@ impl Overlay {
     pub fn finger_move(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         self.hud.drag(id, x, y, width, height);
         if self.pointer.finger == Some(id) {
-            self.pointer.position = [x, y];
+            self.imgui.io_mut().add_mouse_pos_event([x, y]);
         }
     }
 
@@ -297,7 +300,6 @@ impl Overlay {
             path,
             panel,
             panel_rect,
-            pointer,
             dpi,
             show_status,
             status,
@@ -314,9 +316,6 @@ impl Overlay {
             io.update_delta_time(frame_started.elapsed());
             *frame_started = Instant::now();
             io.display_size = [width, height];
-            if pointer.finger.is_some() {
-                io.add_mouse_pos_event(pointer.position);
-            }
         }
 
         // Everything the panel can change is taken out of the layout into a local
@@ -394,6 +393,7 @@ impl Overlay {
         }
         if close {
             *panel = false;
+            log::info!("overlay: the settings panel is closed from its Close button");
         }
         *panel_rect = panel_now;
 
