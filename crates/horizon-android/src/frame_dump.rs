@@ -227,7 +227,8 @@ fn answer(stream: TcpStream, dump: &FrameDump) {
         }
     };
     let path = request.split_whitespace().nth(1).unwrap_or("/");
-    let stream = reader.into_inner();
+    // `write_all` and `flush` both take `&mut self`.
+    let mut stream = reader.into_inner();
     let (status, headers, body): (&str, &str, Vec<u8>) = if !asked {
         ("400 Bad Request", "Content-Type: text/plain\r\n", Vec::new())
     } else if !path.starts_with("/frame") {
