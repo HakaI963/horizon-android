@@ -84,9 +84,10 @@ fn play(app: &winit::platform::android::activity::AndroidApp) {
         log::warn!(
             "Horizon for Android: no prepared pack at {}, showing the bring-up card. Prepare it \
              on a computer with `horizon-prepare` — it drives a JVM, so it cannot be done here — \
-             and copy the `.local/horizon-client/{}` folder to {import}/",
+             and copy the `.local/horizon-client/{}` folder to {}/",
             pack.display(),
             paths::INSTANCE,
+            import.display(),
         );
         if let Err(error) = bring_up::run(app, event_loop, "no resource pack: put one in import/")
         {

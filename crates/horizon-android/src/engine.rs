@@ -5,7 +5,7 @@
 //! `AndroidApp` the system passed in — `EventLoop::new()` panics without it — and
 //! give it to the engine, which runs on it exactly as it does on desktop.
 
-use winit::event_loop::{EventLoop, EventLoopError};
+use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
@@ -14,13 +14,13 @@ use winit::platform::android::activity::AndroidApp;
 ///
 /// It is handed out rather than used here because Android gives a process exactly one:
 /// constructing a loop registers winit's handler on the activity, and the second call
-/// comes back `AlreadyRunning` ("EventLoop can't be recreated"). Whoever holds it is
-/// whoever runs, so the choice between the engine and the bring-up card has to be made
-/// before it is spent, and nothing can draw after the engine has stopped.
-pub fn event_loop(app: &AndroidApp) -> Result<EventLoop<()>, EventLoopError> {
+/// comes back "EventLoop can't be recreated". Whoever holds it is whoever runs, so the
+/// choice between the engine and the bring-up card has to be made before it is spent,
+/// and nothing can draw after the engine has stopped.
+pub fn event_loop(app: &AndroidApp) -> Result<EventLoop<()>, String> {
     let mut builder = EventLoop::builder();
     builder.with_android_app(app.clone());
-    builder.build()
+    builder.build().map_err(|error| error.to_string())
 }
 
 /// Run the game on the loop the activity handed over, until it stops.
