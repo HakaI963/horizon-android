@@ -62,10 +62,6 @@ fn fs_main(in: Out) -> @location(0) vec4<f32> {
 
 /// Four corners, the sweep stripe, up to five fingers and the finger itself.
 const MAX_BLOCKS: usize = 11;
-/// How long the white marker stays after the finger lifts, in frames: about a
-/// second at the 120 fps this device runs at. A shell taps, then asks the frame
-/// server for a picture, and the ask lands a few hundred milliseconds later.
-const MARKER_HOLD: u64 = 150;
 /// A block is its own three vertices, so drawing it means binding a different
 /// slice. Rewriting one bound buffer between the draws of a single submission is
 /// not something Vulkan can order, and this way there is nothing to order.
@@ -174,12 +170,11 @@ pub struct BringUp {
     frames: u64,
     touches: u64,
     fingers: u32,
-    /// Where the most recent touch landed. It outlives the finger by
-    /// `MARKER_HOLD` frames so a tap followed by a request for a frame still
-    /// shows where the tap was.
+    /// Where the last touch landed. It stays after the finger lifts: injection
+    /// can be seconds behind the call that asks for it, so a shell that taps and
+    /// then asks for a frame needs the marker to still be there, and whether a
+    /// finger is down right now is what the cyan blocks are for.
     touch: Option<(f64, f64)>,
-    /// The frame `touch` was last worth drawing on.
-    touch_seen: u64,
     started: Instant,
 }
 
@@ -522,7 +517,6 @@ impl ApplicationHandler for BringUp {
                         self.touches += 1;
                         self.fingers += 1;
                         self.touch = Some((location.x, location.y));
-                        self.touch_seen = self.frames;
                         log::info!(
                             "bring-up: touch {id} down at {:.0}x{:.0} force {:?}",
                             location.x,
@@ -530,10 +524,7 @@ impl ApplicationHandler for BringUp {
                             force
                         );
                     }
-                    TouchPhase::Moved => {
-                        self.touch = Some((location.x, location.y));
-                        self.touch_seen = self.frames;
-                    }
+                    TouchPhase::Moved => self.touch = Some((location.x, location.y)),
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.fingers = self.fingers.saturating_sub(1);
                         log::info!("bring-up: touch {id} up ({} fingers left)", self.fingers);
@@ -545,10 +536,6 @@ impl ApplicationHandler for BringUp {
                     return;
                 };
                 self.frames += 1;
-                let stale = self.frames.saturating_sub(self.touch_seen) > MARKER_HOLD;
-                if self.fingers == 0 && stale {
-                    self.touch = None;
-                }
                 if let Err(error) = screen.draw(self.frames, self.fingers, self.touch, &self.dump)
                 {
                     log::error!("bring-up: frame failed: {error}");
@@ -615,7 +602,6 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
         touches: 0,
         fingers: 0,
         touch: None,
-        touch_seen: 0,
         started: Instant::now(),
     })?;
     log::info!("bring-up: the event loop ended");
