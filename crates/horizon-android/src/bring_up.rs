@@ -21,9 +21,9 @@ use winit::platform::android::activity::AndroidApp;
 use winit::window::{Window, WindowId};
 
 use horizon_controls::Action;
+use horizon_overlay::Overlay;
 
 use crate::frame_dump::FrameDump;
-use crate::overlay::Overlay;
 use crate::paths;
 
 /// A block of the test card, placed in the top-left pixel coordinates the touch

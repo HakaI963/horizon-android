@@ -1,5 +1,5 @@
 //! The imgui layer: the buttons the player presses, the panel that changes them,
-//! and the renderer that puts both over the swapchain.
+//! and the renderer that puts both over whatever the platform just drew.
 //!
 //! Two kinds of imgui live here, and the difference is why. The settings panel is
 //! ordinary imgui — windows, sliders, checkboxes — driven by the one pointer imgui
@@ -10,6 +10,11 @@
 //! atlas. Editing the layout is the same rectangles with the same fingers: a button
 //! follows the thumb that picked it up, which is the one thing a phone cannot do
 //! without a mouse.
+//!
+//! The crate knows nothing about windows, activities or engines. A platform layer
+//! brings it up with the path its layout lives at, hands it the device when a
+//! surface appears, and calls [`Overlay::frame`] with a render pass already begun
+//! and the size of the glass; what comes back is the presses the game should route.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -221,18 +226,11 @@ impl Overlay {
         }
     }
 
-    /// The presses of the frame, drawn, and the ones the platform layer has to hand
-    /// to the game. What belongs to the overlay it keeps: a tap on MENU opens the
-    /// panel and is never a keystroke.
-    pub fn frame(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pass: &mut wgpu::RenderPass<'_>,
-        width: f32,
-        height: f32,
-        status: &str,
-    ) -> Result<Vec<(Action, bool)>, Box<dyn Error>> {
+    /// The presses since the last call, with the overlay's own answered here: a tap on
+    /// MENU opens the panel and is never a keystroke. Read this where the game reads
+    /// its keyboard, not where it draws — a press that waits for a render pass is a
+    /// press one frame late, and on a phone the player feels that in the first second.
+    pub fn presses(&mut self) -> Vec<(Action, bool)> {
         let edges = self.hud.take_edges();
         for (action, down) in edges.iter().filter(|(action, _)| *action == Action::Menu) {
             if *down {
@@ -243,11 +241,23 @@ impl Overlay {
                 );
             }
         }
-        let game: Vec<(Action, bool)> = edges
+        edges
             .into_iter()
             .filter(|(action, _)| !action.is_overlay())
-            .collect();
+            .collect()
+    }
 
+    /// The buttons and the panel, painted into a pass that is already begun on
+    /// whatever the platform has just drawn.
+    pub fn paint(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        width: f32,
+        height: f32,
+        status: &str,
+    ) -> Result<(), Box<dyn Error>> {
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -359,6 +369,24 @@ impl Overlay {
         renderer
             .render(draw_data, queue, device, pass)
             .map_err(|error| format!("imgui: {error}"))?;
+        Ok(())
+    }
+
+    /// Read the presses and paint, in that order: what a player pressed belongs to
+    /// this frame's input, and what the frame looks like belongs to its output. A test
+    /// card and an engine both want exactly this, so it is the one call the platform
+    /// layer has to make.
+    pub fn frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'_>,
+        width: f32,
+        height: f32,
+        status: &str,
+    ) -> Result<Vec<(Action, bool)>, Box<dyn Error>> {
+        let game = self.presses();
+        self.paint(device, queue, pass, width, height, status)?;
         Ok(game)
     }
 
@@ -379,7 +407,14 @@ impl Overlay {
 /// One button: its body, its edge and its legend. The body exists to aim at and the
 /// legend to read, so the text keeps a floor of its own under the layout's opacity —
 /// a see-through "MINE" is a button you cannot find again.
-fn paint(draw: &DrawListMut<'_>, ui: &Ui, action: Action, rect: Rect, pressed: bool, opacity: f32) {
+fn draw_button(
+    draw: &DrawListMut<'_>,
+    ui: &Ui,
+    action: Action,
+    rect: Rect,
+    pressed: bool,
+    opacity: f32,
+) {
     let min = [rect.x, rect.y];
     let max = [rect.x + rect.width, rect.y + rect.height];
     let fill = if pressed { PRESSED } else { IDLE };
@@ -443,7 +478,9 @@ fn hud_buttons(
         .build(|| {
             let draw = ui.get_window_draw_list();
             for (action, rect) in buttons.iter().rev() {
-                paint(&draw, ui, *action, *rect, lit.contains(action), opacity);
+                draw_button(
+                    &draw, ui, *action, *rect, lit.contains(action), opacity,
+                );
             }
             if show_status {
                 // The line a frame dump reads instead of logcat: what the loop is
