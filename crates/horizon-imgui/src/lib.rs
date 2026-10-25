@@ -1,5 +1,5 @@
-// Dear ImGui's wgpu backend: the renderer from `imgui-wgpu` 0.28.0 (MIT OR
-// Apache-2.0, github.com/Yatekii/imgui-wgpu-rs), vendored here and reworked for
+// Dear ImGui's wgpu backend: the renderer from `imgui-wgpu` 0.28.0 (MIT,
+// github.com/Yatekii/imgui-wgpu-rs, Steven Wittens), vendored here and reworked for
 // wgpu 30 — vertex buffer layouts are optional slots now, a zero-sized buffer
 // slice can no longer be bound, and wgpu 30's validation wants the scissor rect
 // inside the attachment. The published crate stops at wgpu 29, so upstreaming a
@@ -603,7 +603,6 @@ impl Renderer {
             draw_list_offsets: SmallVec::<[_; 4]>::new(),
             render: false,
         });
-        
 
         // If the render area is <= 0, exit here and now.
         if fb_width <= 0.0 || fb_height <= 0.0 {
