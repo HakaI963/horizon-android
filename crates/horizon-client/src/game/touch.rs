@@ -82,7 +82,7 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        let Some(key) = key_code(bound) else {
+        let Some(key) = key_code(&bound) else {
             return Ok(());
         };
         self.mapped_key(key, down, false)
