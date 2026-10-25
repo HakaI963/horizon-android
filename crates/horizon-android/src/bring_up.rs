@@ -1,12 +1,12 @@
 //! Stage A of the port: prove the platform layer on real hardware before the
 //! engine is wired in.
 //!
-//! It opens the Vulkan surface through winit's `NativeActivity` window, clears
-//! the swapchain every frame and reports what the touchscreen sends. On a phone
-//! the things that can only be found on a phone are the swapchain format, the
-//! surface going stale when the activity is backgrounded, the resolution
-//! changing when the device rotates, and touch arriving at all — so this stage
-//! watches exactly those four.
+//! It opens the Vulkan surface through winit's `NativeActivity` window, draws a
+//! test card to the swapchain every frame and reports what the touchscreen
+//! sends. On a phone the things that can only be found on a phone are the
+//! swapchain format, the surface going stale when the activity is backgrounded,
+//! the resolution changing when the device rotates, and touch arriving at all —
+//! so this stage watches exactly those four.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -23,12 +23,143 @@ use winit::window::{Window, WindowId};
 use crate::frame_dump::FrameDump;
 use crate::paths;
 
+/// A block of the test card, placed in the top-left pixel coordinates the touch
+/// events report. Its color is the palette's entry for `slot`. A zero width or
+/// height skips it.
+struct Block {
+    slot: usize,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+/// The card is one oversized triangle per block, clipped to the block's scissor
+/// rect: no index data, no uniforms, and nothing written per frame.
+const CARD_SHADER: &str = r#"
+struct Out {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32, @location(0) color: vec4<f32>) -> Out {
+    // (-1,-1), (3,-1), (-1,3): one triangle covering the framebuffer several
+    // times over, so the scissor rect alone decides which pixels get written.
+    let x = select(-1.0, 3.0, index == 1u);
+    let y = select(-1.0, 3.0, index == 2u);
+    var out: Out;
+    out.position = vec4<f32>(x, y, 0.0, 1.0);
+    out.color = color;
+    return out;
+}
+
+@fragment
+fn fs_main(in: Out) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
+
+/// Four corners, the sweep stripe, up to five fingers and the finger itself.
+const MAX_BLOCKS: usize = 11;
+/// A block is its own three vertices, so drawing it means binding a different
+/// slice. Rewriting one bound buffer between the draws of a single submission is
+/// not something Vulkan can order, and this way there is nothing to order.
+const BLOCK_BYTES: u64 = 3 * 16;
+
+/// One color per slot. The palette never changes, only which blocks are drawn
+/// and where, so it goes to the GPU once.
+const PALETTE: [[f32; 4]; MAX_BLOCKS] = [
+    [1.0, 0.0, 0.0, 1.0], // top left: red
+    [0.0, 1.0, 0.0, 1.0], // top right: green
+    [0.0, 0.0, 1.0, 1.0], // bottom left: blue
+    [1.0, 1.0, 0.0, 1.0], // bottom right: yellow
+    [1.0, 0.0, 1.0, 1.0], // the sweep: magenta
+    [0.0, 1.0, 1.0, 1.0], // one per finger: cyan
+    [0.0, 1.0, 1.0, 1.0],
+    [0.0, 1.0, 1.0, 1.0],
+    [0.0, 1.0, 1.0, 1.0],
+    [0.0, 1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0, 1.0], // where the finger is: white
+];
+
+const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x4];
+
+/// The card's pipeline, compiled by naga into the driver's SPIR-V on the phone.
+struct Card {
+    pipeline: wgpu::RenderPipeline,
+    palette: wgpu::Buffer,
+}
+
+impl Card {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Horizon bring-up card"),
+            source: wgpu::ShaderSource::Wgsl(CARD_SHADER.into()),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon bring-up card"),
+            bind_group_layouts: &[],
+            ..Default::default()
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Horizon bring-up card"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &ATTRIBUTES,
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mut bytes = Vec::with_capacity(MAX_BLOCKS * BLOCK_BYTES as usize);
+        for color in PALETTE {
+            for _ in 0..3 {
+                for channel in color {
+                    bytes.extend_from_slice(&channel.to_le_bytes());
+                }
+            }
+        }
+        let palette = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Horizon bring-up card palette"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&palette, 0, &bytes);
+        Self { pipeline, palette }
+    }
+}
+
 /// The device and the swapchain it presents to.
 struct Screen {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    card: Card,
 }
 
 pub struct BringUp {
@@ -39,6 +170,8 @@ pub struct BringUp {
     frames: u64,
     touches: u64,
     fingers: u32,
+    /// Where the most recent touch landed, while at least one finger is down.
+    touch: Option<(f32, f32)>,
     started: Instant,
 }
 
@@ -127,30 +260,130 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
         app.config().sdk_version()
     );
     surface.configure(&device, &config);
+    // The pipeline target has to be the attachment view's own format, and the
+    // view is made from the swapchain texture without a descriptor.
+    let card = Card::new(&device, &queue, config.format);
+    log::info!("bring-up: the card pipeline compiled");
     Ok(Screen {
         surface,
         device,
         queue,
         config,
+        card,
     })
 }
 
 impl Screen {
-    /// A slow hue cycle: proof that frames reach the display and keep reaching it.
-    fn clear_color(frame: u64, fingers: u32) -> wgpu::Color {
-        let phase = (frame as f64 / 90.0).sin();
+    /// The background stays dark and still, so that the block colors read the
+    /// same in every frame dump and the sweep stripe is what proves frames keep
+    /// arriving.
+    ///
+    /// `wgpu::Color` is 0.0 to 1.0 (`Color::WHITE` is `1.0`, not `255.0`), so
+    /// scaling these by 255 clamps every channel to white and the card below it
+    /// is the only thing left to look at.
+    fn background(fingers: u32) -> wgpu::Color {
         wgpu::Color {
-            r: (0.25 + 0.2 * phase) * 255.0,
-            g: (0.35 + 0.15 * (1.0 - phase) + 0.1 * fingers as f64) * 255.0,
-            b: (0.6 + 0.2 * phase) * 255.0,
-            a: 255.0,
+            r: 0.04,
+            g: 0.05 + 0.03 * fingers.min(4) as f64,
+            b: 0.07,
+            a: 1.0,
         }
+    }
+
+    /// Which way is up, is the loop still running, where the finger is and how
+    /// many there are, each as a block of solid color. Every one of these is
+    /// something the phone can get wrong that a flat clear cannot show: the
+    /// display can be rotated while the framebuffer is not, the driver can
+    /// present one frame and then stop, and touch can arrive in a coordinate
+    /// space that is not the framebuffer's.
+    fn blocks(&self, frame: u64, fingers: u32, touch: Option<(f32, f32)>) -> Vec<Block> {
+        let (width, height) = (self.config.width, self.config.height);
+        let shortest = width.min(height);
+        // Never longer than the axis it is measured against: the corner blocks
+        // are placed by subtracting this from a dimension.
+        let side = (shortest / 8).clamp(16, 192).min(shortest.max(1));
+        let mut blocks = vec![
+            Block {
+                slot: 0,
+                x: 0,
+                y: 0,
+                width: side,
+                height: side,
+            },
+            Block {
+                slot: 1,
+                x: width - side,
+                y: 0,
+                width: side,
+                height: side,
+            },
+            Block {
+                slot: 2,
+                x: 0,
+                y: height - side,
+                width: side,
+                height: side,
+            },
+            Block {
+                slot: 3,
+                x: width - side,
+                y: height - side,
+                width: side,
+                height: side,
+            },
+            // Two seconds per crossing at 120 fps.
+            Block {
+                slot: 4,
+                x: (frame % 240) as u32 * width / 240,
+                y: 0,
+                width: (side / 2).max(8),
+                height,
+            },
+        ];
+        for finger in 0..fingers.min(5) {
+            blocks.push(Block {
+                slot: 5 + finger as usize,
+                x: width / 2 + finger * side,
+                y: height - side,
+                width: side / 2,
+                height: side / 2,
+            });
+        }
+        if let Some((x, y)) = touch {
+            let marker = side.max(32);
+            blocks.push(Block {
+                slot: MAX_BLOCKS - 1,
+                x: (x as u32).saturating_sub(marker / 2),
+                y: (y as u32).saturating_sub(marker / 2),
+                width: marker,
+                height: marker,
+            });
+        }
+        blocks
+    }
+
+    /// One block: bind its three palette vertices, place the scissor rect, draw.
+    fn fill(&self, pass: &mut wgpu::RenderPass<'_>, block: &Block) {
+        // Scissor coordinates are pixels from the top left, the same space touch
+        // reports, and Vulkan wants the rect inside the attachment.
+        let x = block.x.min(self.config.width);
+        let y = block.y.min(self.config.height);
+        let width = block.width.min(self.config.width - x);
+        let height = block.height.min(self.config.height - y);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let start = block.slot as u64 * BLOCK_BYTES;
+        pass.set_vertex_buffer(0, self.card.palette.slice(start..start + BLOCK_BYTES));
+        pass.set_scissor_rect(x, y, width, height);
+        pass.draw(0..3, 0..1);
     }
 
     fn draw(
         &mut self,
         frame: u64,
         fingers: u32,
+        touch: Option<(f32, f32)>,
         dump: &FrameDump,
     ) -> Result<(), Box<dyn Error>> {
         let acquired = match self.surface.get_current_texture() {
@@ -179,19 +412,22 @@ impl Screen {
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(Self::clear_color(frame, fingers)),
+                load: wgpu::LoadOp::Clear(Self::background(fingers)),
                 store: wgpu::StoreOp::Store,
             },
         })];
-        // Nothing to bind: the clear is the whole point of this stage.
-        drop(
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Horizon bring-up clear"),
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Horizon bring-up card"),
                 color_attachments: &attachments,
                 depth_stencil_attachment: None,
                 ..Default::default()
-            }),
-        );
+            });
+            pass.set_pipeline(&self.card.pipeline);
+            for block in self.blocks(frame, fingers, touch) {
+                self.fill(&mut pass, &block);
+            }
+        }
         self.queue.submit([encoder.finish()]);
         // Read before `present`: after it, the driver owns the image again and
         // there is nothing left to copy. Does nothing unless someone asked.
@@ -277,6 +513,7 @@ impl ApplicationHandler for BringUp {
                     TouchPhase::Started => {
                         self.touches += 1;
                         self.fingers += 1;
+                        self.touch = Some((location.x, location.y));
                         log::info!(
                             "bring-up: touch {id} down at {:.0}x{:.0} force {:?}",
                             location.x,
@@ -284,9 +521,12 @@ impl ApplicationHandler for BringUp {
                             force
                         );
                     }
-                    TouchPhase::Moved => {}
+                    TouchPhase::Moved => self.touch = Some((location.x, location.y)),
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.fingers = self.fingers.saturating_sub(1);
+                        if self.fingers == 0 {
+                            self.touch = None;
+                        }
                         log::info!("bring-up: touch {id} up ({} fingers left)", self.fingers);
                     }
                 }
@@ -296,7 +536,8 @@ impl ApplicationHandler for BringUp {
                     return;
                 };
                 self.frames += 1;
-                if let Err(error) = screen.draw(self.frames, self.fingers, &self.dump) {
+                if let Err(error) = screen.draw(self.frames, self.fingers, self.touch, &self.dump)
+                {
                     log::error!("bring-up: frame failed: {error}");
                     event_loop.exit();
                     return;
@@ -360,6 +601,7 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
         frames: 0,
         touches: 0,
         fingers: 0,
+        touch: None,
         started: Instant::now(),
     })?;
     log::info!("bring-up: the event loop ended");
