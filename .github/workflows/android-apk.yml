@@ -95,6 +95,9 @@ jobs:
 
       - name: Check the engine for aarch64-linux-android
         run: |
+          # Actions runs `bash -e`; the check is expected to fail, and its report
+          # is the whole point, so nothing here may stop the script.
+          set +e
           set -uo pipefail
           # No default features: `controllers` is evdev/libudev and GameInput, and
           # `mods` is wasmtime, which is both a quarter of the build and W^X-hostile
@@ -102,7 +105,7 @@ jobs:
           cargo check --target "$CARGO_TARGET" --profile fast \
             -p horizon-client --no-default-features --features audio \
             --message-format=short > /tmp/engine.log 2>&1
-          echo "exit: $?" >> /tmp/engine.log
+          echo "cargo exit: $?" >> /tmp/engine.log
           echo "## errors, grouped"
           grep -E 'error(\[|:)' /tmp/engine.log | \
             sed -E 's/^[^ ]+: error: //' | sort | uniq -c | sort -rn | head -60

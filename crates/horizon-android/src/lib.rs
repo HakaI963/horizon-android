@@ -35,10 +35,10 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     let _ = APP.set(app.clone());
     paths::enter_app_storage(&app);
     log::info!(
-        "Horizon for Android starting: sdk {}, model {:?} {:?}, import dir {}",
+        "Horizon for Android starting: sdk {}, {} {}, import dir {}",
         app.config().sdk_version(),
         std::env::consts::ARCH,
-        std::env::consts::ENDIAN,
+        if cfg!(target_endian = "little") { "little" } else { "big" },
         paths::import_dir(&app).display()
     );
     // A panic here would otherwise unwind into the C entry point and abort the

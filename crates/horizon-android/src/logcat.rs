@@ -49,11 +49,15 @@ impl log::Log for Logcat {
     fn flush(&self) {}
 }
 
+static LOGCAT: Logcat = Logcat;
+
 /// Sends `log` records and panics to logcat under one tag, and keeps the panic
 /// message: an Android process that dies with a Rust panic leaves nothing behind
 /// but an empty screen otherwise.
 pub fn init() {
-    let _ = log::set_boxed_logger(Box::new(Logcat));
+    // `&'static`, so no `alloc` feature is needed for the logger itself; calling
+    // twice (the activity can be recreated) keeps the first logger.
+    let _ = log::set_logger(&LOGCAT);
     log::set_max_level(log::LevelFilter::Debug);
     std::panic::set_hook(Box::new(|info| {
         let tag = CString::new("horizon.panic").expect("static tag");

@@ -66,7 +66,7 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
         force_fallback_adapter: false,
         ..Default::default()
     }))
-    .ok_or("no Vulkan adapter on this device")?;
+    .map_err(|error| format!("no Vulkan adapter on this device: {error}"))?;
     let info = adapter.get_info();
     log::info!(
         "bring-up: adapter {:?} ({}) vendor {} driver {:?}",
@@ -285,12 +285,8 @@ impl ApplicationHandler for BringUp {
         log::info!("bring-up: activity suspended");
     }
 
-    fn destroyed(&mut self, _: &ActiveEventLoop) {
-        // The window and the swapchain built on it are gone; `resumed` makes
-        // both again if the activity comes back.
-        self.window = None;
-        self.screen = None;
-        log::info!("bring-up: window destroyed");
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        log::info!("bring-up: activity exiting");
     }
 }
 
