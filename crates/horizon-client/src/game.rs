@@ -12867,7 +12867,7 @@ fn write_report(game: &Game<'_>) -> Result<()> {
     Ok(())
 }
 
-fn run_event_loop(mut game: Game<'_>, mut event_loop: EventLoop) -> Result<()> {
+fn run_event_loop(mut game: Game<'_>, mut event_loop: EventLoop<()>) -> Result<()> {
     event_loop.run_app(&mut game)?;
     write_report(&game)?;
     if let Some(e) = game.error.take() {
@@ -13200,7 +13200,7 @@ fn run_loading(
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
-    mut event_loop: EventLoop,
+    mut event_loop: EventLoop<()>,
 ) -> Result<()> {
     let progress = Progress::new();
     let (receiver, loader) =
@@ -13252,7 +13252,7 @@ pub fn run() -> Result<()> {
 /// `NativeActivity` can only make a winit loop out of the `AndroidApp` the system
 /// hands to `android_main`, and it is handed exactly once, so the activity builds
 /// the loop and calls this instead of [`run`].
-pub fn run_with(event_loop: EventLoop) -> Result<()> {
+pub fn run_with(event_loop: EventLoop<()>) -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
