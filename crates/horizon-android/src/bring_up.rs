@@ -1,12 +1,15 @@
-//! Stage A of the port: prove the platform layer on real hardware before the
-//! engine is wired in.
+//! The card that runs when there is no game to run.
 //!
-//! It opens the Vulkan surface through winit's `NativeActivity` window, draws a
-//! test card to the swapchain every frame and reports what the touchscreen
-//! sends. On a phone the things that can only be found on a phone are the
-//! swapchain format, the surface going stale when the activity is backgrounded,
-//! the resolution changing when the device rotates, and touch arriving at all —
-//! so this stage watches exactly those four.
+//! A phone without a prepared resource pack has no world to show, and a black window
+//! tells nobody anything, so the adapter draws this instead. It opens the Vulkan surface
+//! through winit's `NativeActivity` window, presents a test card every frame and reports
+//! what the touchscreen sends, and it carries the same on-screen controls the game uses,
+//! which is the only way to tell a dead button from a dead engine.
+//!
+//! On a phone the things that can only be found on a phone are the swapchain format,
+//! the surface going stale when the activity is backgrounded, the resolution changing
+//! when the device rotates, and touch arriving at all — so the card watches exactly
+//! those four.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -16,7 +19,6 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{Touch, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 use winit::window::{Window, WindowId};
 
@@ -167,6 +169,10 @@ struct Screen {
 
 pub struct BringUp {
     app: AndroidApp,
+    /// Why the card is on the screen instead of the game, in the corner of it. A phone
+    /// has no terminal, and a missing resource pack looks exactly like a dead driver
+    /// unless the picture says which it is.
+    notice: String,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
     dump: Arc<FrameDump>,
@@ -544,37 +550,37 @@ impl ApplicationHandler for BringUp {
                     .as_ref()
                     .map(|screen| (screen.config.width, screen.config.height))
                     .unwrap_or((1, 1));
+                // winit hands touch over in logical pixels; the buttons, the blocks and
+                // a frame dump are all in the framebuffer's own, so a tap has to be
+                // converted before either the layout or the picture sees it. On a
+                // 320 dpi phone the two spaces differ by a factor of two, which is the
+                // difference between a button answering and a button nowhere near it.
+                let scale = self
+                    .window
+                    .as_ref()
+                    .map(|window| window.scale_factor())
+                    .unwrap_or(1.0) as f32;
+                let (x, y) = (location.x as f32 * scale, location.y as f32 * scale);
                 match phase {
                     TouchPhase::Started => {
                         self.touches += 1;
                         self.fingers += 1;
-                        self.touch = Some((location.x, location.y));
+                        self.touch = Some((f64::from(x), f64::from(y)));
                         log::info!(
-                            "bring-up: touch {id} down at {:.0}x{:.0} force {:?}",
+                            "bring-up: touch {id} down at {x:.0}x{y:.0} (logical {:.0}x{:.0}, \
+                             scale {scale}) force {:?}",
                             location.x,
                             location.y,
                             force
                         );
                         horizon_overlay::with(|overlay| {
-                            overlay.finger_down(
-                                id,
-                                location.x as f32,
-                                location.y as f32,
-                                width as f32,
-                                height as f32,
-                            );
+                            overlay.finger_down(id, x, y, width as f32, height as f32);
                         });
                     }
                     TouchPhase::Moved => {
-                        self.touch = Some((location.x, location.y));
+                        self.touch = Some((f64::from(x), f64::from(y)));
                         horizon_overlay::with(|overlay| {
-                            overlay.finger_move(
-                                id,
-                                location.x as f32,
-                                location.y as f32,
-                                width as f32,
-                                height as f32,
-                            );
+                            overlay.finger_move(id, x, y, width as f32, height as f32);
                         });
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
@@ -593,16 +599,20 @@ impl ApplicationHandler for BringUp {
                 let fps = self.frames as f64 / elapsed.as_secs_f64().max(0.001);
                 // One line the frame dump can show and logcat does not need: the tools
                 // on a phone read the picture.
-                let status = format!(
-                    "{:.0} fps, {} fingers, {} touches, {}",
-                    fps,
-                    self.fingers,
-                    self.touches,
-                    horizon_overlay::with(|overlay| overlay.hud().pressed_actions().len())
-                        .unwrap_or(0)
+                let (fingers, touches) = (self.fingers, self.touches);
+                let pressed = horizon_overlay::with(|overlay| {
+                    overlay.hud().pressed_actions().len()
+                })
+                .unwrap_or(0);
+                let line = format!(
+                    "{fps:.0} fps, {fingers} fingers, {touches} touches, {pressed} pressed"
                 );
-                let (frames, fingers, touch, dump) =
-                    (self.frames, self.fingers, self.touch, self.dump.clone());
+                let status = if self.notice.is_empty() {
+                    line
+                } else {
+                    format!("{} — {line}", self.notice)
+                };
+                let (frames, touch, dump) = (self.frames, self.touch, self.dump.clone());
                 let edges = match horizon_overlay::with(|overlay| {
                     screen.draw(overlay, &status, frames, fingers, touch, &dump)
                 }) {
@@ -616,8 +626,8 @@ impl ApplicationHandler for BringUp {
                     // is that no overlay was ever installed, which is a bug in `run`.
                     None => Vec::new(),
                 };
-                // Nothing runs a game here yet, so what a press did is written down and
-                // thrown away: the line is the proof that a tap reached a button.
+                // No game runs behind this card, so what a press did is written down
+                // and thrown away: the line is the proof that a tap reached a button.
                 for (action, down) in edges {
                     log::info!("bring-up: {} {}", action.text(), if down { "down" } else { "up" });
                 }
@@ -666,10 +676,16 @@ impl ApplicationHandler for BringUp {
     }
 }
 
-pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
-    let mut builder = EventLoop::builder();
-    builder.with_android_app(app.clone());
-    let event_loop = builder.build()?;
+/// Draw the card on the loop the activity handed over.
+///
+/// The loop comes in rather than being built here: Android registers winit's handler on
+/// the activity the first time a loop is made and refuses a second one, so whoever
+/// builds it decides what runs. `notice` says why that is the card and not the game.
+pub fn run(
+    app: &AndroidApp,
+    event_loop: EventLoop<()>,
+    notice: &str,
+) -> Result<(), Box<dyn Error>> {
     log::info!("bring-up: running the event loop");
     // The on-screen controls are what the player has instead of a keyboard from the
     // first frame onward, so the card carries them: the same thread-global overlay the
@@ -677,6 +693,7 @@ pub fn run(app: &AndroidApp) -> Result<(), Box<dyn Error>> {
     horizon_overlay::install(&paths::controls_path(app));
     event_loop.run_app(&mut BringUp {
         app: app.clone(),
+        notice: notice.to_owned(),
         window: None,
         screen: None,
         dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),

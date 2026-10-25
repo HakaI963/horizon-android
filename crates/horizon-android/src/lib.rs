@@ -63,29 +63,40 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
 /// Run the game, or what stands in for it until the game can run.
 ///
 /// A phone gives no terminal and keeps no exit status: whatever goes wrong has to
-/// leave something on screen that the tools can still look at. So the engine is
-/// tried first even when its pack is missing — the adapter it picks, the window it
-/// makes and the error it finally gives are worth more on a screen than a
-/// prediction of them — and what is left when it stops is the bring-up card, which
-/// keeps the window, the touch path and the frame server alive.
+/// leave something on screen that the tools can still look at. The trouble is that
+/// Android allows one winit event loop per activity — building a loop registers
+/// winit's handler on it, and a second build is refused — so the loop belongs to
+/// `play`, and whichever handler takes it owns the window until the process ends.
+/// The choice has to be made before the loop is spent, and a resource pack is the
+/// thing that decides: without one the engine cannot load an asset, draw a title or
+/// open a world, so the card takes the loop and the engine is not tried.
 fn play(app: &winit::platform::android::activity::AndroidApp) {
+    let event_loop = match engine::event_loop(app) {
+        Ok(event_loop) => event_loop,
+        Err(error) => {
+            log::error!("Horizon for Android: no event loop: {error}");
+            return;
+        }
+    };
     let pack = paths::resources_dir(app).join("horizon-resources.json");
     if !pack.is_file() {
-        log::warn!("Horizon for Android: no prepared pack at {}", pack.display());
-    }
-    if let Err(error) = engine::run(app) {
-        log::error!("Horizon for Android: the engine stopped: {error}");
-    } else {
+        let import = paths::import_dir(app);
+        log::warn!(
+            "Horizon for Android: no prepared pack at {}, showing the bring-up card. Prepare it \
+             on a computer with `horizon-prepare` — it drives a JVM, so it cannot be done here — \
+             and copy the `.local/horizon-client/{}` folder to {import}/",
+            pack.display(),
+            paths::INSTANCE,
+        );
+        if let Err(error) = bring_up::run(app, event_loop, "no resource pack: put one in import/")
+        {
+            log::error!("Horizon for Android: the bring-up card stopped: {error}");
+        }
         return;
     }
-    log::error!(
-        "Horizon for Android: showing the bring-up card instead. Prepare the pack on a computer \
-         with `horizon-prepare` — it drives a JVM, so it cannot be done here — and copy its \
-         `.local/horizon-client/{}` folder to {}",
-        paths::INSTANCE,
-        paths::import_dir(app).display()
-    );
-    if let Err(error) = bring_up::run(app) {
-        log::error!("Horizon for Android: the bring-up card stopped: {error}");
+    if let Err(error) = engine::run(event_loop) {
+        // Nothing can be drawn from here: the engine spent the only loop, and a
+        // second one is refused. What the player gets is the logcat line above.
+        log::error!("Horizon for Android: the engine stopped: {error}");
     }
 }
