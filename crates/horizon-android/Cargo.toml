@@ -36,5 +36,11 @@ horizon-core = { path = "../horizon-core" }
 horizon-controls = { path = "../horizon-controls" }
 horizon-overlay = { path = "../horizon-overlay" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# `ClipboardManager` is a Java object, and this is the one crate allowed to reach it
+# over JNI. Pinned to what `android-activity` (through winit) already carries, so the
+# `JavaVM` and the activity reference come out of `AndroidApp` needing no conversion.
+jni = "0.22.4"
+
 [lints]
 workspace = true

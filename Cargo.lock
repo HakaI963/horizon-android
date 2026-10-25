@@ -1233,6 +1233,7 @@ dependencies = [
  "horizon-controls",
  "horizon-core",
  "horizon-overlay",
+ "jni 0.22.4",
  "log",
  "png",
  "pollster",

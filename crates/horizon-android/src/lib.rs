@@ -13,6 +13,8 @@
 #[cfg(target_os = "android")]
 mod bring_up;
 #[cfg(target_os = "android")]
+mod clipboard;
+#[cfg(target_os = "android")]
 mod engine;
 #[cfg(target_os = "android")]
 mod frame_dump;
@@ -22,7 +24,7 @@ mod logcat;
 mod paths;
 
 /// The activity, for the seams that need it: the event loop builder, the storage
-/// paths and later the JNI environment.
+/// paths, and the clipboard, whose `ClipboardManager` hangs off this one `Context`.
 #[cfg(target_os = "android")]
 pub(crate) static APP: std::sync::OnceLock<winit::platform::android::activity::AndroidApp> =
     std::sync::OnceLock::new();
@@ -37,6 +39,8 @@ pub(crate) static APP: std::sync::OnceLock<winit::platform::android::activity::A
 pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity::AndroidApp) {
     logcat::init();
     let _ = APP.set(app.clone());
+    // The clipboard's JNI goes through `APP`, so it can only be registered after it.
+    clipboard::install();
     paths::enter_app_storage(&app);
     log::info!(
         "Horizon for Android starting: sdk {}, {} {}, import dir {}",

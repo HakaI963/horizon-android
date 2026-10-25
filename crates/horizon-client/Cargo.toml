@@ -62,7 +62,8 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 # The system clipboard: X11, Wayland data-control, Win32, Cocoa. Android's
 # clipboard belongs to the activity and is reached over JNI, not here, so the
-# dependency stays off that target (clipboard.rs keeps the game's own copy).
+# dependency stays off that target (clipboard.rs takes the two calls from the
+# adapter crate instead, through `install_system`).
 arboard = { version = "3.6.1", default-features = false, features = [
     "wayland-data-control",
 ] }

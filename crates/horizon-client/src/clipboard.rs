@@ -111,9 +111,10 @@ pub trait Clipboard {
 /// without it. When no system clipboard can be reached, text copied in the
 /// game can still be pasted in the game.
 ///
-/// Android has no arboard backend, so there it is the in-game clipboard only:
-/// copy and paste work between text fields, and nothing reaches
-/// `ClipboardManager` or crosses into other apps.
+/// Android has no arboard backend: its `ClipboardManager` is a Java object, and
+/// the JNI that reaches it cannot live in a crate that forbids `unsafe_code`.
+/// The adapter crate registers it with [`install_system`] at startup; where it
+/// has not, the game's own copy is the whole of the clipboard.
 #[derive(Default)]
 pub struct SystemClipboard {
     #[cfg(not(target_os = "android"))]
@@ -166,14 +167,52 @@ impl Clipboard for SystemClipboard {
     }
 }
 
+/// The two `ClipboardManager` calls, as plain functions: JNI types cannot cross
+/// into this crate, so the platform hands over its clipboard this way.
+#[cfg(target_os = "android")]
+pub struct SystemHooks {
+    /// The system's text, or `None` when there is no system clipboard to ask.
+    pub get: fn() -> Option<String>,
+    /// `ClipData.newPlainText` into `setPrimaryClip`: false when it did not land.
+    pub set: fn(&str) -> bool,
+}
+
+/// The clipboard the adapter crate registered, if it registered one before the
+/// game first asked.
+#[cfg(target_os = "android")]
+static SYSTEM: std::sync::OnceLock<SystemHooks> = std::sync::OnceLock::new();
+
+/// Hand the system clipboard to this crate, once, at startup.
+///
+/// Called from the Android entry point, which is the only place allowed to build
+/// the hooks. False means another clipboard was registered already, which a second
+/// `android_main` in the same process would do.
+#[cfg(target_os = "android")]
+pub fn install_system(hooks: SystemHooks) -> bool {
+    SYSTEM.set(hooks).is_ok()
+}
+
 #[cfg(target_os = "android")]
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> String {
-        self.copied.clone().unwrap_or_default()
+        match SYSTEM.get().and_then(|hooks| (hooks.get)()) {
+            // The system answered, even with nothing selected.
+            Some(text) => text,
+            // No clipboard manager, or a JNI call that failed: paste what the game
+            // last copied, which is what an unreachable system clipboard means here.
+            None => self.copied.clone().unwrap_or_default(),
+        }
     }
     fn set(&mut self, text: &str) {
-        if !text.is_empty() {
-            self.copied = Some(text.to_owned());
+        if text.is_empty() {
+            return;
+        }
+        self.copied = Some(text.to_owned());
+        // Kept whether or not this reached `ClipboardManager`: `copied` is what
+        // `horizon-ctl status` reports, and a refused copy still has to be pasteable
+        // in the game.
+        if let Some(hooks) = SYSTEM.get() {
+            (hooks.set)(text);
         }
     }
 }
