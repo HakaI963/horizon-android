@@ -64,10 +64,11 @@ jobs:
         run: cargo test --package horizon-controls
 
   # What the engine itself needs before it can run on a phone. `cargo check` is
-  # the cheapest way to ask: it compiles every `cfg`, so each Unix-ism, each
-  # crate without an Android backend and each desktop-only API shows up as an
-  # error with a file and a line. The list is the porting plan, and it is only
-  # honest when produced by a real rustc for aarch64-linux-android.
+  # the cheapest way to ask: it compiles every `cfg` for the phone's own target, so
+  # each Unix-ism, each crate without an Android backend and each desktop-only API
+  # shows up as an error with a file and a line. That list was the porting plan; it
+  # is now empty, so the job fails when it is not, and the engine stays honest about
+  # compiling by being checked by a real rustc for aarch64-linux-android.
   engine:
     name: engine check (aarch64)
     runs-on: ubuntu-24.04
@@ -140,10 +141,13 @@ jobs:
           cat /tmp/summary.txt
           tail -30 /tmp/engine.log
           cat /tmp/engine.log /tmp/summary.txt > engine-check.log
-          # The job stays green on purpose: this is a survey of what the port has
-          # to fix, and the APK job is the one that says whether Stage A works.
+          # It used to be a survey: the engine did not compile for a phone at all, and
+          # the list of what failed was the porting plan. It compiles now, so a failure
+          # here is a regression, and one to hear about in a minute rather than in the
+          # APK job six minutes later.
           if grep -qE 'error(\[|:)' /tmp/engine.log; then
-            echo "::warning::the engine does not check for aarch64-linux-android yet; see the engine-check artifact"
+            echo "::error::the engine does not compile for aarch64-linux-android"
+            exit 1
           fi
 
       - name: Upload the whole check

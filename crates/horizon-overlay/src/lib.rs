@@ -242,7 +242,7 @@ impl Overlay {
     /// press one frame late, and on a phone the player feels that in the first second.
     pub fn presses(&mut self) -> Vec<(Action, bool)> {
         let edges = self.hud.take_edges();
-        for (action, down) in edges.iter().filter(|(action, _)| *action == Action::Menu) {
+        for (_, down) in edges.iter().filter(|(action, _)| *action == Action::Menu) {
             if *down {
                 self.panel = !self.panel;
                 log::info!(
