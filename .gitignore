@@ -31,3 +31,9 @@
 /.horizon-cache/
 /crash-reports/
 /debug/
+# The APK shell: cargo's engine library is copied in front of Gradle by CI, and
+# Gradle writes its own output. None of it belongs in the repository.
+/android/app/src/main/jniLibs/arm64-v8a/*.so
+/android/**/build/
+/android/.gradle/
+/android/local.properties

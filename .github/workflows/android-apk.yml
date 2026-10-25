@@ -1,0 +1,235 @@
+name: Android APK
+
+# Nothing Android-related is built locally: cargo cross-compiles the engine for
+# aarch64-linux-android here, and Gradle only packages the `.so` into an APK.
+on:
+  workflow_dispatch:
+    inputs:
+      ndk:
+        description: "Android NDK version to install (blank = newest available)"
+        required: false
+        default: ""
+      api:
+        description: "Android API level to link against"
+        required: false
+        default: "26"
+      cargo_profile:
+        description: "Cargo profile to build"
+        required: false
+        default: "fast"
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cached artifacts are per-commit here; incremental state would only bloat the runner.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # The engine declares edition 2024 and rust-version 1.90; the runner's own rustc is
+  # whatever the image shipped with, so the build pins one instead.
+  RUST_TOOLCHAIN: "1.90.0"
+  ANDROID_PLATFORM: "35"
+  CARGO_TARGET: aarch64-linux-android
+
+jobs:
+  apk:
+    name: arm64-v8a (${{ github.event.inputs.cargo_profile || 'fast' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      ndk: ${{ steps.toolchain.outputs.ndk }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # `workflow_dispatch` inputs reach the shell, so they are held in environment
+      # variables and checked before anything uses them as a version or a path.
+      - name: Check the requested inputs
+        env:
+          NDK: ${{ github.event.inputs.ndk }}
+          API: ${{ github.event.inputs.api }}
+          PROFILE: ${{ github.event.inputs.cargo_profile }}
+        run: |
+          set -euo pipefail
+          [ -z "${NDK:-}" ] || echo "$NDK" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::ndk must look like 28.1.13356706, got '$NDK'"; exit 1; }
+          : "${API:=26}"
+          echo "$API" | grep -qE '^(2[1-9]|3[0-9])$' \
+            || { echo "::error::api must be an Android API level from 21 to 39, got '$API'"; exit 1; }
+          : "${PROFILE:=fast}"
+          echo "$PROFILE" | grep -qE '^[a-z0-9_-]+$' \
+            || { echo "::error::cargo_profile must be a profile name, got '$PROFILE'"; exit 1; }
+          echo "API=$API" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE=$PROFILE" >> "$GITHUB_ENV"
+          echo "NDK_REQUESTED=$NDK" >> "$GITHUB_ENV"
+
+      - name: Report the toolchain the runner came with
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          java -version 2>&1 | head -1
+          echo "ndk dirs already present: $(ls "$ANDROID_HOME/ndk" 2>/dev/null | tr '\n' ' ')"
+
+      - name: Install the Android NDK and the platform Gradle needs
+        id: toolchain
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort | tail -1)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::no sdkmanager in \$ANDROID_HOME ($ANDROID_HOME)"
+            exit 1
+          fi
+          echo "using $SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+
+          # Prefer an NDK the image already has: it is the same compiler, and it
+          # saves downloading a package a gigabyte and a half over.
+          NDK="$NDK_REQUESTED"
+          if [ -z "$NDK" ]; then
+            NDK="$(ls "$ANDROID_HOME/ndk" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          fi
+          if [ -z "$NDK" ]; then
+            NDK="$("$SDKMANAGER" --sdk_root="$ANDROID_HOME" --list 2>/dev/null \
+              | grep -oE 'ndk;[0-9]+\.[0-9]+\.[0-9]+' \
+              | sort -V | tail -1 | cut -d';' -f2)"
+          fi
+          if [ -z "$NDK" ]; then
+            echo "::error::could not find an NDK to install"
+            exit 1
+          fi
+          echo "ndk=$NDK" >> "$GITHUB_OUTPUT"
+          echo "installing ndk;$NDK, platforms;android-$ANDROID_PLATFORM, build-tools;$ANDROID_PLATFORM.0.0"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
+            "ndk;$NDK" "platforms;android-$ANDROID_PLATFORM" \
+            "build-tools;$ANDROID_PLATFORM.0.0" > /dev/null
+
+          NDK_HOME="$ANDROID_HOME/ndk/$NDK"
+          LLVM_BIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$LLVM_BIN/clang++"
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK_HOME" >> "$GITHUB_ENV"
+          # The `cc` crate (android-activity's C glue, imgui-cpp later) looks here.
+          echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "LLVM_BIN=$LLVM_BIN" >> "$GITHUB_ENV"
+          echo "installed: $("$LLVM_BIN/clang++" --version | head -1)"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$CARGO_TARGET"
+          rustc --version
+          cargo --version
+
+      - name: Point cargo at the NDK's clang
+        run: |
+          set -euo pipefail
+          # The versioned wrappers do two jobs at once: they pass --target=aarch64-linux-android$API
+          # (so -D__ANDROID_API__ matches the minSdk, which the C++ and asm dependencies care about)
+          # and they link against the right sysroot.
+          WRAPPER="$LLVM_BIN/aarch64-linux-android${API}-clang++"
+          CC="$LLVM_BIN/aarch64-linux-android${API}-clang"
+          if [ ! -x "$WRAPPER" ] || [ ! -x "$CC" ]; then
+            echo "::error::$LLVM_BIN has no aarch64-linux-android${API}-clang wrapper"
+            ls "$LLVM_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang' | head -20
+            exit 1
+          fi
+          {
+            echo "CC_aarch64_linux_android=$CC"
+            echo "CXX_aarch64_linux_android=$WRAPPER"
+            echo "AR_aarch64_linux_android=$LLVM_BIN/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$WRAPPER"
+          } >> "$GITHUB_ENV"
+          echo "linker: $WRAPPER (api $API)"
+
+          # rustc learned `-C android-target-api-level` after 1.90 in some distributions and
+          # does not know it in others; it only affects which symbols std may reference, and
+          # the clang wrappers already cover the C/C++ side, so probe rather than assume.
+          printf 'fn main() {}\n' > /tmp/api_probe.rs
+          if rustc --target "$CARGO_TARGET" --emit=metadata \
+              -C "android-target-api-level=$API" /tmp/api_probe.rs -o /tmp/api_probe.rmeta 2>/dev/null; then
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C android-target-api-level=$API" >> "$GITHUB_ENV"
+            echo "rustc accepts -C android-target-api-level"
+          else
+            echo "rustc has no -C android-target-api-level; relying on the clang wrappers"
+          fi
+
+      - name: Cache the crates registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ env.CARGO_TARGET }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ env.CARGO_TARGET }}-
+
+      - name: Build the engine for ${{ env.CARGO_TARGET }}
+        run: |
+          set -euo pipefail
+          cargo build --target "$CARGO_TARGET" --profile "$CARGO_PROFILE" -p horizon-android
+          SO="target/$CARGO_TARGET/$CARGO_PROFILE/libhorizon_android.so"
+          ls -l "$SO"
+          readelf -h "$SO" | sed -n '1,12p'
+          echo "exported entry point:"
+          readelf --dyn-syms -W "$SO" | grep -i 'ANativeActivity_onCreate\|android_main'
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp "$SO" android/app/src/main/jniLibs/arm64-v8a/
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Package and sign the APK
+        working-directory: android
+        run: |
+          set -euo pipefail
+          gradle --no-daemon assembleDebug \
+            -PhorizonVersionName="0.1.0-${GITHUB_SHA::7}" \
+            -PhorizonVersionCode="$GITHUB_RUN_NUMBER"
+
+      - name: Report what came out
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          ls -l "$APK"
+          python3 - "$APK" /tmp/from_apk.so <<'PY'
+          import sys, zipfile
+          apk, out = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+              print("entries:", len(names))
+              for n in names:
+                  if n.endswith(".so") or n.endswith(".dex") or n == "AndroidManifest.xml":
+                      print(" ", n, z.getinfo(n).file_size)
+              with open(out, "wb") as f:
+                  f.write(z.read("lib/arm64-v8a/libhorizon_android.so"))
+          PY
+          readelf -h /tmp/from_apk.so | sed -n '1,12p'
+          echo "minimum Android API the library declares:"
+          readelf -p .note.android.ident /tmp/from_apk.so | sed -n '1,16p'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-android-arm64
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      # The lock file changes as soon as the Android dependencies of winit and wgpu
+      # are resolved; keeping it lets the port record exactly what the phone build uses.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          if-no-files-found: ignore

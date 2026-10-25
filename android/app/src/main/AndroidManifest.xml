@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The activity is the platform's own NativeActivity: it creates the ANativeWindow
+    the Vulkan swapchain presents to and loads libhorizon_android.so by name, so the
+    app has no Java or Kotlin code at all.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Reading a resource set the user copied onto the device. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="true" />
+
+    <application
+        android:allowBackup="false"
+        android:appCategory="game"
+        android:hasFragileUserData="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Horizon">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenOrientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|density|navigation|layoutDirection|locale|fontScale"
+            android:exported="true"
+            android:keepScreenOn="true"
+            android:label="@string/app_name"
+            android:resizeableActivity="true"
+            android:theme="@style/Horizon">
+            <!-- The engine library NativeActivity loads; it exports android_main. -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="horizon_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

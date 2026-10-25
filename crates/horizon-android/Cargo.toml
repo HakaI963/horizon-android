@@ -1,0 +1,28 @@
+[package]
+name = "horizon-android"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Horizon on Android: the native aarch64 entry point behind a NativeActivity"
+
+# A cdylib: the `.so` the activity loads. `rlib` as well so the crate can be
+# tested from the host, where there is no activity to attach to.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+# Only the Android backend: this crate never sees X11, Wayland or the macOS
+# object tree, and leaving them out keeps the phone build small and honest.
+# `rwh_06` is winit's raw-window-handle bridge, and wgpu needs it to turn the
+# `Arc<Window>` into a `VkAndroidSurfaceCreateInfoKHR` input.
+winit = { version = "0.30.13", default-features = false, features = [
+    "android-native-activity",
+    "rwh_06",
+] }
+pollster = "0.4"
+log = "0.4"
+
+[lints]
+workspace = true
