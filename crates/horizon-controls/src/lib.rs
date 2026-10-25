@@ -407,10 +407,13 @@ impl Hud {
             .find(|(_, rect)| rect.contains(x, y))
             .map(|(action, _)| action);
         // While the layout is being arranged a finger picks its button up instead of
-        // pressing it, and turns nothing: editing a HUD must not mine a block.
+        // pressing it, and turns nothing: editing a HUD must not mine a block. The
+        // panel's own button is the exception: it is the only way back to the switch
+        // that ends the arranging, and a MENU that can only be dragged puts the panel
+        // behind a door with no handle.
         let editing = self.edit;
         let looking = !editing && hit.is_none() && self.layout.drag_to_look;
-        if !editing {
+        if !editing || hit.is_some_and(Action::is_overlay) {
             if let Some(action) = hit {
                 self.press(action);
             }
@@ -684,6 +687,25 @@ mod tests {
             "the button should have followed the finger from {before:?} to [100,100], got {after:?}"
         );
         assert_eq!(hud.take_look(), [0.0, 0.0], "editing never turns the camera");
+    }
+
+    #[test]
+    fn the_menu_button_answers_even_while_the_layout_is_being_arranged() {
+        let mut hud = hud();
+        hud.edit = true;
+        let menu = hud
+            .buttons(WIDTH, HEIGHT)
+            .into_iter()
+            .find(|(action, _)| *action == Action::Menu)
+            .map(|(_, rect)| rect.center())
+            .unwrap();
+        assert!(hud.down(1, menu[0], menu[1], WIDTH, HEIGHT));
+        hud.up(1);
+        assert_eq!(
+            hud.take_edges(),
+            vec![(Action::Menu, true), (Action::Menu, false)],
+            "the panel is the only door back to the switch that ends the arranging"
+        );
     }
 
     #[test]
