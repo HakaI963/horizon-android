@@ -38,6 +38,8 @@ pub enum Action {
     Pick,
     Inventory,
     Drop,
+    /// The F key: the item in the main hand and the off hand trade places.
+    SwapOffhand,
     Chat,
     Command,
     TabList,
@@ -45,6 +47,8 @@ pub enum Action {
     Pause,
     /// The view bobbing and third-person toggle the F5 key carries.
     View,
+    /// The F2 key: a screenshot, written to the instance's `screenshots` folder.
+    Screenshot,
     /// Not a key at all: the button that opens the overlay's own settings panel.
     /// It is in the layout because it has to be draggable like everything else, and
     /// the overlay answers it instead of the game.
@@ -72,12 +76,14 @@ impl Action {
             Action::Pick => "PICK",
             Action::Inventory => "BAG",
             Action::Drop => "DROP",
+            Action::SwapOffhand => "F",
             Action::Chat => "CHAT",
             Action::Command => "CMD",
             Action::TabList => "TAB",
             Action::Debug => "F3",
             Action::Pause => "ESC",
             Action::View => "F5",
+            Action::Screenshot => "F2",
             Action::Menu => "MENU",
             Action::Hotbar(_) => "",
         }
@@ -228,6 +234,11 @@ impl Default for Layout {
             control(Action::Fly, 0.675, 0.72, 0.09),
             control(Action::Pick, 0.96, 0.47, 0.08),
             control(Action::Menu, 0.045, 0.05, 0.075),
+            // The two keys that fit in the gap between the menu button and the
+            // hotbar: the off hand and a screenshot, which vanilla reaches with F
+            // and F2 and a finger would otherwise have no way to press.
+            control(Action::SwapOffhand, 0.18, 0.05, 0.05),
+            control(Action::Screenshot, 0.24, 0.05, 0.05),
             control(Action::Pause, 0.045, 0.155, 0.075),
             control(Action::Inventory, 0.55, 0.155, 0.08),
             control(Action::Drop, 0.63, 0.155, 0.08),

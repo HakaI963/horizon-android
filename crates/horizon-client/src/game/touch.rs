@@ -300,11 +300,13 @@ fn mapping(action: Action) -> Option<String> {
         Action::Pick => "key.pickItem",
         Action::Inventory => "key.inventory",
         Action::Drop => "key.drop",
+        Action::SwapOffhand => "key.swapOffhand",
         Action::Chat => "key.chat",
         Action::Command => "key.command",
         Action::TabList => "key.playerlist",
         Action::Debug => "key.debug.overlay",
         Action::View => "key.togglePerspective",
+        Action::Screenshot => "key.screenshot",
         Action::Hotbar(slot) => return Some(format!("key.hotbar.{slot}")),
         Action::Fly | Action::Pause | Action::Menu => return None,
     };
