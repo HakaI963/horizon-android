@@ -14,7 +14,7 @@
 
 use jni::objects::{JObject, JString, Reference};
 use jni::vm::JavaVM;
-use jni::{Env, jni_sig, jni_str, sys};
+use jni::{jni_sig, jni_str, sys};
 
 use horizon_client::soft_keyboard::{install_system, SystemHooks};
 
@@ -45,15 +45,15 @@ fn context() -> Option<(JavaVM, sys::jobject)> {
 }
 
 fn show() {
-    call("show", "horizonShowKeyboard");
+    call("show", jni_str!("horizonShowKeyboard"));
 }
 
 fn hide() {
-    call("hide", "horizonHideKeyboard");
+    call("hide", jni_str!("horizonHideKeyboard"));
 }
 
 fn reset() {
-    call("reset", "horizonResetKeyboard");
+    call("reset", jni_str!("horizonResetKeyboard"));
 }
 
 /// One void method on the activity: all three keyboard commands are shaped alike.
