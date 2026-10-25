@@ -106,14 +106,17 @@ jobs:
             -p horizon-client --no-default-features --features audio \
             --message-format=short > /tmp/engine.log 2>&1
           echo "cargo exit: $?" >> /tmp/engine.log
-          echo "## errors, grouped"
-          grep -E 'error(\[|:)' /tmp/engine.log | \
-            sed -E 's/^[^ ]+: error: //' | sort | uniq -c | sort -rn | head -60
-          echo "## first 80 error lines"
-          grep -E 'error(\[|:)' /tmp/engine.log | head -80
-          echo "## tail"
+          {
+            echo "## errors, grouped by message"
+            grep -E 'error(\[|:)' /tmp/engine.log | sed -E 's/^[^ ]+ +//' | sort | uniq -c | sort -rn | head -60
+            echo "## the files that fail"
+            grep -oE '^(crates|launcher|third_party)/[^:]+' /tmp/engine.log | sort | uniq -c | sort -rn | head -40
+            echo "## first 80 error lines"
+            grep -E 'error(\[|:)' /tmp/engine.log | head -80
+          } > /tmp/summary.txt
+          cat /tmp/summary.txt
           tail -30 /tmp/engine.log
-          cp /tmp/engine.log engine-check.log
+          cat /tmp/engine.log /tmp/summary.txt > engine-check.log
           # The job stays green on purpose: this is a survey of what the port has
           # to fix, and the APK job is the one that says whether Stage A works.
           if grep -qE 'error(\[|:)' /tmp/engine.log; then

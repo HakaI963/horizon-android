@@ -21,7 +21,11 @@ horizon-friends = { path = "../horizon-friends" }
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl"] }
-winit = "0.30.13"
+# android-activity (through winit) refuses to build unless exactly one activity
+# implementation is named, and NativeActivity is the one that needs no Java of
+# our own. Inert anywhere but Android: winit only depends on android-activity
+# when it is compiling for that target.
+winit = { version = "0.30.13", features = ["android-native-activity"] }
 pollster = "0.4"
 bytemuck = { version = "1.24", features = ["derive"] }
 glam = "0.30"

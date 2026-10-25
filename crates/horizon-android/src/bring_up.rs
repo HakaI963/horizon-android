@@ -69,7 +69,7 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
     .map_err(|error| format!("no Vulkan adapter on this device: {error}"))?;
     let info = adapter.get_info();
     log::info!(
-        "bring-up: adapter {:?} ({}) vendor {} driver {:?}",
+        "bring-up: adapter {} ({:?}) vendor {} driver {:?}",
         info.name,
         info.device_type,
         info.vendor,
