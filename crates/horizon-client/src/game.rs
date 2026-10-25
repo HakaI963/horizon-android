@@ -305,16 +305,25 @@ impl Options {
         })
     }
     fn read() -> Result<Option<Self>> {
-        let sibling = std::env::current_exe()?
-            .parent()
-            .ok_or("missing executable directory")?
-            .join("resources");
-        let mut o = Self {
-            resources: if sibling.join("horizon-resources.json").exists() {
-                sibling
-            } else {
-                std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
+        // Where the prepared pack is, in the order a launcher would set it: an
+        // argument, then the environment (an Android activity gets no arguments:
+        // its entry point is a symbol in a library), then the `resources` folder
+        // beside the executable, then the per-version folder under the working
+        // directory. A build without an executable path to ask — again Android —
+        // simply has no third choice.
+        let sibling = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.join("resources")));
+        let resources = match std::env::var_os("HORIZON_RESOURCES") {
+            Some(dir) => dir.into(),
+            None => match &sibling {
+                Some(dir) if dir.join("horizon-resources.json").exists() => dir.clone(),
+                _ => std::path::Path::new(".local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION),
             },
+        };
+        let mut o = Self {
+            resources,
             distance: 12,
             distance_override: None,
             seed: 0,
@@ -12858,8 +12867,8 @@ fn write_report(game: &Game<'_>) -> Result<()> {
     Ok(())
 }
 
-fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    EventLoop::new()?.run_app(&mut game)?;
+fn run_event_loop(mut game: Game<'_>, mut event_loop: EventLoop) -> Result<()> {
+    event_loop.run_app(&mut game)?;
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);
@@ -13191,6 +13200,7 @@ fn run_loading(
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
+    mut event_loop: EventLoop,
 ) -> Result<()> {
     let progress = Progress::new();
     let (receiver, loader) =
@@ -13216,7 +13226,7 @@ fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    EventLoop::new()?.run_app(&mut app)?;
+    event_loop.run_app(&mut app)?;
     match app {
         App::Ready(mut game) => {
             write_report(&game)?;
@@ -13233,7 +13243,16 @@ fn run_loading(
     Ok(())
 }
 
+/// The desktop launch: `main` builds the loop and hands it over.
 pub fn run() -> Result<()> {
+    run_with(EventLoop::new()?)
+}
+
+/// The launch on a platform whose entry point is not a `main`. Android's
+/// `NativeActivity` can only make a winit loop out of the `AndroidApp` the system
+/// hands to `android_main`, and it is handed exactly once, so the activity builds
+/// the loop and calls this instead of [`run`].
+pub fn run_with(event_loop: EventLoop) -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
@@ -13252,12 +13271,16 @@ pub fn run() -> Result<()> {
         horizon_threads::favour_current();
     }
     // Someone is playing: the anonymous ping behind the launcher's "N playing now". Not for a
-    // server, a benchmark or a run that quits by itself.
+    // server, a benchmark or a run that quits by itself, and not from a phone: it
+    // resolves a hostname before the activity has been granted the network, and
+    // "how many people are playing" is not a question a device should answer
+    // unprompted.
     if options.dedicated.is_none()
         && options.benchmark.is_none()
         && !options.offscreen
         && options.frames.is_none()
         && options.world_frames.is_none()
+        && !cfg!(target_os = "android")
     {
         horizon_client::heartbeat::start();
     }
@@ -13269,7 +13292,7 @@ pub fn run() -> Result<()> {
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
     if !synchronous_startup(&options) {
-        return run_loading(options, early_settings, vanilla_root, None, started);
+        return run_loading(options, early_settings, vanilla_root, None, started, event_loop);
     }
     let mut pack_error = None;
     options.resources = packs::startup_root(&vanilla_root, &early_settings.resource_packs, &[])
@@ -13314,7 +13337,7 @@ pub fn run() -> Result<()> {
         None,
     )?;
     if let Some(game) = game {
-        run_event_loop(game)?;
+        run_event_loop(game, event_loop)?;
     }
     Ok(())
 }

@@ -25,6 +25,12 @@ pollster = "0.4"
 log = "0.4"
 # The frame server's one dependency: enough to write a PNG the tools can open.
 png = "0.18"
+# The engine. The same feature set the `engine check` job surveys, so the APK is
+# built from exactly the code that was checked: sound, no controllers (evdev and
+# libudev are not a phone's), no wasmtime.
+horizon-client = { path = "../horizon-client", default-features = false, features = ["audio"] }
+# Only for `VANILLA_VERSION`, the single source of truth for the resource folder's name.
+horizon-core = { path = "../horizon-core" }
 
 [lints]
 workspace = true

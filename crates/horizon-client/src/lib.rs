@@ -1,6 +1,12 @@
 //! Horizon native client: resources, world streaming, rendering and the
 //! bindings between the validated simulation pieces and the game loop.
 #![forbid(unsafe_code)]
+// The game loop is part of this crate, not only of the desktop binary: a platform
+// that cannot start a `main` — Android's `NativeActivity`, whose entry point is a
+// symbol in a shared library — has to reach it through the library it links.
+// `game` and its hundred-odd modules are written against `horizon_client::`, so
+// the crate answers to that name itself.
+extern crate self as horizon_client;
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
@@ -72,6 +78,7 @@ pub mod flatgen;
 pub mod fog;
 pub mod font;
 pub mod friends_screen;
+pub mod game;
 pub mod game_mode_switcher;
 pub mod gamepad;
 pub mod gamerules;
