@@ -33,6 +33,11 @@ static VS_ENTRY_POINT: &str = "vs_main";
 static FS_ENTRY_POINT_LINEAR: &str = "fs_main_linear";
 static FS_ENTRY_POINT_SRGB: &str = "fs_main_srgb";
 
+/// How `DrawVert` is laid out in the vertex buffer, as the pipeline sees it: two
+/// `vec2<f32>`s and the packed color read as `Unorm8x4` so the shader gets 0..1.
+const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4];
+
 /// Result type for renderer operations.
 pub type RendererResult<T> = Result<T, RendererError>;
 
@@ -505,7 +510,7 @@ impl Renderer {
                 buffers: &[Some(VertexBufferLayout {
                     array_stride: size_of::<DrawVert>() as BufferAddress,
                     step_mode: VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4],
+                    attributes: &ATTRIBUTES,
                 })],
             },
             primitive: PrimitiveState {
@@ -668,44 +673,41 @@ impl Renderer {
             indices.extend_from_slice(bytemuck::cast_slice(draw_list.idx_buffer()));
         }
 
-        // Copies in wgpu must be padded to 4 byte alignment
+        // Copies in wgpu must be padded to 4 byte alignment. The expression overshoots
+        // by a word when the length is already aligned, which is what keeps a frame
+        // with no geometry from producing a zero-sized buffer.
         indices.resize(
-            indices.len() + COPY_BUFFER_ALIGNMENT as usize - indices.len() % COPY_BUFFER_ALIGNMENT as usize,
+            indices.len() + COPY_BUFFER_ALIGNMENT as usize
+                - indices.len() % COPY_BUFFER_ALIGNMENT as usize,
             0,
         );
 
-        // If the buffer is not created or is too small for the new indices, create a new
-        // buffer. Reusing the one that fits is the reason `RenderData` travels between
-        // frames at all: a fresh allocation every frame would be GPU work for nothing.
-        let reuse_index_buffer = match render_data.index_buffer.as_ref() {
-            Some(buffer) if render_data.index_buffer_size >= indices.len() => Some(buffer),
-            _ => None,
-        };
-        if let Some(buffer) = reuse_index_buffer {
-            queue.write_buffer(buffer, 0, &indices);
-        } else {
+        // If the buffer is missing or too small for the new indices, make a new one;
+        // otherwise write into the one that fits. That reuse is the only reason
+        // `RenderData` travels between frames: reallocating every frame would be GPU
+        // work for nothing.
+        if render_data.index_buffer.is_none() || render_data.index_buffer_size < indices.len() {
             render_data.index_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("imgui-wgpu index buffer"),
                 contents: &indices,
                 usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
             }));
             render_data.index_buffer_size = indices.len();
+        } else if let Some(buffer) = &render_data.index_buffer {
+            queue.write_buffer(buffer, 0, &indices);
         }
 
         // The same for the vertices.
-        let reuse_vertex_buffer = match render_data.vertex_buffer.as_ref() {
-            Some(buffer) if render_data.vertex_buffer_size >= vertices.len() => Some(buffer),
-            _ => None,
-        };
-        if let Some(buffer) = reuse_vertex_buffer {
-            queue.write_buffer(buffer, 0, &vertices);
-        } else {
+        if render_data.vertex_buffer.is_none() || render_data.vertex_buffer_size < vertices.len()
+        {
             render_data.vertex_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("imgui-wgpu vertex buffer"),
                 contents: &vertices,
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             }));
             render_data.vertex_buffer_size = vertices.len();
+        } else if let Some(buffer) = &render_data.vertex_buffer {
+            queue.write_buffer(buffer, 0, &vertices);
         }
 
         render_data
