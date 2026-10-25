@@ -19,7 +19,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 const ROW_ALIGNMENT: u64 = 256;
 
 /// The port the frame server listens on, loopback only.
+///
+/// A second Horizon clone left running holds the port, so the server walks
+/// forward from here until it finds one it can bind — hence the "try 8123..8130"
+/// in what it logs.
 pub const PORT: u16 = 8123;
+
+/// How many ports forward the server will go before giving up.
+const PORT_TRIES: u16 = 8;
 
 pub struct FrameDump {
     /// Set by a waiter, cleared by the frame that answers it.
@@ -175,12 +182,12 @@ fn write_atomically(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "frame.png".to_owned());
-    let temp = path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join(format!("{name}.tmp"));
-    std::fs::write(&temp, png)?;
-    std::fs::rename(&temp, path)
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    // The app's `import` directory only exists once something has been imported
+    // into it, and a frame is asked for long before that.
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(&dir.join(format!("{name}.tmp")), png)?;
+    std::fs::rename(&dir.join(format!("{name}.tmp")), path)
 }
 
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
@@ -198,11 +205,23 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn serve(dump: Arc<FrameDump>) {
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) else {
-        log::error!("frame dump: nothing is listening on {PORT}");
+    let mut listener = None;
+    for offset in 0..PORT_TRIES {
+        let port = PORT + offset;
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(bound) => {
+                listener = Some((bound, port));
+                break;
+            }
+            // Another clone answers on this port. Nothing to do but move on.
+            Err(error) => log::warn!("frame dump: {port} is taken: {error}"),
+        }
+    }
+    let Some((listener, port)) = listener else {
+        log::error!("frame dump: no port free in {PORT}..{}", PORT + PORT_TRIES);
         return;
     };
-    log::info!("frame dump: http://127.0.0.1:{PORT}/frame.png");
+    log::info!("frame dump: http://127.0.0.1:{port}/frame.png");
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
