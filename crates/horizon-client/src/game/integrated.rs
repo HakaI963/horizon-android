@@ -97,6 +97,17 @@ impl Integrated {
             .ok()?;
         rx.recv_timeout(Duration::from_secs(10)).ok()
     }
+    /// Save the world on the server thread without waiting for it: the phone
+    /// is going away and the window must not block on the disk, but the save
+    /// should already be running for when the process does not come back.
+    #[cfg(target_os = "android")]
+    pub fn save_later(&self) {
+        let _ = self.tasks.send(Box::new(|g| {
+            if let Err(error) = g.save_game() {
+                log::warn!("Horizon: integrated server: a background save failed: {error}");
+            }
+        }));
+    }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
         self.halt()

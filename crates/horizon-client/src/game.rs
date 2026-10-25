@@ -4616,26 +4616,39 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
+        #[cfg(not(target_os = "android"))]
         let centre =
             winit::dpi::PhysicalPosition::new(f64::from(size[0]) / 2.0, f64::from(size[1]) / 2.0);
+        #[cfg(not(target_os = "android"))]
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
         if capture {
             self.mouse.set_ignore_first_move();
-            // macOS warps by re-associating the mouse with the pointer,
-            // which undoes a Locked grab and leaves the pointer free: warp
-            // first there. Wayland moves a pointer only while it is locked,
-            // so everywhere else warp after grabbing.
-            #[cfg(target_os = "macos")]
-            warp(window);
-            self.captured = window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
-            #[cfg(not(target_os = "macos"))]
-            if self.captured && self.focused {
+            // A phone has no pointer to grab: the glass is the mouse, and Android
+            // refuses both the grab and the warp. The world is still captured as far
+            // as the game is concerned, or the first tap in it would be spent trying
+            // to grab a pointer that does not exist.
+            #[cfg(target_os = "android")]
+            {
+                self.captured = true;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                // macOS warps by re-associating the mouse with the pointer,
+                // which undoes a Locked grab and leaves the pointer free: warp
+                // first there. Wayland moves a pointer only while it is locked,
+                // so everywhere else warp after grabbing.
+                #[cfg(target_os = "macos")]
                 warp(window);
+                self.captured = window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+                    .is_ok();
+                #[cfg(not(target_os = "macos"))]
+                if self.captured && self.focused {
+                    warp(window);
+                }
             }
         } else {
             if self.captured {
@@ -11643,6 +11656,14 @@ impl ApplicationHandler for Game<'_> {
             }
             return;
         }
+        // The phone has the window, and there is nothing a poll could draw or
+        // tick for: waiting is what a backgrounded activity should cost. The
+        // `resumed` that builds the next window asks for a redraw, which comes
+        // back through here and puts the loop on `Poll` again.
+        if self.window.is_none() {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         if let Err(error) = self.resume_world_entry() {
             self.error = Some(error);
             event_loop.exit();
@@ -13092,7 +13113,13 @@ impl Loading {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // A backgrounded activity has no window to draw and no glass to read, and
+        // `resumed` asks for the redraw that matters when one comes back.
+        event_loop.set_control_flow(if self.window.is_some() {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::Wait
+        });
     }
     fn draw(&mut self) {
         let Some(size) = self
@@ -13256,6 +13283,13 @@ impl ApplicationHandler for App {
                 loading.about_to_wait(event_loop);
                 if loading.error.is_some() {
                     event_loop.exit();
+                    return;
+                }
+                // The phone took the window while the resources were loading, and
+                // `finish` needs one to hand the game: without this the finished
+                // load would read the missing window as the player closing the
+                // app and end it in the background. The result waits for `resumed`.
+                if loading.window.is_none() {
                     return;
                 }
                 match if loading.menu.reload_packs {

@@ -109,6 +109,36 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// A save the phone asked for by going away: the world stays open and
+    /// nobody is waiting for an answer.
+    ///
+    /// Android destroys a backgrounded process without a close or an exit, so
+    /// `save_for_exit` is never reached and a kill can take the five minutes
+    /// since the last autosave with it. The snapshot work is the same as a
+    /// control save's, spread over event-loop turns with no window to draw.
+    /// A save already under way is doing this work already.
+    #[cfg(target_os = "android")]
+    pub(super) fn begin_background_save(&mut self) {
+        if self.pending_save.is_some()
+            || self.title.is_some()
+            || self.saved_for_exit
+            || self.remote.is_some()
+        {
+            return;
+        }
+        self.keys.clear();
+        self.physical_keys.clear();
+        self.left = false;
+        self.right = false;
+        self.pending_save = Some(ClosingSave {
+            quit: false,
+            close: false,
+            reply: None,
+            started: Instant::now(),
+            stage: Stage::Generation,
+        });
+    }
+
     /// `true` means the window can exit. The session lock stays in Game until
     /// every snapshot has been queued and every writer has synced its files.
     pub(super) fn poll_closing_save(&mut self) -> Result<bool> {
@@ -212,11 +242,19 @@ impl Game<'_> {
                 }
             }
             other => {
-                if let Err(error) = &other
-                    && let Some(reply) = save.reply.take()
-                {
-                    let _ =
-                        reply.send(serde_json::json!({ "error": error.to_string() }).to_string());
+                if let Err(error) = &other {
+                    // A background save has no asker to fail and no window to
+                    // end: the activity that asked for it may already be gone.
+                    // Keeping it would freeze the game behind the save screen
+                    // when it comes back; the next autosave tries again.
+                    if save.reply.is_none() && !save.close && !save.quit {
+                        log::warn!("Horizon: a background save failed: {error}");
+                        return Ok(false);
+                    }
+                    if let Some(reply) = save.reply.take() {
+                        let _ = reply
+                            .send(serde_json::json!({ "error": error.to_string() }).to_string());
+                    }
                 }
                 // Keep ownership (and the lock) on errors too. Native shutdown
                 // sees the same durable-write failure instead of declaring success.
