@@ -19,8 +19,9 @@
 use imgui::{Condition, FontConfig, FontId, FontSource, StyleColor, Ui, WindowFlags};
 
 /// The pages the sidebar switches between.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum LauncherPage {
+    #[default]
     Play,
     Instances,
     Versions,
