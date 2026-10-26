@@ -476,7 +476,10 @@ impl Loading {
     /// switch the overlay between the launcher and the touch HUD. A no-op on the
     /// desktop, which has no launcher.
     #[cfg(target_os = "android")]
-    fn sync_launcher(&mut self) {
+    fn sync_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        // Take last frame's clicks before reading the page, so this frame's model
+        // already reflects them.
+        self.handle_launcher_events(event_loop);
         let Some(page) = self.menu.launcher_page else {
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
@@ -498,6 +501,11 @@ impl Loading {
             page,
             version: version.clone(),
             account,
+            facts: vec![
+                ("Minecraft".into(), version.clone()),
+                ("Engine".into(), "Horizon · Rust".into()),
+                ("Platform".into(), "Android · native".into()),
+            ],
             ..Default::default()
         };
         match page {
@@ -562,6 +570,7 @@ impl Loading {
     #[cfg(target_os = "android")]
     fn handle_launcher_events(&mut self, event_loop: &ActiveEventLoop) {
         let events = horizon_overlay::with(|o| o.take_launcher_events()).unwrap_or_default();
+        log::info!("launcher: handle {} event(s)", events.len());
         for event in events {
             log::info!("launcher: event {event:?}");
             match event {
@@ -590,7 +599,7 @@ impl Loading {
                         self.menu.queue_entry(Action::Play { folder: world.folder }, name);
                     }
                 }
-                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins => {
+                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins | LauncherEvent::EditAccount => {
                     self.menu.launcher_page = None;
                     self.menu_action(event_loop, Action::Options);
                 }
@@ -701,10 +710,8 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => {
                 #[cfg(target_os = "android")]
-                self.sync_launcher();
+                self.sync_launcher(event_loop);
                 self.draw();
-                #[cfg(target_os = "android")]
-                self.handle_launcher_events(event_loop);
             }
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
             WindowEvent::Focused(false) => {
