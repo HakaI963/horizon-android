@@ -21,6 +21,8 @@ mod frame_dump;
 #[cfg(target_os = "android")]
 mod ime;
 #[cfg(target_os = "android")]
+mod installer;
+#[cfg(target_os = "android")]
 mod logcat;
 #[cfg(target_os = "android")]
 mod paths;
@@ -78,7 +80,52 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
 /// The choice has to be made before the loop is spent, and a resource pack is the
 /// thing that decides: without one the engine cannot load an asset, draw a title or
 /// open a world, so the card takes the loop and the engine is not tried.
+///
+/// The pack itself is installed here too, and also before the loop: the launcher
+/// downloads the pinned client JAR from Mojang and unpacks it with the seed CI
+/// prepared, while the activity shows a Java dialog (the only surface that exists
+/// before winit). Then the same launch continues into the engine, with no restart.
 fn play(app: &winit::platform::android::activity::AndroidApp) {
+    let resources = paths::resources_dir(app);
+    if !installer::installed(&resources) {
+        if !installer::seed_available() {
+            log::warn!(
+                "Horizon for Android: no prepared pack at {}, showing the bring-up card. This \
+                 build has no embedded Minecraft seed; CI builds one, and `horizon-prepare` can \
+                 make the folder by hand, but it drives a JVM, so it cannot run here.",
+                resources.display(),
+            );
+            match engine::event_loop(app) {
+                Ok(event_loop) => {
+                    if let Err(error) =
+                        bring_up::run(app, event_loop, "no resource pack: put one in import/")
+                    {
+                        log::error!("Horizon for Android: the bring-up card stopped: {error}");
+                    }
+                }
+                Err(error) => log::error!("Horizon for Android: no event loop: {error}"),
+            }
+            return;
+        }
+        log::info!(
+            "Horizon for Android: no pack at {}, installing Minecraft Java from Mojang",
+            resources.display()
+        );
+        if let Err(error) = installer::install(app) {
+            log::error!("Horizon for Android: the Minecraft install failed: {error}");
+            installer::fail_dialog(&error);
+            match engine::event_loop(app) {
+                Ok(event_loop) => {
+                    let notice = format!("Minecraft install failed: {error}");
+                    if let Err(error) = bring_up::run(app, event_loop, &notice) {
+                        log::error!("Horizon for Android: the bring-up card stopped: {error}");
+                    }
+                }
+                Err(error) => log::error!("Horizon for Android: no event loop: {error}"),
+            }
+            return;
+        }
+    }
     let event_loop = match engine::event_loop(app) {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -86,23 +133,6 @@ fn play(app: &winit::platform::android::activity::AndroidApp) {
             return;
         }
     };
-    let pack = paths::resources_dir(app).join("horizon-resources.json");
-    if !pack.is_file() {
-        let import = paths::import_dir(app);
-        log::warn!(
-            "Horizon for Android: no prepared pack at {}, showing the bring-up card. Prepare it \
-             on a computer with `horizon-prepare` — it drives a JVM, so it cannot be done here — \
-             and copy the `.local/horizon-client/{}` folder to {}/",
-            pack.display(),
-            paths::INSTANCE,
-            import.display(),
-        );
-        if let Err(error) = bring_up::run(app, event_loop, "no resource pack: put one in import/")
-        {
-            log::error!("Horizon for Android: the bring-up card stopped: {error}");
-        }
-        return;
-    }
     if let Err(error) = engine::run(event_loop) {
         // Nothing can be drawn from here: the engine spent the only loop, and a
         // second one is refused. What the player gets is the logcat line above.

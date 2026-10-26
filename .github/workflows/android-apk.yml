@@ -158,14 +158,112 @@ jobs:
           path: engine-check.log
           if-no-files-found: ignore
 
+  # The Java exporters and vanilla's data generator need a JVM, and a phone is not
+  # going to have one. They are version-pinned and produce the same files for every
+  # player, so they run here, once per change to them, and the result rides in the
+  # APK as a seed. The launcher downloads the player's client jar from Mojang and
+  # combines it with this seed on the phone; the client JAR is never committed or
+  # redistributed. See .github/scripts/fetch-minecraft.py and pack-seed.py.
+  seed:
+    name: minecraft 26.3 seed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          java-package: jdk
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Cache the crates registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-seed-
+          restore-keys: cargo-seed-
+
+      - name: Cache the prepared seed
+        id: seed-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci/seed.zip
+          key: minecraft-seed-${{ hashFiles('research-lock.json', 'crates/horizon-prepare/**', 'mods/horizon/src/test/java/**', '.github/scripts/**') }}
+
+      - name: Fetch the pinned Minecraft files
+        if: steps.seed-cache.outputs.cache-hit != 'true'
+        run: python3 .github/scripts/fetch-minecraft.py .ci
+
+      - name: Prepare the resources with JDK 25
+        if: steps.seed-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cargo run --release -p horizon-prepare -- \
+            --prepare --minecraft-dir .ci/minecraft --server-jar .ci/server.jar --root .
+
+      - name: Package the seed
+        if: steps.seed-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/pack-seed.py \
+            .ci/seed.zip .local/horizon-client/26.3 \
+            .local/minecraft/26.3/manifest.json
+
+      - name: Check the seed is there
+        run: |
+          set -euo pipefail
+          test -s .ci/seed.zip
+          ls -l .ci/seed.zip
+
+      - name: Upload the seed for the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-seed
+          path: .ci/seed.zip
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload the prepare log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seed-prepare-log
+          path: .local/horizon-client/26.3/*.log
+          if-no-files-found: ignore
+
   apk:
     name: arm64-v8a (${{ github.event.inputs.cargo_profile || 'fast' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    needs: seed
     outputs:
       ndk: ${{ steps.toolchain.outputs.ndk }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch the seed prepared for this build
+        uses: actions/download-artifact@v4
+        with:
+          name: horizon-seed
+          path: .seed
+
+      - name: Point the native build at the seed
+        run: |
+          set -euo pipefail
+          test -s .seed/seed.zip
+          echo "HORIZON_ANDROID_SEED=$PWD/.seed/seed.zip" >> "$GITHUB_ENV"
+          ls -l .seed/seed.zip
 
       # `workflow_dispatch` inputs reach the shell, so they are held in environment
       # variables and checked before anything uses them as a version or a path.

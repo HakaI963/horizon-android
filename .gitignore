@@ -1,4 +1,6 @@
 /.local/
+/.ci/
+/.seed/
 /target/
 **/__pycache__/
 *.py[cod]

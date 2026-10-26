@@ -1,5 +1,6 @@
 package dev.horizon.android;
 
+import android.app.AlertDialog;
 import android.app.NativeActivity;
 import android.content.Context;
 import android.os.Bundle;
@@ -14,6 +15,10 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * The native activity, plus the one Android thing the engine cannot reach over JNI:
@@ -27,6 +32,10 @@ import android.widget.EditText;
  */
 public class HorizonActivity extends NativeActivity {
     private KeyboardField keyboard;
+
+    /** The launcher's Minecraft install, shown while the engine has no window yet. */
+    private AlertDialog installDialog;
+    private TextView installText;
 
     /** The field's text, as the native side last needs to read it. */
     private volatile String keyboardText = "";
@@ -164,6 +173,89 @@ public class HorizonActivity extends NativeActivity {
 
     private synchronized void clearKeys() {
         keyboardKeys = 0;
+    }
+
+    /**
+     * The launcher installing Minecraft Java: downloading the pinned client JAR
+     * from Mojang, then unpacking it with the seed CI prepared. Called from the
+     * native thread before the engine's window exists, so this dialog is the only
+     * thing on screen for that whole install.
+     */
+    public void horizonInstallStart(String message) {
+        runOnUiThread(() -> {
+            if (installDialog != null) {
+                setInstallStatus(message);
+                return;
+            }
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
+            LinearLayout layout = new LinearLayout(this);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            int padding = Math.round(20 * getResources().getDisplayMetrics().density);
+            layout.setPadding(padding, padding, padding, 0);
+            ProgressBar bar = new ProgressBar(this);
+            bar.setIndeterminate(true);
+            layout.addView(bar);
+            TextView text = new TextView(this);
+            text.setText(message);
+            text.setPadding(0, padding / 2, 0, 0);
+            layout.addView(text);
+            installText = text;
+            AlertDialog dialog = new AlertDialog.Builder(
+                    this, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
+                    .setTitle("Minecraft Java")
+                    .setView(layout)
+                    .setCancelable(false)
+                    .create();
+            installDialog = dialog;
+            dialog.show();
+        });
+    }
+
+    /** A progress line from the native side: download bytes, then what is unpacking. */
+    public void horizonInstallStatus(String message) {
+        runOnUiThread(() -> setInstallStatus(message));
+    }
+
+    /** The pack is ready; the engine will take the screen from here. */
+    public void horizonInstallDone() {
+        runOnUiThread(this::dismissInstallDialog);
+    }
+
+    /** Nothing was installed: say why, and let the native card carry on. */
+    public void horizonInstallFailed(String message) {
+        runOnUiThread(() -> {
+            dismissInstallDialog();
+            Toast.makeText(this, "Minecraft install failed: " + message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void setInstallStatus(String message) {
+        if (installText != null) {
+            installText.setText(message);
+        }
+    }
+
+    private void dismissInstallDialog() {
+        AlertDialog dialog = installDialog;
+        installDialog = null;
+        installText = null;
+        if (dialog == null) {
+            return;
+        }
+        try {
+            dialog.dismiss();
+        } catch (IllegalArgumentException gone) {
+            // The activity's window was already detached (finishing, or recreated
+            // by the system while the install ran); there is nothing left to close.
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        dismissInstallDialog();
+        super.onDestroy();
     }
 
     /**

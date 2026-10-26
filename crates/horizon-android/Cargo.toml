@@ -35,6 +35,13 @@ horizon-core = { path = "../horizon-core" }
 # run a test, and drawn by `horizon-overlay` rather than here.
 horizon-controls = { path = "../horizon-controls" }
 horizon-overlay = { path = "../horizon-overlay" }
+# The launcher's side of Minecraft Java: fetch the pinned client JAR from Mojang,
+# check it, and unpack it with the seed CI prepared. The same TLS stack the engine
+# already uses, so the phone build gains no second HTTP implementation.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha1 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+serde_json = "1"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # `ClipboardManager` is a Java object, and this is the one crate allowed to reach it

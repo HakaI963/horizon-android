@@ -1237,8 +1237,12 @@ dependencies = [
  "log",
  "png",
  "pollster",
+ "serde_json",
+ "sha1",
+ "ureq",
  "wgpu",
  "winit",
+ "zip",
 ]
 
 [[package]]
