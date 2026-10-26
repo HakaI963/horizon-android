@@ -246,7 +246,7 @@ pub fn draw(
             let _side = ui.push_style_color(StyleColor::ChildBg, rgba(c.side, 1.0));
             let _ = ui
                 .child_window("##sidebar")
-                .size([sidebar, -1.0], Condition::Always)
+                .size([sidebar, -1.0])
                 .build(|| {
                     ui.dummy([0.0, 12.0 * dpi]);
                     {
@@ -278,7 +278,7 @@ pub fn draw(
             let _content = ui.push_style_color(StyleColor::ChildBg, rgba(c.page, 1.0));
             let _ = ui
                 .child_window("##content")
-                .size([content_w, -1.0], Condition::Always)
+                .size([content_w, -1.0])
                 .build(|| {
                     topbar(ui, model, fonts, c, out);
                     ui.separator();
