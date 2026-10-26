@@ -173,19 +173,17 @@ impl SessionLock {
             .truncate(false)
             .open(world.join("session.lock"))?;
         if let Err(error) = file.try_lock() {
-            // A real conflict is `WouldBlock`. Anything else — and a clone's
-            // redirected data dir answers `flock` with EIO — means this storage
-            // cannot hold a lock at all, which is the app's problem to live with,
-            // not the player's reason not to play.
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            // A real conflict says the lock would have blocked. Anything else —
+            // and a clone's redirected data dir answers `flock` with EIO — means
+            // this storage cannot hold a lock at all, which is the app's problem
+            // to live with, not the player's reason not to play.
+            let message = error.to_string();
+            if message.contains("would have blocked") {
                 return Err(
                     format!("{} is already open in another instance", world.display()).into()
                 );
             }
-            log::warn!(
-                "session lock: {} cannot be locked ({error}); continuing without it",
-                world.display()
-            );
+            log::warn!("session lock: {message} on {}; continuing without it", world.display());
         }
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
