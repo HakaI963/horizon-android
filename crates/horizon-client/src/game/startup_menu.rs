@@ -19,6 +19,9 @@ pub(super) struct StartupMenu {
     /// gone into the game's own menus. The desktop boots straight to the title.
     #[cfg(target_os = "android")]
     launcher_page: Option<LauncherPage>,
+    /// What the phone's keyboard has given the launcher's name field so far.
+    #[cfg(target_os = "android")]
+    launcher_draft: String,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -511,6 +514,7 @@ impl Loading {
             page,
             version: version.clone(),
             account,
+            draft: self.menu.launcher_draft.clone(),
             facts: vec![
                 ("Minecraft".into(), version.clone()),
                 ("Engine".into(), "Horizon · Rust".into()),
@@ -608,9 +612,14 @@ impl Loading {
                         self.menu.queue_entry(Action::Play { folder: world.folder }, name);
                     }
                 }
-                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins | LauncherEvent::EditAccount => {
+                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins => {
                     self.menu.launcher_page = None;
                     self.menu_action(event_loop, Action::Options);
+                }
+                LauncherEvent::RenameAccount => self.menu.launcher_draft.clear(),
+                LauncherEvent::SetAccount(name) => {
+                    self.apply_account(&name);
+                    self.menu.launcher_draft.clear();
                 }
                 LauncherEvent::Quit => event_loop.exit(),
                 _ => {}
@@ -618,10 +627,40 @@ impl Loading {
         }
     }
 
+    /// Keep a player name the launcher was given. The file beside options.txt is what
+    /// the next start reads, and an offline UUID is hashed from the name, so a world
+    /// goes on knowing who it saved the inventory for.
+    #[cfg(target_os = "android")]
+    fn apply_account(&mut self, name: &str) {
+        let name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .take(16)
+            .collect();
+        if !horizon_client::offline_name::is_valid(&name) {
+            log::info!("launcher: refused the name {name:?}");
+            return;
+        }
+        if let Some(options) = &mut self.options {
+            options.player_name = Some(name.clone());
+        }
+        let path = Game::options_path().with_file_name(horizon_client::offline_name::FILE);
+        if let Err(error) = std::fs::write(&path, format!("name:{name}\n")) {
+            log::warn!("Horizon: could not keep the player name: {error}");
+        }
+        self.save_menu_settings();
+    }
+
     /// Whether whatever is on the screen takes letters — the same question the world
     /// asks for the phone's keyboard. The title's list has its fields, and the options
     /// screen a search box, and neither has a hardware key to fall back on.
     pub(super) fn menu_typing(&mut self) -> bool {
+        #[cfg(target_os = "android")]
+        let launcher = horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false);
+        #[cfg(target_os = "android")]
+        if launcher {
+            return true;
+        }
         self.menu.typing()
     }
 
@@ -634,6 +673,29 @@ impl Loading {
             return;
         };
         if self.gui.is_none() || self.menu.pending.is_some() || self.menu.win.is_some() {
+            return;
+        }
+        // The launcher's name field is a string the card draws, not an imgui widget:
+        // the phone's keyboard commits words to the activity, and imgui would want a
+        // key at a time. Everything else about it is the same edit the title's fields
+        // take.
+        if horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false) {
+            for _ in 0..input.backspaces {
+                self.menu.launcher_draft.pop();
+            }
+            for ch in input.text.chars() {
+                if (ch.is_ascii_alphanumeric() || ch == '_')
+                    && self.menu.launcher_draft.chars().count() < 16
+                {
+                    self.menu.launcher_draft.push(ch);
+                }
+            }
+            if input.enter {
+                let name = self.menu.launcher_draft.clone();
+                self.apply_account(&name);
+                self.menu.launcher_draft.clear();
+                let _ = horizon_overlay::with(|o| o.end_launcher_edit());
+            }
             return;
         }
         if self.menu.options_open {
@@ -678,6 +740,11 @@ impl Loading {
     /// field is empty, and the game's is the whole value the first word replaces.
     #[cfg(target_os = "android")]
     pub(super) fn menu_ime_select_all(&mut self) {
+        // The launcher's field opens empty on purpose: there is nothing to replace, so
+        // the first word is the beginning of the name rather than all of it.
+        if horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false) {
+            return;
+        }
         if self.menu.options_open {
             let Some(gui) = &self.gui else { return };
             if self.menu.options.typing() {

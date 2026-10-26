@@ -528,9 +528,25 @@ impl Overlay {
         self.launcher_model.page
     }
 
-    /// What to draw on the launcher next frame.
-    pub fn set_launcher_model(&mut self, model: LauncherModel) {
+    /// What to draw on the launcher next frame. The page and whether the name field is
+    /// open belong to the glass rather than the engine, so they survive the report that
+    /// arrives a frame after the finger asked for them.
+    pub fn set_launcher_model(&mut self, mut model: LauncherModel) {
+        model.page = self.launcher_model.page;
+        model.editing = self.launcher_model.editing;
         self.launcher_model = model;
+    }
+
+    /// Whether the launcher has its name field open, which on a phone is the whole
+    /// question about the keyboard.
+    pub fn launcher_editing(&self) -> bool {
+        self.launcher && self.launcher_model.editing
+    }
+
+    /// Close the name field from the platform: the keyboard's own Enter means the same
+    /// thing as the card's Save button, and the card cannot know which came first.
+    pub fn end_launcher_edit(&mut self) {
+        self.launcher_model.editing = false;
     }
 
     /// What the player asked the launcher for, since the last call.

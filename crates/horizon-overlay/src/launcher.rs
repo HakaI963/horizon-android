@@ -86,6 +86,11 @@ pub struct LauncherModel {
     pub account: String,
     /// Extra one-line facts for the About page.
     pub facts: Vec<(String, String)>,
+    /// The name field is open, which on a phone means the keyboard belongs to it. The
+    /// launcher raises it on the tap and the platform reads it back; the text in the
+    /// field is the platform's, gathered a frame at a time from the IME.
+    pub editing: bool,
+    pub draft: String,
 }
 
 /// What the player asked for, for the platform to carry out.
@@ -97,7 +102,10 @@ pub enum LauncherEvent {
     SelectRow(u32),
     NewInstance,
     Install,
-    EditAccount,
+    /// The account card was tapped: the platform opens a field and starts feeding it.
+    RenameAccount,
+    /// A new player name for the account card to keep.
+    SetAccount(String),
     OpenSettings,
     OpenSkins,
     Quit,
@@ -254,6 +262,9 @@ pub fn draw(
                 .build(|| {
                     content(ui, model, fonts, c, dpi, width - sidebar, out);
                 });
+            if model.editing {
+                rename_dialog(ui, model, fonts, c, dpi, width, height, out);
+            }
         });
 }
 
@@ -311,11 +322,19 @@ fn sidebar_panel(
                     out.push(LauncherEvent::Goto(page));
                 }
             }
-            // Account card pinned near the bottom.
-            let [x, _] = ui.cursor_screen_pos();
+            // Footer: where this build stands, a way out, and the account under it.
             let ay = height - 64.0 * dpi;
+            let fy = ay - 46.0 * dpi;
+            let quit = "Quit";
+            let qw = ui.calc_text_size(quit)[0] + 16.0 * dpi;
             {
                 let draw = ui.get_window_draw_list();
+                draw.add_text(
+                    [pad, fy + 16.0 * dpi],
+                    rgba(c.muted, 1.0),
+                    format!("{} · native", model.version),
+                );
+                draw.add_text([sidebar - pad - qw, fy + 16.0 * dpi], rgba(c.muted, 1.0), quit);
                 fill(&draw, [pad, ay], [sidebar - pad, ay + 48.0 * dpi], c.panel, 1.0, 10.0);
                 stroke(&draw, [pad, ay], [sidebar - pad, ay + 48.0 * dpi], c.rule, 1.0, 10.0, 1.0);
                 fill(&draw, [pad + 12.0 * dpi, ay + 14.0 * dpi], [pad + 34.0 * dpi, ay + 36.0 * dpi], c.face, 1.0, 6.0);
@@ -323,10 +342,14 @@ fn sidebar_panel(
                 draw.add_text([pad + 44.0 * dpi, ay + 10.0 * dpi], rgba(c.ink, 1.0), name);
                 draw.add_text([pad + 44.0 * dpi, ay + 28.0 * dpi], rgba(c.muted, 1.0), "Tap to rename");
             }
-            let _ = x;
+            ui.set_cursor_screen_pos([sidebar - pad - qw, fy]);
+            if ui.invisible_button("##quit", [qw, 34.0 * dpi]) {
+                out.push(LauncherEvent::Quit);
+            }
             ui.set_cursor_screen_pos([pad, ay]);
             if ui.invisible_button("##account", [sidebar - 2.0 * pad, 48.0 * dpi]) {
-                out.push(LauncherEvent::EditAccount);
+                model.editing = true;
+                out.push(LauncherEvent::RenameAccount);
             }
         });
 }
@@ -607,4 +630,143 @@ fn about_page(ui: &Ui, model: &LauncherModel, fonts: &Fonts, c: &Css, dpi: f32, 
         }
         ui.dummy([0.0, h + 6.0 * dpi]);
     }
+}
+
+/// The name field, on a pass of its own over the whole screen. The phone's keyboard
+/// covers the bottom half, so the card sits high and the launcher behind it waits; a
+/// tap anywhere outside is a way back out.
+fn rename_dialog(
+    ui: &Ui,
+    model: &mut LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    height: f32,
+    out: &mut Vec<LauncherEvent>,
+) {
+    let w = (460.0 * dpi).min(width - 32.0 * dpi);
+    let h = 200.0 * dpi;
+    let x = (width - w) / 2.0;
+    let y = 60.0 * dpi;
+    let keep = w - 44.0 * dpi;
+    let button = 128.0 * dpi;
+    let _ = ui
+        .window("##rename")
+        .flags(
+            WindowFlags::NO_TITLE_BAR
+                | WindowFlags::NO_RESIZE
+                | WindowFlags::NO_MOVE
+                | WindowFlags::NO_COLLAPSE
+                | WindowFlags::NO_BACKGROUND
+                | WindowFlags::NO_SCROLLBAR
+                | WindowFlags::NO_SCROLL_WITH_MOUSE
+                | WindowFlags::NO_FOCUS_ON_APPEARING,
+        )
+        .position([0.0, 0.0], Condition::Always)
+        .size([width, height], Condition::Always)
+        .build(|| {
+            {
+                let draw = ui.get_window_draw_list();
+                fill(&draw, [0.0, 0.0], [width, height], c.page, 0.78, 0.0);
+                fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 16.0);
+                stroke(&draw, [x, y], [x + w, y + h], c.bevel, 1.0, 16.0, 1.0);
+                let _f = ui.push_font(fonts.pixel);
+                draw.add_text(
+                    [x + 22.0 * dpi, y + 20.0 * dpi],
+                    rgba(c.ink, 1.0),
+                    "Player name",
+                );
+                draw.add_text(
+                    [x + w - 22.0 * dpi - 148.0 * dpi, y + 24.0 * dpi],
+                    rgba(c.muted, 1.0),
+                    "A-Z a-z 0-9 _",
+                );
+                let _g = ui.push_font(fonts.body);
+                draw.add_text(
+                    [x + 22.0 * dpi, y + 48.0 * dpi],
+                    rgba(c.muted, 1.0),
+                    format!("Signed in as {}", if model.account.is_empty() { "Player" } else { model.account.as_str() }),
+                );
+            }
+            {
+                let draw = ui.get_window_draw_list();
+                field(
+                    &draw,
+                    ui,
+                    fonts,
+                    c,
+                    dpi,
+                    x + 22.0 * dpi,
+                    y + 68.0 * dpi,
+                    keep,
+                    &model.draft,
+                );
+            }
+
+            ui.set_cursor_screen_pos([x + 22.0 * dpi, y + h - 54.0 * dpi]);
+            {
+                let _b = ui.push_style_color(StyleColor::Button, rgba(c.face, 1.0));
+                let _hover = ui.push_style_color(StyleColor::ButtonHovered, rgba(c.accent, 1.0));
+                let _a = ui.push_style_color(StyleColor::ButtonActive, rgba(c.accent, 1.0));
+                let _t = ui.push_style_color(StyleColor::Text, rgba(c.on_face, 1.0));
+                let _f = ui.push_font(fonts.pixel);
+                if ui.button_with_size("Save", [button, 38.0 * dpi]) {
+                    out.push(LauncherEvent::SetAccount(model.draft.clone()));
+                    model.editing = false;
+                }
+            }
+            ui.set_cursor_screen_pos([x + w - 22.0 * dpi - button, y + h - 54.0 * dpi]);
+            {
+                let _b = ui.push_style_color(StyleColor::Button, rgba(c.button, 1.0));
+                let _t = ui.push_style_color(StyleColor::Text, rgba(c.muted, 1.0));
+                let _f = ui.push_font(fonts.pixel);
+                if ui.button_with_size("Cancel", [button, 38.0 * dpi]) {
+                    model.editing = false;
+                }
+            }
+            // Away from the card either way is a way out: the bands above and below,
+            // which is where the keyboard and the rest of the launcher are.
+            for (i, (top, bottom)) in [(0.0, y), (y + h, height)].into_iter().enumerate() {
+                ui.set_cursor_screen_pos([0.0, top]);
+                let id = format!("##away{i}");
+                if ui.invisible_button(id.as_str(), [width, bottom - top]) {
+                    model.editing = false;
+                }
+            }
+        });
+}
+
+/// The field's own face: what the platform has gathered from the IME, and a caret at
+/// the end of it. imgui's text widget wants a keyboard of its own, and the phone's
+/// delivers words to the activity rather than keys to a window, so the name is edited
+/// the way every other field on this build is and only drawn here.
+fn field(
+    draw: &DrawListMut<'_>,
+    ui: &Ui,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+    draft: &str,
+) {
+    let caret = x + 14.0 * dpi + ui.calc_text_size(draft)[0];
+    fill(&draw, [x, y], [x + width, y + 50.0 * dpi], c.well, 1.0, 10.0);
+    fill(&draw, [x, y + 49.0 * dpi], [x + width, y + 51.0 * dpi], c.accent, 1.0, 0.0);
+    let _f = ui.push_font(fonts.body);
+    if draft.is_empty() {
+        draw.add_text([x + 14.0 * dpi, y + 15.0 * dpi], rgba(c.muted, 1.0), "New name");
+    } else {
+        draw.add_text([x + 14.0 * dpi, y + 15.0 * dpi], rgba(c.ink, 1.0), draft);
+    }
+    fill(
+        &draw,
+        [caret.min(x + width - 3.0 * dpi), y + 13.0 * dpi],
+        [caret.min(x + width - 3.0 * dpi) + 2.0 * dpi, y + 37.0 * dpi],
+        c.accent,
+        1.0,
+        1.0,
+    );
 }
