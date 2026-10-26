@@ -182,7 +182,7 @@ impl SessionLock {
                 world.display(),
                 std::thread::current().name()
             );
-            return Err(format!("{} is already open in another instance", world.display()));
+            return Err(format!("{} is already open in another instance", world.display()).into());
         }
         log::info!(
             "session lock: {} acquired (thread {:?})",
