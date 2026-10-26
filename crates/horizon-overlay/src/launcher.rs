@@ -13,11 +13,11 @@
 //! the rest of the overlay is.
 //!
 //! The look is Horizon's own — the `Blocks` palette and Pixelify Sans display
-//! face from [`horizon_theme`], the same tokens the website (playhorizon.dev) and
-//! the desktop launcher are built from — so the phone, the site and the desktop
-//! read as one product.
+//! face from [`horizon_theme`], the same tokens playhorizon.dev and the desktop
+//! launcher are built from — laid out as a sidebar, a hero panel and cards, with
+//! the panels drawn by hand so it reads as a designed app rather than a form.
 
-use imgui::{Condition, FontConfig, FontId, FontSource, StyleColor, Ui, WindowFlags};
+use imgui::{Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, Ui, WindowFlags};
 
 /// The pages the sidebar switches between.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -92,11 +92,8 @@ pub struct LauncherModel {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum LauncherEvent {
     Goto(LauncherPage),
-    /// The big Play button on the Play page.
     Play,
-    /// A row that launches something (a world, an instance).
     PlayRow(u32),
-    /// A row that only becomes the chosen one (a version, a skin).
     SelectRow(u32),
     NewInstance,
     Install,
@@ -106,8 +103,8 @@ pub enum LauncherEvent {
     Quit,
 }
 
-/// The `Blocks` palette, pulled straight from the shared design tokens so the
-/// phone matches the website and the desktop launcher. Colours are `0xRRGGBB`.
+/// The `Blocks` palette, pulled from the shared design tokens so the phone
+/// matches the website and the desktop launcher. Colours are `0xRRGGBB`.
 pub struct Css {
     pub page: u32,
     pub side: u32,
@@ -116,6 +113,7 @@ pub struct Css {
     pub button: u32,
     pub well: u32,
     pub rule: u32,
+    pub bevel: u32,
     pub ink: u32,
     pub ink_soft: u32,
     pub muted: u32,
@@ -134,6 +132,7 @@ pub const THEME: Css = Css {
     button: B.button,
     well: B.well,
     rule: B.rule,
+    bevel: B.bevel,
     ink: B.ink,
     ink_soft: B.ink_soft,
     muted: B.muted,
@@ -142,30 +141,24 @@ pub const THEME: Css = Css {
     on_face: B.on_face,
 };
 
-fn rgb(c: u32) -> [f32; 3] {
+fn rgba(c: u32, a: f32) -> [f32; 4] {
     [
         ((c >> 16) & 0xff) as f32 / 255.0,
         ((c >> 8) & 0xff) as f32 / 255.0,
         (c & 0xff) as f32 / 255.0,
+        a,
     ]
 }
 
-fn rgba(c: u32, a: f32) -> [f32; 4] {
-    let [r, g, b] = rgb(c);
-    [r, g, b, a]
-}
-
 /// The faces the launcher draws with: Geist for body, Pixelify Sans for the
-/// blocky headings, navigation and buttons.
+/// blocky wordmark, headings, navigation and the primary action.
 pub struct Fonts {
     pub body: FontId,
     pub pixel: FontId,
     pub title: FontId,
 }
 
-/// Load the fonts and set the `Blocks` theme. Called once, where the fonts are
-/// added. The first font added becomes the default, so Geist is what the touch
-/// buttons' legends and any un-pushed text draw with.
+/// Load the fonts and set the base style. Called once, where the fonts are added.
 pub fn theme(imgui: &mut imgui::Context, dpi: f32) -> Fonts {
     let body = imgui.fonts().add_font(&[FontSource::TtfData {
         data: horizon_theme::fonts::GEIST_REGULAR,
@@ -178,53 +171,43 @@ pub fn theme(imgui: &mut imgui::Context, dpi: f32) -> Fonts {
     }]);
     let pixel = imgui.fonts().add_font(&[FontSource::TtfData {
         data: horizon_theme::fonts::PIXEL_SEMIBOLD,
-        size_pixels: 16.0 * dpi,
+        size_pixels: 17.0 * dpi,
         config: Some(FontConfig::default()),
     }]);
     let title = imgui.fonts().add_font(&[FontSource::TtfData {
         data: horizon_theme::fonts::PIXEL_BOLD,
-        size_pixels: 30.0 * dpi,
+        size_pixels: 34.0 * dpi,
         config: Some(FontConfig::default()),
     }]);
 
     let c = &THEME;
     let style = imgui.style_mut();
-    style.window_rounding = horizon_theme::RADIUS_PLATE;
+    style.window_rounding = 0.0;
     style.frame_rounding = horizon_theme::RADIUS;
     style.scrollbar_rounding = horizon_theme::RADIUS;
     style.grab_rounding = horizon_theme::RADIUS;
     style.window_border_size = 0.0;
     style.frame_border_size = 0.0;
-    style.scrollbar_size = 10.0 * dpi;
-    style.item_spacing = [10.0 * dpi, 8.0 * dpi];
-    style.window_padding = [16.0 * dpi, 16.0 * dpi];
-    style.frame_padding = [10.0 * dpi, 7.0 * dpi];
+    style.scrollbar_size = 8.0 * dpi;
+    style.item_spacing = [0.0, 8.0 * dpi];
+    style.window_padding = [0.0, 0.0];
     let colors = &mut style.colors;
     colors[StyleColor::Text as usize] = rgba(c.ink, 1.0);
-    colors[StyleColor::TextDisabled as usize] = rgba(c.muted, 1.0);
-    colors[StyleColor::TextSelectedBg as usize] = rgba(c.accent, 0.6);
     colors[StyleColor::WindowBg as usize] = rgba(c.page, 1.0);
     colors[StyleColor::ChildBg as usize] = [0.0, 0.0, 0.0, 0.0];
-    colors[StyleColor::PopupBg as usize] = rgba(c.panel, 1.0);
-    colors[StyleColor::Border as usize] = rgba(c.rule, 1.0);
-    colors[StyleColor::FrameBg as usize] = rgba(c.well, 1.0);
-    colors[StyleColor::FrameBgHovered as usize] = rgba(c.raised, 1.0);
-    colors[StyleColor::FrameBgActive as usize] = rgba(c.raised, 1.0);
-    colors[StyleColor::Button as usize] = rgba(c.button, 1.0);
-    colors[StyleColor::ButtonHovered as usize] = rgba(c.raised, 1.0);
-    colors[StyleColor::ButtonActive as usize] = rgba(c.accent, 1.0);
-    colors[StyleColor::Header as usize] = rgba(c.raised, 1.0);
-    colors[StyleColor::HeaderHovered as usize] = rgba(c.raised, 1.0);
-    colors[StyleColor::HeaderActive as usize] = rgba(c.accent, 1.0);
-    colors[StyleColor::Separator as usize] = rgba(c.rule, 1.0);
     colors[StyleColor::ScrollbarBg as usize] = rgba(c.page, 0.0);
     colors[StyleColor::ScrollbarGrab as usize] = rgba(c.rule, 1.0);
     colors[StyleColor::ScrollbarGrabHovered as usize] = rgba(c.muted, 1.0);
     colors[StyleColor::ScrollbarGrabActive as usize] = rgba(c.ink, 1.0);
-    colors[StyleColor::SliderGrab as usize] = rgba(c.accent, 1.0);
-    colors[StyleColor::SliderGrabActive as usize] = rgba(c.ink, 1.0);
-    colors[StyleColor::CheckMark as usize] = rgba(c.accent, 1.0);
     Fonts { body, pixel, title }
+}
+
+fn fill(draw: &DrawListMut<'_>, min: [f32; 2], max: [f32; 2], col: u32, a: f32, r: f32) {
+    draw.add_rect(min, max, rgba(col, a)).filled(true).rounding(r).build();
+}
+
+fn stroke(draw: &DrawListMut<'_>, min: [f32; 2], max: [f32; 2], col: u32, a: f32, r: f32, t: f32) {
+    draw.add_rect(min, max, rgba(col, a)).rounding(r).thickness(t).build();
 }
 
 /// The whole launcher, edge to edge. Events the player raises go into `out`.
@@ -238,7 +221,6 @@ pub fn draw(
     out: &mut Vec<LauncherEvent>,
 ) {
     let c = &THEME;
-
     let _ = ui
         .window("##launcher")
         .flags(
@@ -248,278 +230,368 @@ pub fn draw(
                 | WindowFlags::NO_COLLAPSE
                 | WindowFlags::NO_SCROLLBAR
                 | WindowFlags::NO_SCROLL_WITH_MOUSE
+                | WindowFlags::NO_BACKGROUND
                 | WindowFlags::NO_FOCUS_ON_APPEARING
                 | WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS,
         )
         .position([0.0, 0.0], Condition::Always)
         .size([width, height], Condition::Always)
         .build(|| {
-            let sidebar = (220.0 * dpi).min(width * 0.4);
-
-            let _side = ui.push_style_color(StyleColor::ChildBg, rgba(c.side, 1.0));
-            let _ = ui
-                .child_window("##sidebar")
-                .size([sidebar, -1.0])
-                .build(|| {
-                    ui.dummy([0.0, 12.0 * dpi]);
-                    {
-                        let _f = ui.push_font(fonts.title);
-                        let _t = ui.push_style_color(StyleColor::Text, rgba(c.ink, 1.0));
-                        ui.text("HORIZON");
-                    }
-                    ui.dummy([0.0, 16.0 * dpi]);
-                    for page in PAGES {
-                        let current = page == model.page;
-                        let _b = ui.push_style_color(
-                            StyleColor::Button,
-                            rgba(if current { c.raised } else { c.side }, 1.0),
-                        );
-                        let _t = ui.push_style_color(
-                            StyleColor::Text,
-                            rgba(if current { c.ink } else { c.muted }, 1.0),
-                        );
-                        let _f = ui.push_font(fonts.pixel);
-                        if ui.button_with_size(page.label(), [-1.0, 42.0 * dpi]) {
-                            log::info!("launcher: nav {page:?} clicked");
-                            out.push(LauncherEvent::Goto(page));
-                        }
-                    }
-                });
-
-            let content_w = width - sidebar;
+            // Page background, painted once behind everything.
+            {
+                let draw = ui.get_window_draw_list();
+                fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+            }
+            let sidebar = (236.0 * dpi).min(width * 0.42);
+            sidebar_panel(ui, model, fonts, c, dpi, sidebar, height, out);
             ui.set_cursor_screen_pos([sidebar, 0.0]);
-            let _content = ui.push_style_color(StyleColor::ChildBg, rgba(c.page, 1.0));
+            let _content = ui.push_style_color(StyleColor::ChildBg, [0.0, 0.0, 0.0, 0.0]);
             let _ = ui
                 .child_window("##content")
-                .size([content_w, -1.0])
+                .size([width - sidebar, -1.0])
                 .build(|| {
-                    topbar(ui, model, fonts, c, out);
-                    ui.separator();
-                    match model.page {
-                        LauncherPage::Play => play(ui, model, fonts, c, dpi, out),
-                        LauncherPage::Instances => list(
-                            ui,
-                            model,
-                            fonts,
-                            c,
-                            dpi,
-                            out,
-                            "Instances",
-                            "Separate worlds, settings and skins on the one supported version.",
-                            LauncherEvent::PlayRow,
-                            Some(LauncherEvent::NewInstance),
-                        ),
-                        LauncherPage::Versions => list(
-                            ui,
-                            model,
-                            fonts,
-                            c,
-                            dpi,
-                            out,
-                            "Versions",
-                            "This native build plays Minecraft Java 26.3. Other versions need their own engine port and are shown for reference.",
-                            LauncherEvent::SelectRow,
-                            None,
-                        ),
-                        LauncherPage::Skins => {
-                            heading(ui, fonts, c, "Skins");
-                            ui.text_wrapped(
-                                "Choose the account skin, or load a PNG from the import/skins folder.",
-                            );
-                            ui.dummy([0.0, 8.0 * dpi]);
-                            action_button(ui, fonts, c, "Open skin picker", dpi, out, LauncherEvent::OpenSkins);
-                        }
-                        LauncherPage::Mods => {
-                            heading(ui, fonts, c, "Mods");
-                            ui.text_wrapped(
-                                "Horizon's own component mods need a runtime this build does not carry yet. Modpacks ported to 26.3 run as resource and data packs.",
-                            );
-                        }
-                        LauncherPage::Settings => {
-                            heading(ui, fonts, c, "Settings");
-                            ui.text_wrapped("Video, controls, language and accessibility.");
-                            ui.dummy([0.0, 8.0 * dpi]);
-                            action_button(ui, fonts, c, "Open settings", dpi, out, LauncherEvent::OpenSettings);
-                        }
-                        LauncherPage::About => {
-                            heading(ui, fonts, c, "About");
-                            for (key, value) in &model.facts {
-                                let _t = ui.push_style_color(StyleColor::Text, rgba(c.muted, 1.0));
-                                ui.text(format!("{key}"));
-                                ui.same_line();
-                                ui.text(value.as_str());
-                            }
-                            ui.dummy([0.0, 6.0 * dpi]);
-                            ui.text_wrapped(
-                                "Horizon — a native Minecraft Java client in Rust. Not affiliated with Mojang or Microsoft.",
-                            );
-                        }
-                    }
+                    content(ui, model, fonts, c, dpi, width - sidebar, out);
                 });
         });
 }
 
-fn topbar(ui: &Ui, model: &LauncherModel, fonts: &Fonts, c: &Css, out: &mut Vec<LauncherEvent>) {
-    let _f = ui.push_font(fonts.pixel);
-    ui.text(model.page.label());
-    if !model.account.is_empty() {
-        ui.same_line();
-        let _t = ui.push_style_color(StyleColor::Text, rgba(c.muted, 1.0));
-        if ui.button(format!("{}  ·  Rename", model.account).as_str()) {
-            out.push(LauncherEvent::EditAccount);
-        }
-        ui.same_line();
-        if ui.button("Quit") {
-            out.push(LauncherEvent::Quit);
-        }
-    }
-}
-
-fn play(
+fn sidebar_panel(
     ui: &Ui,
     model: &LauncherModel,
     fonts: &Fonts,
     c: &Css,
     dpi: f32,
+    sidebar: f32,
+    height: f32,
     out: &mut Vec<LauncherEvent>,
 ) {
-    ui.dummy([0.0, 10.0 * dpi]);
+    let _side = ui.push_style_color(StyleColor::ChildBg, rgba(c.side, 1.0));
+    let _ = ui
+        .child_window("##sidebar")
+        .size([sidebar, height])
+        .build(|| {
+            let pad = 18.0 * dpi;
+            ui.set_cursor_pos([pad, 22.0 * dpi]);
+            {
+                let _f = ui.push_font(fonts.title);
+                ui.text("HORIZON");
+            }
+            ui.set_cursor_pos([pad + 1.0, 66.0 * dpi]);
+            ui.text_colored(rgba(c.muted, 1.0), "LAUNCHER");
+            {
+                let draw = ui.get_window_draw_list();
+                fill(&draw, [pad, 88.0 * dpi], [sidebar - pad, 89.0 * dpi], c.accent, 1.0, 0.0);
+            }
+            ui.set_cursor_pos([0.0, 108.0 * dpi]);
+            for page in PAGES {
+                let selected = page == model.page;
+                let [x, y] = ui.cursor_screen_pos();
+                let h = 46.0 * dpi;
+                let w = sidebar;
+                {
+                    let draw = ui.get_window_draw_list();
+                    if selected {
+                        fill(&draw, [x + 10.0 * dpi, y], [w - 10.0 * dpi, y + h], c.raised, 1.0, 10.0);
+                        fill(&draw, [x + 4.0 * dpi, y + 12.0 * dpi], [x + 7.0 * dpi, y + h - 12.0 * dpi], c.accent, 1.0, 2.0);
+                    }
+                    let _f = ui.push_font(fonts.pixel);
+                    draw.add_text(
+                        [x + 24.0 * dpi, y + h / 2.0 - 9.0 * dpi],
+                        rgba(if selected { c.ink } else { c.muted }, 1.0),
+                        page.label(),
+                    );
+                }
+                if ui.invisible_button(page.label(), [w, h]) {
+                    out.push(LauncherEvent::Goto(page));
+                }
+            }
+            // Account card pinned near the bottom.
+            let [x, _] = ui.cursor_screen_pos();
+            let ay = height - 64.0 * dpi;
+            {
+                let draw = ui.get_window_draw_list();
+                fill(&draw, [pad, ay], [sidebar - pad, ay + 48.0 * dpi], c.panel, 1.0, 10.0);
+                stroke(&draw, [pad, ay], [sidebar - pad, ay + 48.0 * dpi], c.rule, 1.0, 10.0, 1.0);
+                fill(&draw, [pad + 12.0 * dpi, ay + 14.0 * dpi], [pad + 34.0 * dpi, ay + 36.0 * dpi], c.face, 1.0, 6.0);
+                let name = if model.account.is_empty() { "Player" } else { model.account.as_str() };
+                draw.add_text([pad + 44.0 * dpi, ay + 10.0 * dpi], rgba(c.ink, 1.0), name);
+                draw.add_text([pad + 44.0 * dpi, ay + 28.0 * dpi], rgba(c.muted, 1.0), "Tap to rename");
+            }
+            let _ = x;
+            ui.set_cursor_screen_pos([pad, ay]);
+            if ui.invisible_button("##account", [sidebar - 2.0 * pad, 48.0 * dpi]) {
+                out.push(LauncherEvent::EditAccount);
+            }
+        });
+}
+
+fn content(
+    ui: &Ui,
+    model: &LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    out: &mut Vec<LauncherEvent>,
+) {
+    let pad = 28.0 * dpi;
+    ui.set_cursor_pos([pad, 26.0 * dpi]);
     {
         let _f = ui.push_font(fonts.title);
-        ui.text(if model.instance.is_empty() {
-            "No instance"
-        } else {
-            model.instance.as_str()
-        });
+        ui.text(model.page.label());
     }
-    ui.text_colored(
-        rgba(c.muted, 1.0),
-        format!("Minecraft Java {} · native", model.version),
-    );
-    ui.dummy([0.0, 16.0 * dpi]);
+    ui.set_cursor_pos([pad, 68.0 * dpi]);
+    let sub = match model.page {
+        LauncherPage::Play => "Jump back in, or start something new.",
+        LauncherPage::Instances => "Separate worlds, settings and skins on the one supported version.",
+        LauncherPage::Versions => "This native build plays Minecraft Java 26.3; other versions are listed for reference.",
+        LauncherPage::Skins => "Your skin comes from your account, or a PNG in import/skins.",
+        LauncherPage::Mods => "Component mods need a runtime this build does not carry yet.",
+        LauncherPage::Settings => "Video, controls, language and accessibility.",
+        LauncherPage::About => "What this build is.",
+    };
+    ui.text_colored(rgba(c.muted, 1.0), sub);
+    ui.set_cursor_pos([pad, 100.0 * dpi]);
 
+    match model.page {
+        LauncherPage::Play => play_page(ui, model, fonts, c, dpi, width, pad, out),
+        LauncherPage::Instances | LauncherPage::Versions => {
+            list_page(ui, model, fonts, c, dpi, width, pad, out)
+        }
+        LauncherPage::Skins => {
+            action_card(ui, fonts, c, dpi, width, pad, "Skins", "Open the skin picker", "Choose your account skin, or drop a PNG into import/skins and load it.", LauncherEvent::OpenSkins, out);
+        }
+        LauncherPage::Settings => {
+            action_card(ui, fonts, c, dpi, width, pad, "Settings", "Open settings", "Video, controls, language and accessibility live in the game's own settings.", LauncherEvent::OpenSettings, out);
+        }
+        LauncherPage::Mods => {
+            info_card(ui, fonts, c, dpi, width, pad, "Mods", "Horizon's component mods need a runtime this build does not carry yet. Modpacks ported to 26.3 run as resource and data packs.");
+        }
+        LauncherPage::About => about_page(ui, model, fonts, c, dpi, width, pad),
+    }
+}
+
+fn play_page(
+    ui: &Ui,
+    model: &LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    pad: f32,
+    out: &mut Vec<LauncherEvent>,
+) {
+    let hero_h = 132.0 * dpi;
+    let [x, y] = ui.cursor_screen_pos();
+    let w = width - 2.0 * pad;
     let playable = model.playable && !model.instance.is_empty();
-    let clicked = {
-        let _f = ui.push_font(fonts.pixel);
+    {
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [x, y], [x + w, y + hero_h], c.panel, 1.0, 14.0);
+        stroke(&draw, [x, y], [x + w, y + hero_h], c.rule, 1.0, 14.0, 1.0);
+        let _f = ui.push_font(fonts.title);
+        draw.add_text(
+            [x + 24.0 * dpi, y + 22.0 * dpi],
+            rgba(c.ink, 1.0),
+            if model.instance.is_empty() { "No instance" } else { model.instance.as_str() },
+        );
+        draw.add_text(
+            [x + 24.0 * dpi, y + 62.0 * dpi],
+            rgba(c.muted, 1.0),
+            format!("Minecraft Java {} · native", model.version),
+        );
+    }
+    ui.set_cursor_screen_pos([x + 24.0 * dpi, y + hero_h - 56.0 * dpi]);
+    let btn_w = 168.0 * dpi;
+    {
         let _b = ui.push_style_color(
             StyleColor::Button,
             rgba(if playable { c.face } else { c.button }, 1.0),
         );
         let _bh = ui.push_style_color(
             StyleColor::ButtonHovered,
-            rgba(if playable { c.face } else { c.raised }, 1.0),
+            rgba(if playable { c.accent } else { c.raised }, 1.0),
         );
         let _ba = ui.push_style_color(StyleColor::ButtonActive, rgba(c.accent, 1.0));
         let _t = ui.push_style_color(
             StyleColor::Text,
             rgba(if playable { c.on_face } else { c.muted }, 1.0),
         );
-        ui.button_with_size(
-            if playable { "Play" } else { "Not installed" },
-            [-1.0, 54.0 * dpi],
-        )
-    };
-    if clicked && playable {
-        out.push(LauncherEvent::Play);
+        let _f = ui.push_font(fonts.pixel);
+        if ui.button_with_size(if playable { "Play" } else { "Not installed" }, [btn_w, 40.0 * dpi]) {
+            if playable {
+                out.push(LauncherEvent::Play);
+            }
+        }
     }
-    ui.dummy([0.0, 18.0 * dpi]);
-
     if !model.status.is_empty() {
+        ui.same_line();
+        ui.set_cursor_screen_pos([x + btn_w + 40.0 * dpi, y + hero_h - 48.0 * dpi]);
         ui.text_colored(rgba(c.muted, 1.0), model.status.as_str());
     }
-    if let Some(p) = model.progress {
-        ui.text_colored(rgba(c.muted, 1.0), format!("{:.0}%", p * 100.0));
-    }
+    ui.set_cursor_screen_pos([x, y + hero_h + 20.0 * dpi]);
 
-    if !model.rows.is_empty() {
-        ui.dummy([0.0, 10.0 * dpi]);
-        ui.text_colored(rgba(c.muted, 1.0), "Recent worlds");
+    ui.text_colored(rgba(c.muted, 1.0), "WORLDS");
+    ui.dummy([0.0, 6.0 * dpi]);
+    if model.rows.is_empty() {
+        let [x, y] = ui.cursor_screen_pos();
+        let w = width - 2.0 * pad;
+        let h = 64.0 * dpi;
+        {
+            let draw = ui.get_window_draw_list();
+            fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 12.0);
+            stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 12.0, 1.0);
+            draw.add_text([x + 20.0 * dpi, y + 22.0 * dpi], rgba(c.muted, 1.0), "No worlds yet — create one from Singleplayer.");
+        }
+        ui.dummy([0.0, h]);
+    } else {
         for row in &model.rows {
-            list_row(ui, row, fonts, c, dpi, out, LauncherEvent::PlayRow);
+            row_card(ui, fonts, c, dpi, width, pad, row, out, LauncherEvent::PlayRow);
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn list(
+fn list_page(
     ui: &Ui,
     model: &LauncherModel,
     fonts: &Fonts,
     c: &Css,
     dpi: f32,
+    width: f32,
+    pad: f32,
     out: &mut Vec<LauncherEvent>,
-    title: &str,
-    blurb: &str,
-    on_row: fn(u32) -> LauncherEvent,
-    action: Option<LauncherEvent>,
 ) {
-    heading(ui, fonts, c, title);
-    ui.text_wrapped(blurb);
-    ui.dummy([0.0, 8.0 * dpi]);
     for row in &model.rows {
-        list_row(ui, row, fonts, c, dpi, out, on_row);
+        row_card(ui, fonts, c, dpi, width, pad, row, out, if model.page == LauncherPage::Instances { LauncherEvent::PlayRow } else { LauncherEvent::SelectRow });
     }
-    if let Some(event) = action {
-        ui.dummy([0.0, 8.0 * dpi]);
-        action_button(ui, fonts, c, "New instance", dpi, out, event);
+    if model.page == LauncherPage::Instances {
+        ui.dummy([0.0, 6.0 * dpi]);
+        let [x, y] = ui.cursor_screen_pos();
+        let w = 200.0 * dpi;
+        let h = 44.0 * dpi;
+        {
+            let draw = ui.get_window_draw_list();
+            fill(&draw, [x, y], [x + w, y + h], c.button, 1.0, 10.0);
+            stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 10.0, 1.0);
+            let _f = ui.push_font(fonts.pixel);
+            draw.add_text([x + 20.0 * dpi, y + h / 2.0 - 9.0 * dpi], rgba(c.ink, 1.0), "New instance");
+        }
+        if ui.invisible_button("##new", [w, h]) {
+            out.push(LauncherEvent::NewInstance);
+        }
     }
     if !model.status.is_empty() {
-        ui.dummy([0.0, 8.0 * dpi]);
+        ui.dummy([0.0, 10.0 * dpi]);
         ui.text_colored(rgba(c.muted, 1.0), model.status.as_str());
     }
 }
 
-fn heading(ui: &Ui, fonts: &Fonts, c: &Css, text: &str) {
-    let _f = ui.push_font(fonts.title);
-    ui.text_colored(rgba(c.ink, 1.0), text);
-}
-
-/// A secondary, full-width-ish action button in the panel style.
-fn action_button(
+fn row_card(
     ui: &Ui,
     fonts: &Fonts,
     c: &Css,
-    label: &str,
     dpi: f32,
-    out: &mut Vec<LauncherEvent>,
-    event: LauncherEvent,
-) {
-    let _b = ui.push_style_color(StyleColor::Button, rgba(c.button, 1.0));
-    let _t = ui.push_style_color(StyleColor::Text, rgba(c.ink, 1.0));
-    let _f = ui.push_font(fonts.pixel);
-    if ui.button_with_size(label, [220.0 * dpi, 40.0 * dpi]) {
-        out.push(event);
-    }
-}
-
-fn list_row(
-    ui: &Ui,
+    width: f32,
+    pad: f32,
     row: &LauncherRow,
-    fonts: &Fonts,
-    c: &Css,
-    dpi: f32,
     out: &mut Vec<LauncherEvent>,
     on_row: fn(u32) -> LauncherEvent,
 ) {
-    let mut label = if row.subtitle.is_empty() {
-        row.title.clone()
-    } else {
-        format!("{}  ·  {}", row.title, row.subtitle)
-    };
-    if !row.badge.is_empty() {
-        label = format!("{label}      {}", row.badge);
+    let [x, y] = ui.cursor_screen_pos();
+    let w = width - 2.0 * pad;
+    let h = 66.0 * dpi;
+    {
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [x, y], [x + w, y + h], if row.selected { c.raised } else { c.panel }, 1.0, 12.0);
+        stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 12.0, 1.0);
+        fill(&draw, [x + 14.0 * dpi, y + 15.0 * dpi], [x + 51.0 * dpi, y + h - 15.0 * dpi], c.face, 1.0, 8.0);
+        let title_col = if row.enabled { c.ink } else { c.muted };
+        let _f = ui.push_font(fonts.pixel);
+        draw.add_text([x + 64.0 * dpi, y + 14.0 * dpi], rgba(title_col, 1.0), row.title.as_str());
+        draw.add_text([x + 64.0 * dpi, y + 38.0 * dpi], rgba(c.muted, 1.0), row.subtitle.as_str());
+        if !row.badge.is_empty() {
+            let bw = ui.calc_text_size(row.badge.as_str())[0] + 20.0 * dpi;
+            fill(&draw, [x + w - bw - 14.0 * dpi, y + h / 2.0 - 12.0 * dpi], [x + w - 14.0 * dpi, y + h / 2.0 + 12.0 * dpi], c.well, 1.0, 8.0);
+            draw.add_text([x + w - bw - 4.0 * dpi, y + h / 2.0 - 8.0 * dpi], rgba(c.muted, 1.0), row.badge.as_str());
+        }
     }
-    let _b = ui.push_style_color(
-        StyleColor::Button,
-        rgba(if row.selected { c.raised } else { c.panel }, 1.0),
-    );
-    let _t = ui.push_style_color(
-        StyleColor::Text,
-        rgba(if row.enabled { c.ink } else { c.muted }, 1.0),
-    );
-    let _f = ui.push_font(fonts.pixel);
-    let clicked = ui.button_with_size(label.as_str(), [-1.0, 50.0 * dpi]);
-    if clicked && row.enabled {
+    let id = format!("##row{}", row.id);
+    if ui.invisible_button(id.as_str(), [w, h]) && row.enabled {
         out.push(on_row(row.id));
+    }
+}
+
+fn action_card(
+    ui: &Ui,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    pad: f32,
+    title: &str,
+    button: &str,
+    body: &str,
+    event: LauncherEvent,
+    out: &mut Vec<LauncherEvent>,
+) {
+    let _ = title;
+    let [x, y] = ui.cursor_screen_pos();
+    let w = width - 2.0 * pad;
+    let h = 150.0 * dpi;
+    {
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 14.0);
+        stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 14.0, 1.0);
+        draw.add_text([x + 24.0 * dpi, y + 24.0 * dpi], rgba(c.muted, 1.0), body);
+    }
+    ui.set_cursor_screen_pos([x + 24.0 * dpi, y + h - 56.0 * dpi]);
+    {
+        let _b = ui.push_style_color(StyleColor::Button, rgba(c.button, 1.0));
+        let _t = ui.push_style_color(StyleColor::Text, rgba(c.ink, 1.0));
+        let _f = ui.push_font(fonts.pixel);
+        if ui.button_with_size(button, [220.0 * dpi, 40.0 * dpi]) {
+            out.push(event);
+        }
+    }
+    ui.set_cursor_screen_pos([x, y + h + 20.0 * dpi]);
+}
+
+fn info_card(
+    ui: &Ui,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    pad: f32,
+    title: &str,
+    body: &str,
+) {
+    let _ = (fonts, title);
+    let [x, y] = ui.cursor_screen_pos();
+    let w = width - 2.0 * pad;
+    let h = 120.0 * dpi;
+    {
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 14.0);
+        stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 14.0, 1.0);
+        draw.add_text([x + 24.0 * dpi, y + 24.0 * dpi], rgba(c.ink_soft, 1.0), body);
+    }
+    ui.dummy([0.0, h]);
+}
+
+fn about_page(ui: &Ui, model: &LauncherModel, fonts: &Fonts, c: &Css, dpi: f32, width: f32, pad: f32) {
+    let _ = fonts;
+    for (key, value) in &model.facts {
+        let [x, y] = ui.cursor_screen_pos();
+        let w = width - 2.0 * pad;
+        let h = 54.0 * dpi;
+        {
+            let draw = ui.get_window_draw_list();
+            fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 10.0);
+            stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 10.0, 1.0);
+            draw.add_text([x + 20.0 * dpi, y + 16.0 * dpi], rgba(c.muted, 1.0), key.as_str());
+            draw.add_text([x + 160.0 * dpi, y + 16.0 * dpi], rgba(c.ink, 1.0), value.as_str());
+        }
+        ui.dummy([0.0, h + 6.0 * dpi]);
     }
 }
