@@ -38,6 +38,9 @@ use crate::paths;
 const SEED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/seed.bin"));
 
 const CLIENT_CACHE: &str = "client.jar";
+/// Mojang's asset objects, named by the first two digits of their SHA-1. The
+/// client JAR carries no sounds; every `.ogg` and `sounds.json` is one of these.
+const ASSET_OBJECTS: &str = "https://resources.download.minecraft.net";
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Whether the seed came with this build. A local host build has none.
@@ -83,20 +86,24 @@ pub fn install(app: &winit::platform::android::activity::AndroidApp) -> Result<(
     ));
     log::info!("minecraft: installing {version} from the official client JAR");
 
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(120))
+        .build();
     let import = paths::import_dir(app);
     fs::create_dir_all(&import).map_err(|error| format!("{}: {error}", import.display()))?;
     clean_stale(&import);
     let downloads = import.join("downloads");
     fs::create_dir_all(&downloads).map_err(|error| format!("{}: {error}", downloads.display()))?;
     let cache = downloads.join(format!("{version}-{CLIENT_CACHE}"));
-    let client = download_client(&manifest, &cache)?;
+    let client = download_client(&agent, &manifest, &cache)?;
 
     let target = paths::resources_dir(app);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     let temporary = import.join(format!(".horizon-{}-install", std::process::id()));
-    let result = assemble(&client, &temporary);
+    let result = assemble(&agent, &manifest, &client, &temporary);
     if let Err(error) = result {
         let _ = fs::remove_dir_all(&temporary);
         return Err(error);
@@ -144,7 +151,12 @@ fn clean_stale(import: &Path) {
     }
 }
 
-fn assemble(client: &Path, target: &Path) -> Result<(), String> {
+fn assemble(
+    agent: &ureq::Agent,
+    manifest: &Value,
+    client: &Path,
+    target: &Path,
+) -> Result<(), String> {
     if target.exists() {
         fs::remove_dir_all(target)
             .map_err(|error| format!("{}: {error}", target.display()))?;
@@ -161,6 +173,9 @@ fn assemble(client: &Path, target: &Path) -> Result<(), String> {
     log::info!(
         "minecraft: unpacked {jar_files} client files and {seed_files} prepared files"
     );
+    // Best effort, and last: a game with no sounds is a game that still plays,
+    // so a failed fetch is a line in the log rather than a reason not to launch.
+    fetch_sounds(agent, manifest, target);
     Ok(())
 }
 
@@ -177,7 +192,11 @@ fn seed_manifest() -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| format!("the embedded version JSON: {error}"))
 }
 
-fn download_client(manifest: &Value, cache: &Path) -> Result<PathBuf, String> {
+fn download_client(
+    agent: &ureq::Agent,
+    manifest: &Value,
+    cache: &Path,
+) -> Result<PathBuf, String> {
     let client = manifest
         .get("downloads")
         .and_then(|downloads| downloads.get("client"))
@@ -206,10 +225,6 @@ fn download_client(manifest: &Value, cache: &Path) -> Result<PathBuf, String> {
         log::warn!("minecraft: {} is not the pinned client; downloading it again", cache.display());
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(120))
-        .build();
     let response = agent
         .get(url)
         .call()
@@ -294,6 +309,161 @@ fn allowed_url(url: &str) -> bool {
         || host.ends_with(".mojang.com")
         || host == "minecraft.net"
         || host.ends_with(".minecraft.net")
+}
+
+/// Whether the game plays this asset: `sounds.json` and everything under `sounds/`.
+/// The client JAR has none of them; they are objects in the version's asset index.
+fn is_sound(name: &str) -> bool {
+    name == "minecraft/sounds.json" || name.starts_with("minecraft/sounds/")
+}
+
+/// Fetch the pinned version's sounds into `target/assets`, best effort. The
+/// download is a few thousand small objects; a silent game still plays, so this
+/// never fails the install — it only says how much of the sound got through.
+fn fetch_sounds(agent: &ureq::Agent, manifest: &Value, target: &Path) {
+    match download_sounds(agent, manifest, target) {
+        Ok((files, bytes)) => log::info!(
+            "minecraft: {files} sound files, {:.1} MB",
+            bytes as f64 / 1e6
+        ),
+        Err(error) => log::warn!("minecraft: sounds are incomplete ({error}); the game will be quiet"),
+    }
+}
+
+fn download_sounds(agent: &ureq::Agent, manifest: &Value, target: &Path) -> Result<(usize, u64), String> {
+    let info = manifest
+        .get("assetIndex")
+        .ok_or("the version JSON has no assetIndex")?;
+    let url = info
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("the assetIndex has no url")?;
+    status_dialog("Reading Minecraft's sound list...");
+    let index = get_json(agent, url)?;
+    let objects = index
+        .get("objects")
+        .and_then(Value::as_object)
+        .ok_or("the asset index has no objects")?;
+    let sounds: Vec<(&String, &Value)> = objects
+        .iter()
+        .filter(|(name, _)| is_sound(name))
+        .collect();
+    let total = sounds.len();
+    if total == 0 {
+        return Err("the asset index lists no sounds".into());
+    }
+    let mut done = 0usize;
+    let mut bytes = 0u64;
+    let mut missing = 0usize;
+    let mut reported = Instant::now();
+    status_dialog(&sound_line(done, total));
+    for (name, entry) in &sounds {
+        let hash = entry.get("hash").and_then(Value::as_str).unwrap_or("");
+        let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
+        let Some(relative) = safe_relative(name) else {
+            missing += 1;
+            continue;
+        };
+        let destination = target.join("assets").join(&relative);
+        let already = destination.is_file()
+            && (size == 0 || destination.metadata().is_ok_and(|meta| meta.len() == size));
+        if already || fetch_object(agent, hash, &destination).is_ok() {
+            done += 1;
+            bytes += size;
+        } else {
+            missing += 1;
+        }
+        if reported.elapsed() >= PROGRESS_EVERY {
+            status_dialog(&sound_line(done, total));
+            reported = Instant::now();
+        }
+    }
+    status_dialog(&sound_line(done, total));
+    if missing > 0 {
+        return Err(format!("{missing} of {total} sound files could not be fetched"));
+    }
+    Ok((done, bytes))
+}
+
+/// One asset object, checked against the SHA-1 that names it. Retried a few
+/// times: this is a few thousand requests over a phone's network, and one dropped
+/// connection should not cost the whole sound set.
+fn fetch_object(agent: &ureq::Agent, hash: &str, destination: &Path) -> Result<(), String> {
+    if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("bad asset hash {hash:?}"));
+    }
+    let url = format!("{ASSET_OBJECTS}/{}/{hash}", &hash[..2]);
+    if !allowed_url(&url) {
+        return Err(format!("refusing an asset download outside Mojang: {url}"));
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let partial = destination.with_extension("part");
+    let mut last = String::from("no attempt made");
+    for _ in 0..3 {
+        match agent.get(&url).call() {
+            Ok(response) => match write_verified(response.into_reader(), &partial, hash) {
+                Ok(()) => {
+                    return fs::rename(&partial, destination)
+                        .map_err(|error| format!("{}: {error}", destination.display()));
+                }
+                Err(error) => last = error,
+            },
+            Err(error) => last = error.to_string(),
+        }
+    }
+    let _ = fs::remove_file(&partial);
+    Err(last)
+}
+
+/// Stream a body into `partial`, refusing it unless its SHA-1 is `expected`.
+fn write_verified<R: Read>(mut reader: R, partial: &Path, expected: &str) -> Result<(), String> {
+    let mut file = BufWriter::new(
+        File::create(partial).map_err(|error| format!("{}: {error}", partial.display()))?,
+    );
+    let mut digest = Sha1::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("reading: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        file.write_all(&buffer[..count])
+            .map_err(|error| format!("{}: {error}", partial.display()))?;
+        digest.update(&buffer[..count]);
+    }
+    file.flush()
+        .map_err(|error| format!("{}: {error}", partial.display()))?;
+    drop(file);
+    let actual = format!("{:x}", digest.finalize());
+    if actual != expected {
+        let _ = fs::remove_file(partial);
+        return Err(format!("sha1 {actual}, expected {expected}"));
+    }
+    Ok(())
+}
+
+fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
+    if !allowed_url(url) {
+        return Err(format!("refusing a download outside Mojang: {url}"));
+    }
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|error| format!("GET {url}: {error}"))?;
+    let mut text = String::new();
+    response
+        .into_reader()
+        .read_to_string(&mut text)
+        .map_err(|error| format!("reading {url}: {error}"))?;
+    serde_json::from_str(&text).map_err(|error| format!("{url}: {error}"))
+}
+
+fn sound_line(done: usize, total: usize) -> String {
+    format!("Downloading Minecraft sounds - {done} of {total}")
 }
 
 /// The archive's name as a path under the pack, or `None` for anything absolute or
