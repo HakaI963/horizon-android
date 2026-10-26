@@ -75,6 +75,12 @@ impl StartupMenu {
                 &self.root,
             );
             title.last_server = settings.file.string("lastServer");
+            // A phone opens on the launcher's front page; Play enters the
+            // classic title menu from there.
+            #[cfg(target_os = "android")]
+            {
+                title.mode = horizon_client::title::Mode::Launcher;
+            }
             self.title = Some(title);
         }
     }

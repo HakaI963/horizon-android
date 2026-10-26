@@ -73,6 +73,9 @@ pub struct WorldEntry {
 }
 #[derive(Clone, Debug)]
 pub enum Mode {
+    /// The launcher's front page. The engine boots here on a phone; Play
+    /// drops into `Main`, the classic title menu.
+    Launcher,
     Main,
     Select {
         worlds: Vec<WorldEntry>,
@@ -616,6 +619,31 @@ impl Title {
                 }
                 buttons
             }
+            Mode::Launcher => {
+                let cx = (w / 2.0).floor();
+                let y = (h / 4.0).floor() + 40.0;
+                let (tile, gap) = (150.0, 4.0);
+                let left = cx - tile - gap / 2.0;
+                let right = cx + gap / 2.0;
+                [
+                    ("Play", 40u8),
+                    ("Instances", 41),
+                    ("Install / Versions", 42),
+                    ("Settings", 43),
+                    ("Controls", 44),
+                    ("Skins", 45),
+                    ("Mods", 46),
+                    ("Import / Export", 47),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (label, id))| {
+                    let (column, row) = ((i % 2) as f32, (i / 2) as f32);
+                    let x = if column == 0.0 { left } else { right };
+                    b(x, y + row * 24.0, tile, label, true, id)
+                })
+                .collect()
+            }
             Mode::Select { selected, .. } => vec![
                 b(
                     (w / 2.0).floor() - 154.0,
@@ -774,7 +802,7 @@ impl Title {
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         match &self.mode {
-            Mode::Main => {
+            Mode::Main | Mode::Launcher => {
                 // LogoRenderer: the logo's top 44 of 64 rows, then the edition
                 // banner's top 14 of 16 rows overlapping its bottom by 7.
                 batch.sprite_region(
@@ -1076,6 +1104,15 @@ impl Title {
                 cursor,
             ),
         }
+        if matches!(self.mode, Mode::Launcher) {
+            centered(
+                atlas,
+                batch,
+                "Horizon Launcher",
+                90.0,
+                rgba(255, 214, 92, 255),
+            );
+        }
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             let hover = b.enabled
@@ -1183,6 +1220,11 @@ impl Title {
     }
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
         match (&mut self.mode, hit) {
+            (Mode::Launcher, Some(40)) => {
+                self.mode = Mode::Main;
+                Action::None
+            }
+            (Mode::Launcher, Some(43)) => Action::Options,
             (Mode::Main, Some(1)) => {
                 self.enter_singleplayer();
                 Action::None
@@ -1543,12 +1585,21 @@ impl Title {
         }
         match &self.mode {
             Mode::Backup { .. } => {}
+            Mode::Launcher => {}
             Mode::Edit { world, .. } | Mode::Delete { world } => {
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
             }
             Mode::Error { return_to, .. } => self.mode = *return_to.clone(),
             Mode::Create { .. } => self.cancel_create(),
+            Mode::Main => {
+                // On a phone the launcher is the root of the back stack, so
+                // Back from the title menu returns to it. Desktop has none.
+                #[cfg(target_os = "android")]
+                {
+                    self.mode = Mode::Launcher;
+                }
+            }
             _ => self.mode = Mode::Main,
         }
     }

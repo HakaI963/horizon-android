@@ -527,6 +527,7 @@ impl Game<'_> {
                 .collect::<Vec<_>>()
         };
         match &title.mode {
+            Mode::Launcher => json!({ "mode": "launcher" }),
             Mode::Main => json!({ "mode": "main", "worlds": worlds() }),
             Mode::Select {
                 worlds: list,
