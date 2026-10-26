@@ -154,17 +154,13 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
 }
 /// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock {
-    file: fs::File,
-    world: std::path::PathBuf,
-}
+pub struct SessionLock(fs::File);
 impl Drop for SessionLock {
     /// `DirectoryLock.close`: release the lock, then close the file. Closing
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
     fn drop(&mut self) {
-        let _ = self.file.unlock();
-        log::info!("session lock: {} released", self.world.display());
+        let _ = self.0.unlock();
     }
 }
 impl SessionLock {
@@ -177,25 +173,24 @@ impl SessionLock {
             .truncate(false)
             .open(world.join("session.lock"))?;
         if let Err(error) = file.try_lock() {
+            // A real conflict is `WouldBlock`. Anything else — and a clone's
+            // redirected data dir answers `flock` with EIO — means this storage
+            // cannot hold a lock at all, which is the app's problem to live with,
+            // not the player's reason not to play.
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                return Err(
+                    format!("{} is already open in another instance", world.display()).into()
+                );
+            }
             log::warn!(
-                "session lock: {} is held (thread {:?}): {error}",
-                world.display(),
-                std::thread::current().name()
+                "session lock: {} cannot be locked ({error}); continuing without it",
+                world.display()
             );
-            return Err(format!("{} is already open in another instance", world.display()).into());
         }
-        log::info!(
-            "session lock: {} acquired (thread {:?})",
-            world.display(),
-            std::thread::current().name()
-        );
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
-        Ok(Self {
-            file,
-            world: world.to_path_buf(),
-        })
+        Ok(Self(file))
     }
 }
 /// Bring a world last saved by an older game version to the current format, as

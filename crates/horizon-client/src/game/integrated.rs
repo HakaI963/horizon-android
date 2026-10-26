@@ -210,10 +210,6 @@ impl Game<'_> {
         creative: bool,
         create: Option<&WorldOptions>,
     ) -> Result<()> {
-        log::info!(
-            "Horizon: open_integrated({folder}) on {:?}",
-            std::thread::current().name()
-        );
         let auth = horizon_client::auth::current();
         let player = auth
             .as_ref()
