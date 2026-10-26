@@ -222,7 +222,7 @@ impl Overlay {
     /// to ask which one that was.
     pub fn finger_down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let inside_panel = self.panel_rect.is_some_and(|rect| rect.contains(x, y));
-        log::info!(
+        log::debug!(
             "overlay: down {id} at {x:.0},{y:.0} interactive={} launcher={} held={:?}",
             self.interactive(),
             self.launcher,

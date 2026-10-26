@@ -480,11 +480,21 @@ impl Loading {
         // Take last frame's clicks before reading the page, so this frame's model
         // already reflects them.
         self.handle_launcher_events(event_loop);
-        let Some(page) = self.menu.launcher_page else {
+        if self.menu.launcher_page.is_none() {
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
-        };
-        let _ = horizon_overlay::with(|o| o.show_launcher(true));
+        }
+        // The launcher owns the page: the sidebar writes it into its own model the
+        // frame the click lands, and the list below is built from that, so the two
+        // can never disagree even if the event reaches here a frame later.
+        let page = horizon_overlay::with(|o| {
+            o.show_launcher(true);
+            o.launcher_page()
+        })
+        .unwrap_or(LauncherPage::Play);
+        // imgui needs a second frame to finish a press: the finger goes down in one
+        // frame and lifts in the next. The loading surface otherwise draws on demand.
+        event_loop.set_control_flow(ControlFlow::Poll);
         let saves = self
             .menu
             .title
@@ -570,9 +580,8 @@ impl Loading {
     #[cfg(target_os = "android")]
     fn handle_launcher_events(&mut self, event_loop: &ActiveEventLoop) {
         let events = horizon_overlay::with(|o| o.take_launcher_events()).unwrap_or_default();
-        log::info!("launcher: handle {} event(s)", events.len());
         for event in events {
-            log::info!("launcher: event {event:?}");
+            log::info!("launcher: {event:?}");
             match event {
                 LauncherEvent::Goto(page) => self.menu.launcher_page = Some(page),
                 LauncherEvent::Play => {

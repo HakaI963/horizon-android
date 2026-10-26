@@ -210,10 +210,12 @@ fn stroke(draw: &DrawListMut<'_>, min: [f32; 2], max: [f32; 2], col: u32, a: f32
     draw.add_rect(min, max, rgba(col, a)).rounding(r).thickness(t).build();
 }
 
-/// The whole launcher, edge to edge. Events the player raises go into `out`.
+/// The whole launcher, edge to edge. Navigation is applied to `model` in place, so
+/// the sidebar and the content it just switched to are drawn in the same pass; the
+/// platform still gets [`LauncherEvent`]s for actions it owns (Play, Quit, …).
 pub fn draw(
     ui: &Ui,
-    model: &LauncherModel,
+    model: &mut LauncherModel,
     fonts: &Fonts,
     dpi: f32,
     width: f32,
@@ -257,7 +259,7 @@ pub fn draw(
 
 fn sidebar_panel(
     ui: &Ui,
-    model: &LauncherModel,
+    model: &mut LauncherModel,
     fonts: &Fonts,
     c: &Css,
     dpi: f32,
@@ -302,6 +304,10 @@ fn sidebar_panel(
                     );
                 }
                 if ui.invisible_button(page.label(), [w, h]) {
+                    // Applied here, not on a round trip to the engine: the loading
+                    // surface redraws on demand, so the page the finger landed on has
+                    // to be the page drawn by the pass that is already under way.
+                    model.page = page;
                     out.push(LauncherEvent::Goto(page));
                 }
             }
@@ -436,12 +442,19 @@ fn play_page(
     if model.rows.is_empty() {
         let [x, y] = ui.cursor_screen_pos();
         let w = width - 2.0 * pad;
-        let h = 64.0 * dpi;
+        let h = 78.0 * dpi;
         {
             let draw = ui.get_window_draw_list();
             fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 12.0);
             stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 12.0, 1.0);
-            draw.add_text([x + 20.0 * dpi, y + 22.0 * dpi], rgba(c.muted, 1.0), "No worlds yet — create one from Singleplayer.");
+            let _f = ui.push_font(fonts.pixel);
+            draw.add_text([x + 20.0 * dpi, y + 18.0 * dpi], rgba(c.ink, 1.0), "No worlds yet");
+            let _g = ui.push_font(fonts.body);
+            draw.add_text(
+                [x + 20.0 * dpi, y + 44.0 * dpi],
+                rgba(c.muted, 1.0),
+                "Play starts a new one, or make one from Singleplayer.",
+            );
         }
         ui.dummy([0.0, h]);
     } else {
