@@ -410,7 +410,7 @@ fn play_page(
     pad: f32,
     out: &mut Vec<LauncherEvent>,
 ) {
-    let hero_h = 132.0 * dpi;
+    let hero_h = 148.0 * dpi;
     let [x, y] = ui.cursor_screen_pos();
     let w = width - 2.0 * pad;
     let playable = model.playable && !model.instance.is_empty();
@@ -420,18 +420,19 @@ fn play_page(
         stroke(&draw, [x, y], [x + w, y + hero_h], c.rule, 1.0, 14.0, 1.0);
         let _f = ui.push_font(fonts.title);
         draw.add_text(
-            [x + 24.0 * dpi, y + 22.0 * dpi],
+            [x + 24.0 * dpi, y + 26.0 * dpi],
             rgba(c.ink, 1.0),
             if model.instance.is_empty() { "No instance" } else { model.instance.as_str() },
         );
+        let _g = ui.push_font(fonts.body);
         draw.add_text(
-            [x + 24.0 * dpi, y + 62.0 * dpi],
+            [x + 24.0 * dpi, y + 74.0 * dpi],
             rgba(c.muted, 1.0),
             format!("Minecraft Java {} · native", model.version),
         );
     }
-    ui.set_cursor_screen_pos([x + 24.0 * dpi, y + hero_h - 56.0 * dpi]);
     let btn_w = 168.0 * dpi;
+    ui.set_cursor_screen_pos([x + w - btn_w - 24.0 * dpi, y + (hero_h - 44.0 * dpi) / 2.0]);
     {
         let _b = ui.push_style_color(
             StyleColor::Button,
@@ -447,15 +448,14 @@ fn play_page(
             rgba(if playable { c.on_face } else { c.muted }, 1.0),
         );
         let _f = ui.push_font(fonts.pixel);
-        if ui.button_with_size(if playable { "Play" } else { "Not installed" }, [btn_w, 40.0 * dpi]) {
+        if ui.button_with_size(if playable { "Play" } else { "Not installed" }, [btn_w, 44.0 * dpi]) {
             if playable {
                 out.push(LauncherEvent::Play);
             }
         }
     }
     if !model.status.is_empty() {
-        ui.same_line();
-        ui.set_cursor_screen_pos([x + btn_w + 40.0 * dpi, y + hero_h - 48.0 * dpi]);
+        ui.set_cursor_screen_pos([x + w - btn_w - 24.0 * dpi, y + hero_h - 34.0 * dpi]);
         ui.text_colored(rgba(c.muted, 1.0), model.status.as_str());
     }
     ui.set_cursor_screen_pos([x, y + hero_h + 20.0 * dpi]);

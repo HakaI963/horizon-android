@@ -651,6 +651,39 @@ impl Loading {
         self.save_menu_settings();
     }
 
+    /// A key press over the launcher's name field.
+    #[cfg(target_os = "android")]
+    fn launcher_key(&mut self, event: &KeyEvent) {
+        if event.state != ElementState::Pressed {
+            return;
+        }
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        log::info!("launcher: key {code:?} text {:?}", event.text);
+        match code {
+            KeyCode::Backspace | KeyCode::Delete => {
+                self.menu.launcher_draft.pop();
+            }
+            KeyCode::Enter => {
+                let name = std::mem::take(&mut self.menu.launcher_draft);
+                self.apply_account(&name);
+                let _ = horizon_overlay::with(|o| o.end_launcher_edit());
+            }
+            KeyCode::Escape => {
+                self.menu.launcher_draft.clear();
+                let _ = horizon_overlay::with(|o| o.end_launcher_edit());
+            }
+            _ => {
+                if let Some(ch) = typed_char(code, event.text.as_deref(), self.menu.modifiers.shift_key())
+                    && self.menu.launcher_draft.chars().count() < 16
+                {
+                    self.menu.launcher_draft.push(ch);
+                }
+            }
+        }
+    }
+
     /// Whether whatever is on the screen takes letters — the same question the world
     /// asks for the phone's keyboard. The title's list has its fields, and the options
     /// screen a search box, and neither has a hardware key to fall back on.
@@ -680,6 +713,7 @@ impl Loading {
         // key at a time. Everything else about it is the same edit the title's fields
         // take.
         if horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false) {
+            log::info!("launcher: field takes {:?} + {:?}", input.backspaces, input.text);
             for _ in 0..input.backspaces {
                 self.menu.launcher_draft.pop();
             }
@@ -800,6 +834,16 @@ impl Loading {
                 }
                 let events = self.menu.options.release();
                 self.menu_option_events(events);
+            }
+            // The launcher's name field takes keys before anything else does. The
+            // phone's keyboard commits whole words to the IME hook, but a hardware
+            // keyboard sends no text at all on Android, and a name is exactly the
+            // thing a player with a keyboard in their lap wants to type.
+            #[cfg(target_os = "android")]
+            WindowEvent::KeyboardInput { event, .. }
+                if horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false) =>
+            {
+                self.launcher_key(&event);
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.menu.pending.is_some() =>
@@ -1008,6 +1052,63 @@ impl Loading {
         self.menu.reload_packs = false;
         Ok(())
     }
+}
+
+/// The character a key stands for in a player name. Where the platform gives winit a
+/// string for the press — a phone's keyboard, an IME's dead key — that wins; a hardware
+/// key on Android gives nothing, so the physical code is read for itself. Only what a
+/// Java name may hold comes back.
+#[cfg(target_os = "android")]
+fn typed_char(code: KeyCode, text: Option<&str>, shift: bool) -> Option<char> {
+    let plain = match text.and_then(|t| t.chars().next()) {
+        Some(ch) => ch,
+        None => match code {
+            KeyCode::KeyA => 'a',
+            KeyCode::KeyB => 'b',
+            KeyCode::KeyC => 'c',
+            KeyCode::KeyD => 'd',
+            KeyCode::KeyE => 'e',
+            KeyCode::KeyF => 'f',
+            KeyCode::KeyG => 'g',
+            KeyCode::KeyH => 'h',
+            KeyCode::KeyI => 'i',
+            KeyCode::KeyJ => 'j',
+            KeyCode::KeyK => 'k',
+            KeyCode::KeyL => 'l',
+            KeyCode::KeyM => 'm',
+            KeyCode::KeyN => 'n',
+            KeyCode::KeyO => 'o',
+            KeyCode::KeyP => 'p',
+            KeyCode::KeyQ => 'q',
+            KeyCode::KeyR => 'r',
+            KeyCode::KeyS => 's',
+            KeyCode::KeyT => 't',
+            KeyCode::KeyU => 'u',
+            KeyCode::KeyV => 'v',
+            KeyCode::KeyW => 'w',
+            KeyCode::KeyX => 'x',
+            KeyCode::KeyY => 'y',
+            KeyCode::KeyZ => 'z',
+            KeyCode::Digit0 => '0',
+            KeyCode::Digit1 => '1',
+            KeyCode::Digit2 => '2',
+            KeyCode::Digit3 => '3',
+            KeyCode::Digit4 => '4',
+            KeyCode::Digit5 => '5',
+            KeyCode::Digit6 => '6',
+            KeyCode::Digit7 => '7',
+            KeyCode::Digit8 => '8',
+            KeyCode::Digit9 => '9',
+            KeyCode::Minus => '_',
+            _ => return None,
+        },
+    };
+    let ch = if shift {
+        plain.to_ascii_uppercase()
+    } else {
+        plain.to_ascii_lowercase()
+    };
+    (ch.is_ascii_alphanumeric() || ch == '_').then_some(ch)
 }
 
 #[cfg(test)]
