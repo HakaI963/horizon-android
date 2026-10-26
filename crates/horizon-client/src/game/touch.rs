@@ -328,17 +328,13 @@ fn mapping(action: Action) -> Option<String> {
 /// the buttons are placed in, `menu` whether a screen of the game's own is on it.
 pub(super) fn finger(
     touch: &Touch,
-    window: Option<&Window>,
     screen: [u32; 2],
     menu: bool,
 ) -> Vec<WindowEvent> {
-    // A finger is reported in logical pixels; the buttons, the menus and a frame dump
-    // are all in the framebuffer's own, which is the space `CursorMoved` is read in.
-    let scale = window.map_or(1.0, |window| window.scale_factor()) as f32;
-    let (x, y) = (
-        touch.location.x as f32 * scale,
-        touch.location.y as f32 * scale,
-    );
+    // winit reports a touch in the window's physical pixels, the same space the
+    // buttons, the menus and a frame dump are in. Scaling it by the display's
+    // density here would move every press to twice the distance the finger went.
+    let (x, y) = (touch.location.x as f32, touch.location.y as f32);
     let (width, height) = (screen[0] as f32, screen[1] as f32);
     let id = touch.id;
     let pointer = horizon_overlay::with(|overlay| match touch.phase {

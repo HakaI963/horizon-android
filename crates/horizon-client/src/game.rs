@@ -11607,7 +11607,6 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::Touch(touch) => {
                     let events = touch::finger(
                         &touch,
-                        self.window.as_deref(),
                         self.renderer
                             .as_ref()
                             .map_or([1, 1], |r| [r.config.width, r.config.height]),
@@ -13052,7 +13051,6 @@ impl Loading {
         if let WindowEvent::Touch(touch) = &event {
             for pointer in touch::finger(
                 touch,
-                self.window.as_deref(),
                 self.renderer
                     .as_ref()
                     .map_or([1, 1], |r| [r.config.width, r.config.height]),
