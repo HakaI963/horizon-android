@@ -269,6 +269,7 @@ pub fn draw(
                         if ui
                             .button_with_size(page.label(), [-1.0, 40.0 * dpi])
                         {
+                            log::info!("launcher: nav {page:?} clicked");
                             out.push(LauncherEvent::Goto(page));
                         }
                     }

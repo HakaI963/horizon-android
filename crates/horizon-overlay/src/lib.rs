@@ -222,6 +222,12 @@ impl Overlay {
     /// to ask which one that was.
     pub fn finger_down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let inside_panel = self.panel_rect.is_some_and(|rect| rect.contains(x, y));
+        log::info!(
+            "overlay: down {id} at {x:.0},{y:.0} interactive={} launcher={} held={:?}",
+            self.interactive(),
+            self.launcher,
+            self.pointer.finger
+        );
         // The launcher owns the whole glass, so a tap there is never a HUD press.
         let on_button =
             !inside_panel && !self.launcher && self.hud.down(id, x, y, width, height);

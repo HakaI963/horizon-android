@@ -563,6 +563,7 @@ impl Loading {
     fn handle_launcher_events(&mut self, event_loop: &ActiveEventLoop) {
         let events = horizon_overlay::with(|o| o.take_launcher_events()).unwrap_or_default();
         for event in events {
+            log::info!("launcher: event {event:?}");
             match event {
                 LauncherEvent::Goto(page) => self.menu.launcher_page = Some(page),
                 LauncherEvent::Play => {
