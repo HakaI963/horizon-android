@@ -23,9 +23,10 @@ use winit::platform::android::activity::AndroidApp;
 use winit::window::{Window, WindowId};
 
 use horizon_controls::Action;
-use horizon_overlay::Overlay;
+use horizon_overlay::{LauncherEvent, LauncherModel, LauncherRow, Overlay};
 
 use crate::frame_dump::FrameDump;
+use crate::installer;
 use crate::paths;
 
 /// A block of the test card, placed in the top-left pixel coordinates the touch
@@ -173,6 +174,9 @@ pub struct BringUp {
     /// has no terminal, and a missing resource pack looks exactly like a dead driver
     /// unless the picture says which it is.
     notice: String,
+    /// A retry of the install is running on this thread. The card cannot draw while it
+    /// waits, so the launcher says why before the silence starts.
+    installing: bool,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
     dump: Arc<FrameDump>,
@@ -484,6 +488,90 @@ impl Screen {
     }
 }
 
+impl BringUp {
+    /// The launcher over the card. Nothing of the engine is running here to be asked,
+    /// so the model is what this half can see for itself: whether the pack landed, what
+    /// went wrong if it did not, and the one action that helps — install it.
+    fn sync_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        let installed = installer::installed(&paths::resources_dir(&self.app));
+        let installing = self.installing;
+        let notice = self.notice.clone();
+        let version = horizon_core::VANILLA_VERSION.to_string();
+        let account = std::env::current_dir()
+            .map(|dir| horizon_client::offline_name::load_or_create(&dir))
+            .unwrap_or_else(|_| "Player".to_string());
+        let status = if installing {
+            "Installing Minecraft Java. Keep this open.".to_string()
+        } else if !notice.is_empty() {
+            notice
+        } else if installed {
+            "Installed. Close Horizon and open it again to play.".to_string()
+        } else {
+            String::new()
+        };
+        let rows = vec![LauncherRow {
+            id: 0,
+            title: format!("Minecraft Java {version}"),
+            subtitle: if installed {
+                "The pack this build was made for".to_string()
+            } else {
+                "Fetched from Mojang and unpacked with the seed this APK carries".to_string()
+            },
+            badge: if installed { "installed" } else { "install" }.to_string(),
+            enabled: !installing,
+            ..Default::default()
+        }];
+        let facts = vec![
+            ("Minecraft".to_string(), version.clone()),
+            ("Engine".to_string(), "Horizon · Rust".to_string()),
+            ("Platform".to_string(), "Android · native".to_string()),
+        ];
+        let _ = horizon_overlay::with(|overlay| {
+            overlay.show_launcher(true);
+            overlay.set_launcher_model(LauncherModel {
+                instance: "Default".to_string(),
+                version,
+                rows,
+                status,
+                account,
+                facts,
+                ..Default::default()
+            });
+        });
+        let events = horizon_overlay::with(|overlay| overlay.take_launcher_events())
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                LauncherEvent::Install
+                | LauncherEvent::Play
+                | LauncherEvent::PlayRow(_)
+                | LauncherEvent::NewInstance
+                    if !installing && !installed =>
+                {
+                    self.install_now();
+                }
+                LauncherEvent::Quit => event_loop.exit(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Run the install again, on this thread. It holds the card still for as long as the
+    /// download takes, which is what the first launch already does; a retry is rare
+    /// enough not to want a second thread holding the activity, and the line above the
+    /// button says what is happening before the silence starts.
+    fn install_now(&mut self) {
+        self.installing = true;
+        self.notice.clear();
+        log::info!("bring-up: installing Minecraft Java again");
+        self.notice = match installer::install(&self.app) {
+            Ok(()) => "Installed. Close Horizon and open it again to play.".to_string(),
+            Err(error) => format!("Minecraft install failed: {error}"),
+        };
+        self.installing = false;
+    }
+}
+
 impl ApplicationHandler for BringUp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -514,6 +602,9 @@ impl ApplicationHandler for BringUp {
                         screen.config.width,
                         screen.config.height,
                     );
+                    // The launcher, not the touch layout: there is no world behind this
+                    // card to walk, and the one thing worth offering is the install.
+                    overlay.show_launcher(true);
                 });
                 self.screen = Some(screen);
                 self.window = Some(window);
@@ -591,6 +682,7 @@ impl ApplicationHandler for BringUp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.sync_launcher(event_loop);
                 let Some(screen) = self.screen.as_mut() else {
                     return;
                 };
@@ -697,6 +789,7 @@ pub fn run(
     event_loop.run_app(&mut BringUp {
         app: app.clone(),
         notice: notice.to_owned(),
+        installing: false,
         window: None,
         screen: None,
         dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),

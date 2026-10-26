@@ -499,10 +499,14 @@ fn play_page(
             rgba(if playable { c.on_face } else { c.muted }, 1.0),
         );
         let _f = ui.push_font(fonts.pixel);
-        if ui.button_with_size(if playable { "Play" } else { "Not installed" }, [btn_w, 44.0 * dpi]) {
-            if playable {
-                out.push(LauncherEvent::Play);
-            }
+        // The one button on the front page does the one thing that is missing: play
+        // what is installed, install what is not.
+        if ui.button_with_size(if playable { "Play" } else { "Install" }, [btn_w, 44.0 * dpi]) {
+            out.push(if playable {
+                LauncherEvent::Play
+            } else {
+                LauncherEvent::Install
+            });
         }
     }
     if !model.status.is_empty() {
