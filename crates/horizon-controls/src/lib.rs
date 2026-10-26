@@ -164,6 +164,11 @@ pub struct Control {
     /// The side of the button as a fraction of the screen's shorter edge, so that
     /// the same layout keeps its proportions in both orientations.
     pub size: f32,
+    /// This button's own opacity, or `None` to follow the layout's. A player who
+    /// wants a barely-there movement pad and a solid mine button can have both.
+    /// Absent from a file written before it existed, so the layout's opacity wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
 }
 
 impl Control {
@@ -203,6 +208,7 @@ fn control(action: Action, x: f32, y: f32, size: f32) -> Control {
         action,
         center: [x, y],
         size,
+        opacity: None,
     }
 }
 
@@ -309,6 +315,7 @@ impl Layout {
                 control.center[1].clamp(0.02, 0.98),
             ];
             control.size = control.size.clamp(0.03, 0.4);
+            control.opacity = control.opacity.map(|opacity| opacity.clamp(0.05, 1.0));
         }
     }
 
@@ -341,6 +348,15 @@ impl Layout {
         });
         buttons
     }
+
+    /// The opacity a button is drawn at: its own, if it has one, else the layout's.
+    pub fn opacity_of(&self, action: Action) -> f32 {
+        self.controls
+            .iter()
+            .find(|control| control.action == action)
+            .and_then(|control| control.opacity)
+            .unwrap_or(self.opacity)
+    }
 }
 
 /// One finger on the glass, and what it was doing when it landed.
@@ -364,6 +380,9 @@ pub struct Hud {
     /// The layout is on screen as live widgets, so a finger can drag it. While this
     /// is set nothing is sent to the game: editing a HUD should not mine a block.
     pub edit: bool,
+    /// The button the editor is pointed at. Tapping a button while editing selects
+    /// it, and the panel then changes that one button's own size and opacity.
+    selected: Option<Action>,
     fingers: Vec<Finger>,
     held: BTreeSet<Action>,
     /// Edges to hand to the engine: `true` is a press, `false` a release. They
@@ -384,6 +403,7 @@ impl Hud {
         Self {
             layout,
             edit: false,
+            selected: None,
             fingers: Vec::new(),
             held: BTreeSet::new(),
             edges: Vec::new(),
@@ -424,6 +444,11 @@ impl Hud {
         // behind a door with no handle.
         let editing = self.edit;
         let looking = !editing && hit.is_none() && self.layout.drag_to_look;
+        if editing {
+            // The button a finger lands on becomes the one the panel edits; landing
+            // on bare glass selects nothing.
+            self.selected = hit;
+        }
         if !editing || hit.is_some_and(Action::is_overlay) {
             if let Some(action) = hit {
                 self.press(action);
@@ -554,6 +579,60 @@ impl Hud {
             .find(|control| control.action == action)
         {
             control.center = [center[0] / width.max(1.0), center[1] / height.max(1.0)];
+        }
+        self.layout.clamp();
+    }
+
+    /// The button the editor is pointed at, if any.
+    pub fn selected(&self) -> Option<Action> {
+        self.selected
+    }
+
+    /// Point the editor at a button, or at none.
+    pub fn set_selected(&mut self, action: Option<Action>) {
+        self.selected = action;
+    }
+
+    /// A button's own size, or `None` when there is no such button.
+    pub fn control_size(&self, action: Action) -> Option<f32> {
+        self.layout
+            .controls
+            .iter()
+            .find(|control| control.action == action)
+            .map(|control| control.size)
+    }
+
+    /// A button's own opacity, or the layout's when it has none of its own.
+    pub fn control_opacity(&self, action: Action) -> Option<f32> {
+        self.layout
+            .controls
+            .iter()
+            .find(|control| control.action == action)
+            .map(|control| control.opacity.unwrap_or(self.layout.opacity))
+    }
+
+    /// Set a button's own size, clamped like every other edit.
+    pub fn set_control_size(&mut self, action: Action, size: f32) {
+        if let Some(control) = self
+            .layout
+            .controls
+            .iter_mut()
+            .find(|control| control.action == action)
+        {
+            control.size = size;
+        }
+        self.layout.clamp();
+    }
+
+    /// Give a button an opacity of its own, away from the layout's.
+    pub fn set_control_opacity(&mut self, action: Action, opacity: f32) {
+        if let Some(control) = self
+            .layout
+            .controls
+            .iter_mut()
+            .find(|control| control.action == action)
+        {
+            control.opacity = Some(opacity);
         }
         self.layout.clamp();
     }
@@ -852,5 +931,65 @@ mod tests {
             edges.iter().all(|(_, down)| !down),
             "everything released, nothing pressed"
         );
+    }
+
+    #[test]
+    fn a_button_can_have_its_own_size_and_opacity() {
+        let mut hud = hud();
+        hud.set_selected(Some(Action::Jump));
+        assert_eq!(hud.selected(), Some(Action::Jump));
+        assert_eq!(
+            hud.control_opacity(Action::Jump),
+            Some(hud.layout.opacity),
+            "with none of its own a button follows the layout"
+        );
+        hud.set_control_opacity(Action::Jump, 0.9);
+        assert_eq!(hud.layout.opacity_of(Action::Jump), 0.9);
+        assert_eq!(
+            hud.layout.opacity_of(Action::Mine),
+            hud.layout.opacity,
+            "an untouched button still follows the layout"
+        );
+    }
+
+    #[test]
+    fn a_button_size_edit_is_clamped_like_every_other() {
+        let mut hud = hud();
+        hud.set_control_size(Action::Jump, 9.0);
+        assert_eq!(hud.control_size(Action::Jump), Some(0.4));
+        hud.set_control_size(Action::Jump, 0.0);
+        assert_eq!(hud.control_size(Action::Jump), Some(0.03));
+    }
+
+    #[test]
+    fn tapping_a_button_while_editing_selects_it_and_glass_deselects() {
+        let mut hud = hud();
+        hud.edit = true;
+        let jump = hud
+            .buttons(WIDTH, HEIGHT)
+            .into_iter()
+            .find(|(action, _)| *action == Action::Jump)
+            .map(|(_, rect)| rect.center())
+            .unwrap();
+        assert_eq!(hud.selected(), None);
+        hud.down(1, jump[0], jump[1], WIDTH, HEIGHT);
+        assert_eq!(hud.selected(), Some(Action::Jump));
+        hud.up(1);
+        hud.down(2, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT);
+        assert_eq!(hud.selected(), None, "bare glass takes the selection away");
+    }
+
+    #[test]
+    fn a_button_opacity_survives_the_round_trip_and_absent_means_the_layout() {
+        let dir = std::env::temp_dir().join("horizon-controls-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("per-button.json");
+        let mut layout = Layout::default();
+        layout.controls[0].opacity = Some(0.8);
+        layout.save(&path).unwrap();
+        let read = Layout::load(&path).expect("the file we just wrote reads back");
+        assert_eq!(read.controls[0].opacity, Some(0.8));
+        assert_eq!(read.controls[1].opacity, None);
+        std::fs::remove_file(&path).unwrap();
     }
 }

@@ -329,7 +329,20 @@ impl Overlay {
         let mut save = false;
         let mut reset = false;
         let mut close = false;
-        let buttons = hud.buttons(width, height);
+        let panel_open = *panel;
+        let selected = hud.selected();
+        let selected_label = selected.map(|action| action.text());
+        let mut sel_size = selected
+            .and_then(|action| hud.control_size(action))
+            .unwrap_or(1.0);
+        let mut sel_opacity = selected
+            .and_then(|action| hud.control_opacity(action))
+            .unwrap_or(opacity);
+        let buttons: Vec<(Action, Rect, f32)> = hud
+            .buttons(width, height)
+            .into_iter()
+            .map(|(action, rect)| (action, rect, hud.layout.opacity_of(action)))
+            .collect();
         // What is lit this frame: the buttons a finger holds while playing, and while
         // the layout is being arranged the one button a finger has picked up.
         let lit = if edit {
@@ -345,7 +358,7 @@ impl Overlay {
                 ui,
                 &buttons,
                 &lit,
-                opacity,
+                if edit { selected } else { None },
                 *dpi,
                 *show_status,
                 status.as_str(),
@@ -365,6 +378,9 @@ impl Overlay {
                     &mut drag_to_look,
                     &mut edit,
                     show_status,
+                    selected_label.as_deref(),
+                    &mut sel_size,
+                    &mut sel_opacity,
                     &mut save,
                     &mut reset,
                     &mut close,
@@ -377,6 +393,15 @@ impl Overlay {
         hud.layout.opacity = opacity;
         hud.layout.look_sensitivity = sensitivity;
         hud.layout.drag_to_look = drag_to_look;
+        if edit && panel_open {
+            // The panel edited the selected button's own size and opacity; commit them
+            // back. Only while editing with the panel up, so a leftover selection cannot
+            // restyle a button the player is only playing on.
+            if let Some(action) = selected {
+                hud.set_control_size(action, sel_size);
+                hud.set_control_opacity(action, sel_opacity);
+            }
+        }
         if hud.edit != edit {
             // Changing the mode under a finger that was pressing something has to let
             // it go, or the player arranges the layout with a character walking into a
@@ -458,6 +483,7 @@ fn draw_button(
     rect: Rect,
     pressed: bool,
     opacity: f32,
+    selected: bool,
 ) {
     let min = [rect.x, rect.y];
     let max = [rect.x + rect.width, rect.y + rect.height];
@@ -472,6 +498,19 @@ fn draw_button(
         .rounding(rounding)
         .thickness(2.0)
         .build();
+    if selected {
+        // A gold ring, drawn outside the button so it reads as "this is the one the
+        // panel is editing" rather than "this is pressed".
+        let pad = 3.0;
+        draw.add_rect(
+            [rect.x - pad, rect.y - pad],
+            [rect.x + rect.width + pad, rect.y + rect.height + pad],
+            rgba(EDGE_ACTIVE, 1.0),
+        )
+        .rounding(rounding + pad)
+        .thickness(2.0)
+        .build();
+    }
     let text = action.text();
     let [width, height] = ui.calc_text_size(&text);
     let [center_x, center_y] = rect.center();
@@ -495,9 +534,9 @@ fn rgba(color: [u8; 3], alpha: f32) -> ImColor32 {
 /// which is why a small button on top of a big one is both visible and pressable.
 fn hud_buttons(
     ui: &Ui,
-    buttons: &[(Action, Rect)],
+    buttons: &[(Action, Rect, f32)],
     lit: &[Action],
-    opacity: f32,
+    selected: Option<Action>,
     dpi: f32,
     show_status: bool,
     status: &str,
@@ -521,9 +560,15 @@ fn hud_buttons(
         .size([width, height], Condition::Always)
         .build(|| {
             let draw = ui.get_window_draw_list();
-            for (action, rect) in buttons.iter().rev() {
+            for (action, rect, opacity) in buttons.iter().rev() {
                 draw_button(
-                    &draw, ui, *action, *rect, lit.contains(action), opacity,
+                    &draw,
+                    ui,
+                    *action,
+                    *rect,
+                    lit.contains(action),
+                    *opacity,
+                    selected == Some(*action),
                 );
             }
             if show_status {
@@ -549,6 +594,9 @@ fn settings(
     drag_to_look: &mut bool,
     edit: &mut bool,
     show_status: &mut bool,
+    selected_label: Option<&str>,
+    sel_size: &mut f32,
+    sel_opacity: &mut f32,
     save: &mut bool,
     reset: &mut bool,
     close: &mut bool,
@@ -579,6 +627,20 @@ fn settings(
             ui.slider("Look sensitivity", 1.0, 30.0, sensitivity);
             ui.checkbox("Drag the glass to look", drag_to_look);
             ui.checkbox("Show the frame line", show_status);
+            if *edit {
+                ui.separator();
+                match selected_label {
+                    Some(label) => {
+                        let line = format!("Selected: {label}");
+                        ui.text(line.as_str());
+                        ui.slider("This button size", 0.03, 0.4, sel_size);
+                        ui.slider("This button opacity", 0.08, 1.0, sel_opacity);
+                    }
+                    None => {
+                        ui.text("Tap a button to edit it");
+                    }
+                }
+            }
             ui.separator();
             if ui.button("Save") {
                 *save = true;
