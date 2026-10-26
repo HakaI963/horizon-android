@@ -425,7 +425,7 @@ fn rail_card(
 ) {
     let inner = width - 2.0 * 20.0 * dpi;
     let rows = model.facts.len().max(1) as f32;
-    let h = (58.0 + rows * 34.0 + 46.0) * dpi;
+    let h = (58.0 + rows * 38.0 + 46.0) * dpi;
     let draw = ui.get_window_draw_list();
     fill(&draw, [x, y], [x + width, y + h], c.panel, 1.0, 14.0);
     stroke(&draw, [x, y], [x + width, y + h], c.rule, 1.0, 14.0, 1.0);
@@ -436,11 +436,11 @@ fn rail_card(
     for (key, value) in &model.facts {
         draw.add_text([x + 20.0 * dpi, ry], rgba(c.muted, 1.0), key.as_str());
         draw.add_text(
-            [x + 20.0 * dpi, ry + 16.0 * dpi],
+            [x + 20.0 * dpi, ry + 17.0 * dpi],
             rgba(c.ink, 1.0),
             value.as_str(),
         );
-        ry += 34.0 * dpi;
+        ry += 38.0 * dpi;
     }
     fill(&draw, [x + 20.0 * dpi, ry + 4.0 * dpi], [x + 20.0 * dpi + inner, ry + 5.0 * dpi], c.rule, 1.0, 0.0);
     draw.add_text(

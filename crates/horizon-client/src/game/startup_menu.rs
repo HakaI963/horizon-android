@@ -577,6 +577,13 @@ impl Loading {
             _ => {}
         }
         let _ = horizon_overlay::with(|o| o.set_launcher_model(model));
+        // Ask for the next frame by name. A press is only a press when imgui gets the
+        // frame after the lift to see the release, and the report above is only worth
+        // drawing once the page the finger chose has arrived; a loading surface that
+        // waits for events would sit on the frame before both.
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     /// Carry out what the launcher asked for. Play and Settings leave the launcher
