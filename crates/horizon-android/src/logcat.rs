@@ -32,9 +32,15 @@ struct Logcat;
 /// The shader compiler logs one line per WGSL instruction and wgpu one per
 /// resource. On a phone that fills the ring buffer in a second and buries the
 /// engine's own lines, which is the reason the log is being read at all. Their
-/// warnings and errors still come through.
+/// warnings and errors still come through. `ureq` and `rustls` are the same
+/// problem while the launcher fetches sounds: a dozen lines per object, for
+/// thousands of objects.
 fn chatty(target: &str) -> bool {
-    target.starts_with("naga") || target.starts_with("wgpu") || target.starts_with("gpu_allocator")
+    target.starts_with("naga")
+        || target.starts_with("wgpu")
+        || target.starts_with("gpu_allocator")
+        || target.starts_with("ureq")
+        || target.starts_with("rustls")
 }
 
 impl log::Log for Logcat {
