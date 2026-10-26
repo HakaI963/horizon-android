@@ -103,7 +103,7 @@ pub fn install(app: &winit::platform::android::activity::AndroidApp) -> Result<(
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     let temporary = import.join(format!(".horizon-{}-install", std::process::id()));
-    let result = assemble(&agent, &manifest, &client, &temporary);
+    let result = assemble(&client, &temporary);
     if let Err(error) = result {
         let _ = fs::remove_dir_all(&temporary);
         return Err(error);
@@ -151,12 +151,7 @@ fn clean_stale(import: &Path) {
     }
 }
 
-fn assemble(
-    agent: &ureq::Agent,
-    manifest: &Value,
-    client: &Path,
-    target: &Path,
-) -> Result<(), String> {
+fn assemble(client: &Path, target: &Path) -> Result<(), String> {
     if target.exists() {
         fs::remove_dir_all(target)
             .map_err(|error| format!("{}: {error}", target.display()))?;
@@ -173,9 +168,6 @@ fn assemble(
     log::info!(
         "minecraft: unpacked {jar_files} client files and {seed_files} prepared files"
     );
-    // Best effort, and last: a game with no sounds is a game that still plays,
-    // so a failed fetch is a line in the log rather than a reason not to launch.
-    fetch_sounds(agent, manifest, target);
     Ok(())
 }
 
@@ -317,47 +309,61 @@ fn is_sound(name: &str) -> bool {
     name == "minecraft/sounds.json" || name.starts_with("minecraft/sounds/")
 }
 
-/// Fetch the pinned version's sounds into `target/assets`, best effort. The
-/// download is a few thousand small objects; a silent game still plays, so this
-/// never fails the install — it only says how much of the sound got through.
-fn fetch_sounds(agent: &ureq::Agent, manifest: &Value, target: &Path) {
-    match download_sounds(agent, manifest, target) {
-        Ok((files, bytes)) => log::info!(
-            "minecraft: {files} sound files, {:.1} MB",
-            bytes as f64 / 1e6
-        ),
-        Err(error) => log::warn!("minecraft: sounds are incomplete ({error}); the game will be quiet"),
+/// How long one background pass will spend on sounds before giving up and letting
+/// the next launch finish the rest. A few thousand small objects over a phone's
+/// network is slow; the title must not wait for it.
+const SOUND_BUDGET: Duration = Duration::from_secs(20 * 60);
+
+/// Top the pack up with the version's sounds on a background thread, so the game
+/// launches silent and fills in. The client JAR has no sounds; they are objects in
+/// the asset index, fetched one at a time and checked against their own SHA-1.
+/// Files already present are kept, so a pass interrupted by the time budget, a
+/// dropped connection or a process death resumes where it stopped.
+pub fn top_up_sounds(app: &winit::platform::android::activity::AndroidApp) {
+    if !seed_available() {
+        return;
+    }
+    let app = app.clone();
+    if std::thread::Builder::new()
+        .name("horizon-sounds".into())
+        .spawn(move || match fill_sounds(&app) {
+            Ok(0) => {}
+            Ok(files) => log::info!("minecraft: {files} sound files ready"),
+            Err(error) => log::info!("minecraft: sounds still filling in ({error})"),
+        })
+        .is_err()
+    {
+        log::warn!("minecraft: no thread to fetch sounds with");
     }
 }
 
-fn download_sounds(agent: &ureq::Agent, manifest: &Value, target: &Path) -> Result<(usize, u64), String> {
-    let info = manifest
+fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<usize, String> {
+    let target = paths::resources_dir(app);
+    if target.join(".sounds-complete").is_file() {
+        return Ok(0);
+    }
+    let manifest = seed_manifest()?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(60))
+        .build();
+    let url = manifest
         .get("assetIndex")
-        .ok_or("the version JSON has no assetIndex")?;
-    let url = info
-        .get("url")
+        .and_then(|index| index.get("url"))
         .and_then(Value::as_str)
-        .ok_or("the assetIndex has no url")?;
-    status_dialog("Reading Minecraft's sound list...");
-    let index = get_json(agent, url)?;
+        .ok_or("the version JSON's assetIndex has no url")?;
+    let index = get_json(&agent, url)?;
     let objects = index
         .get("objects")
         .and_then(Value::as_object)
         .ok_or("the asset index has no objects")?;
-    let sounds: Vec<(&String, &Value)> = objects
-        .iter()
-        .filter(|(name, _)| is_sound(name))
-        .collect();
-    let total = sounds.len();
-    if total == 0 {
-        return Err("the asset index lists no sounds".into());
-    }
-    let mut done = 0usize;
-    let mut bytes = 0u64;
+    let deadline = Instant::now() + SOUND_BUDGET;
+    let mut got = 0usize;
     let mut missing = 0usize;
-    let mut reported = Instant::now();
-    status_dialog(&sound_line(done, total));
-    for (name, entry) in &sounds {
+    for (name, entry) in objects.iter().filter(|(name, _)| is_sound(name)) {
+        if Instant::now() >= deadline {
+            return Err("reached the time budget".into());
+        }
         let hash = entry.get("hash").and_then(Value::as_str).unwrap_or("");
         let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
         let Some(relative) = safe_relative(name) else {
@@ -365,24 +371,23 @@ fn download_sounds(agent: &ureq::Agent, manifest: &Value, target: &Path) -> Resu
             continue;
         };
         let destination = target.join("assets").join(&relative);
-        let already = destination.is_file()
-            && (size == 0 || destination.metadata().is_ok_and(|meta| meta.len() == size));
-        if already || fetch_object(agent, hash, &destination).is_ok() {
-            done += 1;
-            bytes += size;
-        } else {
-            missing += 1;
+        if destination.is_file() && destination.metadata().is_ok_and(|meta| size == 0 || meta.len() == size) {
+            continue;
         }
-        if reported.elapsed() >= PROGRESS_EVERY {
-            status_dialog(&sound_line(done, total));
-            reported = Instant::now();
+        match fetch_object(&agent, hash, &destination) {
+            Ok(()) => got += 1,
+            Err(error) => {
+                missing += 1;
+                log::debug!("minecraft: {name}: {error}");
+            }
         }
     }
-    status_dialog(&sound_line(done, total));
-    if missing > 0 {
-        return Err(format!("{missing} of {total} sound files could not be fetched"));
+    if missing == 0 {
+        let _ = fs::write(target.join(".sounds-complete"), b"");
+        Ok(got)
+    } else {
+        Err(format!("{missing} sound files still missing"))
     }
-    Ok((done, bytes))
 }
 
 /// One asset object, checked against the SHA-1 that names it. Retried a few
@@ -402,7 +407,9 @@ fn fetch_object(agent: &ureq::Agent, hash: &str, destination: &Path) -> Result<(
     let partial = destination.with_extension("part");
     let mut last = String::from("no attempt made");
     for _ in 0..3 {
-        match agent.get(&url).call() {
+        // A total timeout, not just connect/read: one stalled connection must not
+        // hold the whole sound set (or the background thread) open indefinitely.
+        match agent.get(&url).timeout(Duration::from_secs(60)).call() {
             Ok(response) => match write_verified(response.into_reader(), &partial, hash) {
                 Ok(()) => {
                     return fs::rename(&partial, destination)
@@ -452,6 +459,7 @@ fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
     }
     let response = agent
         .get(url)
+        .timeout(Duration::from_secs(120))
         .call()
         .map_err(|error| format!("GET {url}: {error}"))?;
     let mut text = String::new();
@@ -460,10 +468,6 @@ fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
         .read_to_string(&mut text)
         .map_err(|error| format!("reading {url}: {error}"))?;
     serde_json::from_str(&text).map_err(|error| format!("{url}: {error}"))
-}
-
-fn sound_line(done: usize, total: usize) -> String {
-    format!("Downloading Minecraft sounds - {done} of {total}")
 }
 
 /// The archive's name as a path under the pack, or `None` for anything absolute or

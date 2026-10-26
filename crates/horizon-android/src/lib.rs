@@ -126,6 +126,10 @@ fn play(app: &winit::platform::android::activity::AndroidApp) {
             return;
         }
     }
+    // The pack is on disk and the engine can run without it, so the sounds —
+    // which the client JAR does not carry — fill in on their own thread while the
+    // title comes up. This launch may still be quiet; the files land for the next.
+    installer::top_up_sounds(app);
     let event_loop = match engine::event_loop(app) {
         Ok(event_loop) => event_loop,
         Err(error) => {
