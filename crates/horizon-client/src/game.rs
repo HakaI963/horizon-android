@@ -7553,6 +7553,12 @@ impl Game<'_> {
         }
         self.join_world_rest()?;
         let save_root = std::env::current_dir()?.join("saves").join(folder);
+        log::info!(
+            "Horizon: open_world({folder}) window={} server_thread={} on {:?}",
+            self.window.is_some(),
+            self.options.server_thread,
+            std::thread::current().name()
+        );
         if integrated::wanted(&self.options, &save_root) {
             return self.open_integrated(folder, name, seed, creative, create);
         }
@@ -12217,6 +12223,10 @@ impl Game<'_> {
                 creative,
                 create,
             }) => {
+                log::info!(
+                    "Horizon: resuming pending world {folder} on {:?}",
+                    std::thread::current().name()
+                );
                 self.open_world(&folder, name.as_deref(), seed, creative, create.as_deref())?;
             }
             Some(PendingWorldEntry::Server { address, name }) => {

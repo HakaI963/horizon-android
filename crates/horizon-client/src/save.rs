@@ -154,13 +154,17 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
 }
 /// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock(fs::File);
+pub struct SessionLock {
+    file: fs::File,
+    world: std::path::PathBuf,
+}
 impl Drop for SessionLock {
     /// `DirectoryLock.close`: release the lock, then close the file. Closing
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = self.file.unlock();
+        log::info!("session lock: {} released", self.world.display());
     }
 }
 impl SessionLock {
@@ -172,12 +176,26 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        file.try_lock()
-            .map_err(|_| format!("{} is already open in another instance", world.display()))?;
+        if let Err(error) = file.try_lock() {
+            log::warn!(
+                "session lock: {} is held (thread {:?}): {error}",
+                world.display(),
+                std::thread::current().name()
+            );
+            return Err(format!("{} is already open in another instance", world.display()));
+        }
+        log::info!(
+            "session lock: {} acquired (thread {:?})",
+            world.display(),
+            std::thread::current().name()
+        );
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
-        Ok(Self(file))
+        Ok(Self {
+            file,
+            world: world.to_path_buf(),
+        })
     }
 }
 /// Bring a world last saved by an older game version to the current format, as
