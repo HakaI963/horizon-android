@@ -364,6 +364,13 @@ fn content(
     out: &mut Vec<LauncherEvent>,
 ) {
     let pad = 28.0 * dpi;
+    let [ox, oy] = ui.cursor_screen_pos();
+    let rail = if width > 720.0 * dpi {
+        (320.0 * dpi).min(width * 0.34)
+    } else {
+        0.0
+    };
+    let col = width - rail;
     ui.set_cursor_pos([pad, 26.0 * dpi]);
     {
         let _f = ui.push_font(fonts.title);
@@ -383,21 +390,65 @@ fn content(
     ui.set_cursor_pos([pad, 100.0 * dpi]);
 
     match model.page {
-        LauncherPage::Play => play_page(ui, model, fonts, c, dpi, width, pad, out),
+        LauncherPage::Play => play_page(ui, model, fonts, c, dpi, col, pad, out),
         LauncherPage::Instances | LauncherPage::Versions => {
-            list_page(ui, model, fonts, c, dpi, width, pad, out)
+            list_page(ui, model, fonts, c, dpi, col, pad, out)
         }
         LauncherPage::Skins => {
-            action_card(ui, fonts, c, dpi, width, pad, "Skins", "Open the skin picker", "Choose your account skin, or drop a PNG into import/skins and load it.", LauncherEvent::OpenSkins, out);
+            action_card(ui, fonts, c, dpi, col, pad, "Skins", "Open the skin picker", "Choose your account skin, or drop a PNG into import/skins and load it.", LauncherEvent::OpenSkins, out);
         }
         LauncherPage::Settings => {
-            action_card(ui, fonts, c, dpi, width, pad, "Settings", "Open settings", "Video, controls, language and accessibility live in the game's own settings.", LauncherEvent::OpenSettings, out);
+            action_card(ui, fonts, c, dpi, col, pad, "Settings", "Open settings", "Video, controls, language and accessibility live in the game's own settings.", LauncherEvent::OpenSettings, out);
         }
         LauncherPage::Mods => {
-            info_card(ui, fonts, c, dpi, width, pad, "Mods", "Horizon's component mods need a runtime this build does not carry yet. Modpacks ported to 26.3 run as resource and data packs.");
+            info_card(ui, fonts, c, dpi, col, pad, "Mods", "Horizon's component mods need a runtime this build does not carry yet. Modpacks ported to 26.3 run as resource and data packs.");
         }
-        LauncherPage::About => about_page(ui, model, fonts, c, dpi, width, pad),
+        LauncherPage::About => about_page(ui, model, fonts, c, dpi, col, pad),
     }
+    if rail > 0.0 {
+        rail_card(ui, model, fonts, c, dpi, ox + col, oy + 26.0 * dpi, rail - pad);
+    }
+}
+
+/// The column beside every page: what this build is, in the few lines that are worth
+/// reading once and never again. It also keeps a wide screen from being one long card
+/// with a desert to its right.
+fn rail_card(
+    ui: &Ui,
+    model: &LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let inner = width - 2.0 * 20.0 * dpi;
+    let rows = model.facts.len().max(1) as f32;
+    let h = (58.0 + rows * 34.0 + 46.0) * dpi;
+    let draw = ui.get_window_draw_list();
+    fill(&draw, [x, y], [x + width, y + h], c.panel, 1.0, 14.0);
+    stroke(&draw, [x, y], [x + width, y + h], c.rule, 1.0, 14.0, 1.0);
+    let _f = ui.push_font(fonts.pixel);
+    draw.add_text([x + 20.0 * dpi, y + 18.0 * dpi], rgba(c.muted, 1.0), "THIS BUILD");
+    let _g = ui.push_font(fonts.body);
+    let mut ry = y + 48.0 * dpi;
+    for (key, value) in &model.facts {
+        draw.add_text([x + 20.0 * dpi, ry], rgba(c.muted, 1.0), key.as_str());
+        draw.add_text(
+            [x + 20.0 * dpi, ry + 16.0 * dpi],
+            rgba(c.ink, 1.0),
+            value.as_str(),
+        );
+        ry += 34.0 * dpi;
+    }
+    fill(&draw, [x + 20.0 * dpi, ry + 4.0 * dpi], [x + 20.0 * dpi + inner, ry + 5.0 * dpi], c.rule, 1.0, 0.0);
+    draw.add_text(
+        [x + 20.0 * dpi, ry + 16.0 * dpi],
+        rgba(c.muted, 1.0),
+        "Java 26.3 only: the engine is\nbuilt for one version at a time.",
+    );
+    let _ = ui.dummy([width, h]);
 }
 
 fn play_page(
