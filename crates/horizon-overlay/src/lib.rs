@@ -84,6 +84,9 @@ pub struct Overlay {
     /// imgui has just laid out.
     panel_rect: Option<Rect>,
     pointer: Pointer,
+    /// A finger lifted off an imgui widget, waiting for the release to be sent at the
+    /// end of the frame that rendered the press — see [`Overlay::paint`].
+    pending_release: bool,
     /// The finger the game gets as its pointer: the first to land on bare glass, with
     /// neither a layout button nor the panel under it. A phone has no mouse, and the
     /// screens the game draws for itself are hit-tested from a cursor and a button, so
@@ -127,6 +130,7 @@ impl Overlay {
             launcher_fonts: None,
             panel_rect: None,
             pointer: Pointer::idle(),
+            pending_release: false,
             game_pointer: None,
             dpi: 1.0,
             fonts_added: false,
@@ -266,11 +270,11 @@ impl Overlay {
         if self.pointer.finger == Some(id) {
             self.pointer.finger = None;
             self.pointer.down = false;
-            // imgui has to be told the button came up, or every widget stays
-            // half-pressed until the next finger arrives.
-            self.imgui
-                .io_mut()
-                .add_mouse_button_event(MouseButton::Left, false);
+            // Defer the lift to the end of the frame that rendered the press. imgui
+            // reads a click from a button that was down in one rendered frame and up
+            // in the next; a tap whose press and lift land between two frames would
+            // otherwise collapse to no net change and register nothing.
+            self.pending_release = true;
         }
     }
 
@@ -321,6 +325,7 @@ impl Overlay {
             show_status,
             status,
             frame_started,
+            pending_release,
             renderer,
             ..
         } = self;
@@ -449,6 +454,15 @@ impl Overlay {
         renderer
             .render(draw_data, queue, device, pass)
             .map_err(|error| format!("imgui: {error}"))?;
+        // Send the deferred lift now, after this frame's new_frame has seen the press:
+        // it queues for the next frame, so imgui reads a down in one frame and an up in
+        // the next and fires the click the tap was meant to make.
+        if *pending_release {
+            imgui
+                .io_mut()
+                .add_mouse_button_event(MouseButton::Left, false);
+            *pending_release = false;
+        }
         Ok(())
     }
 
