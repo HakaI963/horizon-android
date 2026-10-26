@@ -1585,21 +1585,12 @@ impl Title {
         }
         match &self.mode {
             Mode::Backup { .. } => {}
-            Mode::Launcher => {}
             Mode::Edit { world, .. } | Mode::Delete { world } => {
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
             }
             Mode::Error { return_to, .. } => self.mode = *return_to.clone(),
             Mode::Create { .. } => self.cancel_create(),
-            Mode::Main => {
-                // On a phone the launcher is the root of the back stack, so
-                // Back from the title menu returns to it. Desktop has none.
-                #[cfg(target_os = "android")]
-                {
-                    self.mode = Mode::Launcher;
-                }
-            }
             _ => self.mode = Mode::Main,
         }
     }

@@ -14,6 +14,7 @@ description = "The imgui layer every platform draws: the touch layout, the panel
 log = "0.4"
 horizon-controls = { path = "../horizon-controls" }
 horizon-imgui = { path = "../horizon-imgui" }
+horizon-theme = { path = "../horizon-theme" }
 imgui = "0.12"
 # The phone's feature set, so that building this for the host does not pull in the
 # backends a phone has none of.

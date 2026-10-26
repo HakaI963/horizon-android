@@ -7,11 +7,18 @@ use horizon_client::{
 };
 use winit::{event::KeyEvent, keyboard::ModifiersState};
 
+#[cfg(target_os = "android")]
+use horizon_overlay::{LauncherEvent, LauncherModel, LauncherPage, LauncherRow};
+
 #[derive(Default)]
 pub(super) struct StartupMenu {
     title: Option<Title>,
     options: OptionsUi,
     options_open: bool,
+    /// The launcher page shown at boot on a phone, or `None` once the player has
+    /// gone into the game's own menus. The desktop boots straight to the title.
+    #[cfg(target_os = "android")]
+    launcher_page: Option<LauncherPage>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -75,13 +82,13 @@ impl StartupMenu {
                 &self.root,
             );
             title.last_server = settings.file.string("lastServer");
-            // A phone opens on the launcher's front page; Play enters the
-            // classic title menu from there.
-            #[cfg(target_os = "android")]
-            {
-                title.mode = horizon_client::title::Mode::Launcher;
-            }
             self.title = Some(title);
+        }
+        // A phone opens on the launcher's front page; the desktop boots straight
+        // to the title. The launcher is drawn in imgui, not the title's own quads.
+        #[cfg(target_os = "android")]
+        {
+            self.launcher_page = Some(LauncherPage::Play);
         }
     }
 
@@ -465,6 +472,133 @@ impl Loading {
         self.save_menu_address();
     }
 
+    /// Gather what the launcher shows from the engine, hand it to the overlay, and
+    /// switch the overlay between the launcher and the touch HUD. A no-op on the
+    /// desktop, which has no launcher.
+    #[cfg(target_os = "android")]
+    fn sync_launcher(&mut self) {
+        let Some(page) = self.menu.launcher_page else {
+            let _ = horizon_overlay::with(|o| o.show_launcher(false));
+            return;
+        };
+        let _ = horizon_overlay::with(|o| o.show_launcher(true));
+        let saves = self
+            .menu
+            .title
+            .as_ref()
+            .map(|t| t.saves.clone())
+            .unwrap_or_default();
+        let worlds = horizon_client::title::list_worlds(&saves);
+        let version = horizon_core::VANILLA_VERSION.to_string();
+        let account = self
+            .options
+            .as_ref()
+            .map_or_else(|| "Player".into(), |o| o.player_name());
+        let mut model = LauncherModel {
+            page,
+            version: version.clone(),
+            account,
+            ..Default::default()
+        };
+        match page {
+            LauncherPage::Play => {
+                model.playable = true;
+                model.instance = worlds
+                    .first()
+                    .map(|w| w.name.clone())
+                    .unwrap_or_else(|| "New World".into());
+                model.rows = worlds
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| LauncherRow {
+                        id: i as u32,
+                        title: w.name.clone(),
+                        subtitle: w.version.clone(),
+                        badge: if w.creative { "Creative".into() } else { String::new() },
+                        selected: false,
+                        enabled: true,
+                    })
+                    .collect();
+            }
+            LauncherPage::Instances => {
+                model.playable = true;
+                model.instance = "Default".into();
+                model.rows = vec![LauncherRow {
+                    id: 0,
+                    title: "Default".into(),
+                    subtitle: format!("Minecraft {version}"),
+                    badge: String::new(),
+                    selected: true,
+                    enabled: true,
+                }];
+            }
+            LauncherPage::Versions => {
+                model.rows = vec![
+                    LauncherRow {
+                        id: 0,
+                        title: version.clone(),
+                        subtitle: "Native engine".into(),
+                        badge: "installed".into(),
+                        selected: true,
+                        enabled: true,
+                    },
+                    LauncherRow {
+                        id: 1,
+                        title: "1.21".into(),
+                        subtitle: String::new(),
+                        badge: "not supported".into(),
+                        selected: false,
+                        enabled: false,
+                    },
+                ];
+            }
+            _ => {}
+        }
+        let _ = horizon_overlay::with(|o| o.set_launcher_model(model));
+    }
+
+    /// Carry out what the launcher asked for. Play and Settings leave the launcher
+    /// and hand over to the game's own screens; a world row launches straight in.
+    #[cfg(target_os = "android")]
+    fn handle_launcher_events(&mut self, event_loop: &ActiveEventLoop) {
+        let events = horizon_overlay::with(|o| o.take_launcher_events()).unwrap_or_default();
+        for event in events {
+            match event {
+                LauncherEvent::Goto(page) => self.menu.launcher_page = Some(page),
+                LauncherEvent::Play => {
+                    self.menu.launcher_page = None;
+                    if let Some(title) = &mut self.menu.title {
+                        title.mode = horizon_client::title::Mode::Main;
+                    }
+                }
+                LauncherEvent::PlayRow(id) => {
+                    self.menu.launcher_page = None;
+                    let saves = self
+                        .menu
+                        .title
+                        .as_ref()
+                        .map(|t| t.saves.clone())
+                        .unwrap_or_default();
+                    if let Some(world) =
+                        horizon_client::title::list_worlds(&saves).into_iter().nth(id as usize)
+                    {
+                        let name = self
+                            .options
+                            .as_ref()
+                            .map_or_else(|| "Player".into(), |o| o.player_name());
+                        self.menu.queue_entry(Action::Play { folder: world.folder }, name);
+                    }
+                }
+                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins => {
+                    self.menu.launcher_page = None;
+                    self.menu_action(event_loop, Action::Options);
+                }
+                LauncherEvent::Quit => event_loop.exit(),
+                _ => {}
+            }
+        }
+    }
+
     /// Whether whatever is on the screen takes letters — the same question the world
     /// asks for the phone's keyboard. The title's list has its fields, and the options
     /// screen a search box, and neither has a hardware key to fall back on.
@@ -564,7 +698,13 @@ impl Loading {
                 }
                 self.apply_menu_settings();
             }
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => {
+                #[cfg(target_os = "android")]
+                self.sync_launcher();
+                self.draw();
+                #[cfg(target_os = "android")]
+                self.handle_launcher_events(event_loop);
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
@@ -711,6 +851,12 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
+        // The launcher is drawn in imgui over the whole screen; the title's own quads
+        // stand down while it is up, but the world-loading progress still draws.
+        #[cfg(target_os = "android")]
+        if self.menu.launcher_page.is_some() && self.menu.pending.is_none() {
+            return;
+        }
         let Some(gui) = &self.gui else { return };
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_progress(

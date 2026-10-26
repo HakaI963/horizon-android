@@ -23,9 +23,11 @@ use std::time::Instant;
 
 use horizon_controls::{Action, Hud, Layout, Rect};
 use imgui::{
-    Condition, ConfigFlags, Context, DrawListMut, FontConfig, FontSource, ImColor32, MouseButton,
-    Ui, WindowFlags,
+    Condition, ConfigFlags, Context, DrawListMut, ImColor32, MouseButton, Ui, WindowFlags,
 };
+
+mod launcher;
+pub use launcher::{LauncherEvent, LauncherModel, LauncherPage, LauncherRow};
 
 /// The button at rest: dark enough to see through, bright enough to find.
 const IDLE: [u8; 3] = [12, 16, 24];
@@ -69,6 +71,14 @@ pub struct Overlay {
     /// Where the layout is read from and written to.
     path: PathBuf,
     panel: bool,
+    /// The launcher's front page, drawn in place of the HUD at boot.
+    launcher: bool,
+    /// What to show, gathered by the platform from the engine each frame.
+    launcher_model: LauncherModel,
+    /// What the player asked for, drained by the platform each frame.
+    launcher_events: Vec<LauncherEvent>,
+    /// The Geist faces the launcher draws with, once the fonts are added.
+    launcher_fonts: Option<launcher::Fonts>,
     /// The panel as it was drawn last frame. A finger inside it belongs to the panel
     /// and to nothing else, and the only place to learn that from is the window
     /// imgui has just laid out.
@@ -111,6 +121,10 @@ impl Overlay {
             hud: Hud::new(layout),
             path,
             panel: false,
+            launcher: false,
+            launcher_model: LauncherModel::default(),
+            launcher_events: Vec::new(),
+            launcher_fonts: None,
             panel_rect: None,
             pointer: Pointer::idle(),
             game_pointer: None,
@@ -149,13 +163,10 @@ impl Overlay {
             // decides, because it is the axis a thumb crosses.
             self.dpi = (width.min(height) as f32 / 720.0).clamp(0.8, 2.5);
             self.imgui.style_mut().scale_all_sizes(self.dpi);
-            self.imgui.fonts().add_font(&[FontSource::DefaultFontData {
-                config: Some(FontConfig {
-                    size_pixels: (13.0 * self.dpi).max(13.0),
-                    pixel_snap_h: true,
-                    ..Default::default()
-                }),
-            }]);
+            // Geist becomes the default font (the first added), and the dark theme is
+            // set here once. The built-in bitmap font is what would make every screen
+            // look like the old menu, so it is never added.
+            self.launcher_fonts = Some(launcher::theme(&mut self.imgui, self.dpi));
             self.fonts_added = true;
         }
         let mut config = horizon_imgui::RendererConfig::new_srgb();
@@ -198,7 +209,7 @@ impl Overlay {
     /// Whether something on screen wants the finger: the panel, or the layout while
     /// it is being dragged around.
     fn interactive(&self) -> bool {
-        self.panel || self.hud.edit
+        self.panel || self.hud.edit || self.launcher
     }
 
     /// A finger went down. It goes to the layout unless the panel already has it, and
@@ -207,7 +218,9 @@ impl Overlay {
     /// to ask which one that was.
     pub fn finger_down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
         let inside_panel = self.panel_rect.is_some_and(|rect| rect.contains(x, y));
-        let on_button = !inside_panel && self.hud.down(id, x, y, width, height);
+        // The launcher owns the whole glass, so a tap there is never a HUD press.
+        let on_button =
+            !inside_panel && !self.launcher && self.hud.down(id, x, y, width, height);
         if self.interactive() && (self.pointer.finger.is_none() || inside_panel) {
             let was_down = self.pointer.down;
             self.pointer = Pointer {
@@ -299,6 +312,10 @@ impl Overlay {
             hud,
             path,
             panel,
+            launcher,
+            launcher_model,
+            launcher_events,
+            launcher_fonts,
             panel_rect,
             dpi,
             show_status,
@@ -354,38 +371,44 @@ impl Overlay {
 
         {
             let ui = imgui.new_frame();
-            hud_buttons(
-                ui,
-                &buttons,
-                &lit,
-                if edit { selected } else { None },
-                *dpi,
-                *show_status,
-                status.as_str(),
-                width,
-                height,
-            );
-            // The panel comes after the buttons, so it is drawn on top of them: a
-            // slider you cannot see because a "MINE" is over it is a slider you cannot
-            // find on a phone, where there is no hover to discover it with.
-            if *panel {
-                panel_now = Some(settings(
+            if *launcher {
+                if let Some(fonts) = launcher_fonts.as_ref() {
+                    launcher::draw(ui, launcher_model, fonts, *dpi, width, height, launcher_events);
+                }
+            } else {
+                hud_buttons(
                     ui,
-                    status.as_str(),
-                    &mut scale,
-                    &mut opacity,
-                    &mut sensitivity,
-                    &mut drag_to_look,
-                    &mut edit,
-                    show_status,
-                    selected_label.as_deref(),
-                    &mut sel_size,
-                    &mut sel_opacity,
-                    &mut save,
-                    &mut reset,
-                    &mut close,
+                    &buttons,
+                    &lit,
+                    if edit { selected } else { None },
                     *dpi,
-                ));
+                    *show_status,
+                    status.as_str(),
+                    width,
+                    height,
+                );
+                // The panel comes after the buttons, so it is drawn on top of them: a
+                // slider you cannot see because a "MINE" is over it is a slider you
+                // cannot find on a phone, where there is no hover to discover it with.
+                if *panel {
+                    panel_now = Some(settings(
+                        ui,
+                        status.as_str(),
+                        &mut scale,
+                        &mut opacity,
+                        &mut sensitivity,
+                        &mut drag_to_look,
+                        &mut edit,
+                        show_status,
+                        selected_label.as_deref(),
+                        &mut sel_size,
+                        &mut sel_opacity,
+                        &mut save,
+                        &mut reset,
+                        &mut close,
+                        *dpi,
+                    ));
+                }
             }
         }
 
@@ -465,6 +488,34 @@ impl Overlay {
 
     pub fn panel_open(&self) -> bool {
         self.panel
+    }
+
+    /// Show or hide the launcher's front page. Showing it lets go of any held
+    /// button, so a player never comes back to a character walking into a wall.
+    pub fn show_launcher(&mut self, on: bool) {
+        if on {
+            self.hud.release_all();
+        }
+        self.launcher = on;
+    }
+
+    pub fn launcher_active(&self) -> bool {
+        self.launcher
+    }
+
+    /// The page the launcher is on, so the platform can keep its model in sync.
+    pub fn launcher_page(&self) -> LauncherPage {
+        self.launcher_model.page
+    }
+
+    /// What to draw on the launcher next frame.
+    pub fn set_launcher_model(&mut self, model: LauncherModel) {
+        self.launcher_model = model;
+    }
+
+    /// What the player asked the launcher for, since the last call.
+    pub fn take_launcher_events(&mut self) -> Vec<LauncherEvent> {
+        std::mem::take(&mut self.launcher_events)
     }
 
     /// Where the layout lives, for a message that has to name it.
