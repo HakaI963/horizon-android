@@ -405,11 +405,13 @@ pub(super) fn keyboard_off(window: &Window) {
 /// `Some(true)` says it was just opened — the caller selects the field it opens over —
 /// `Some(false)` that it was just put away, `None` that it was already as asked.
 pub(super) fn keyboard(window: Option<&Window>, wanted: bool) -> Option<bool> {
-    if let Some(window) = window {
-        window.set_ime_allowed(wanted);
-    }
     if KEYBOARD_UP.swap(wanted, Ordering::Relaxed) == wanted {
         return None;
+    }
+    // winit's Android backend sends the activity a hide request on every
+    // `set_ime_allowed(false)`, so even the unchanged state is IPC at frame rate.
+    if let Some(window) = window {
+        window.set_ime_allowed(wanted);
     }
     if wanted {
         soft_keyboard::show();
