@@ -273,9 +273,14 @@ fn status(send: &Sender<Event>, text: &str) {
 /// Shown when an online-mode server asks a client without an account to authenticate.
 pub const NOT_SIGNED_IN: &str = "This server is in online mode. Sign in with your Microsoft account in the Horizon launcher to join it.";
 
-/// A translation, or the key itself (Language.getOrDefault).
+/// A translation, or the key itself (Language.getOrDefault). The table the network
+/// thread carries is the pack's en_us on its own, so a key it lacks is asked of the
+/// language the screens read before the raw key is the answer.
 fn tr(lang: &Language, key: &str) -> String {
-    lang.get(key).cloned().unwrap_or_else(|| key.to_owned())
+    lang.get(key)
+        .cloned()
+        .or_else(|| crate::lang::has(key).then(|| crate::lang::get(key)))
+        .unwrap_or_else(|| key.to_owned())
 }
 
 /// The whole connection. Ok: why it ended for good (the server's reason, or
@@ -579,7 +584,7 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
                 // message in machine words is worse than one in the player's language.
                 let pattern = lang
                     .get(key)
-                    .map(str::to_owned)
+                    .cloned()
                     .or_else(|| crate::lang::has(key).then(|| crate::lang::get(key)))
                     .or_else(|| {
                         o.get("fallback")
@@ -605,7 +610,7 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
 /// en_us.json from the prepared resources.
 pub fn load_language(resources: &std::path::Path) -> Language {
     let path = resources.join("assets/minecraft/lang/en_us.json");
-    let table = std::fs::read(&path)
+    let table: Language = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
