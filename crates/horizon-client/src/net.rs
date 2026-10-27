@@ -573,9 +573,14 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
                     .and_then(|w| w.as_array())
                     .map(|a| a.iter().map(|e| json_text(e, lang)).collect())
                     .unwrap_or_default();
+                // The table this thread was handed is the pack's en_us on its own; the
+                // screens read the same file as the process-wide language. A key the
+                // first one lacks is still worth asking the second for — a server's
+                // message in machine words is worse than one in the player's language.
                 let pattern = lang
                     .get(key)
-                    .cloned()
+                    .map(str::to_owned)
+                    .or_else(|| crate::lang::has(key).then(|| crate::lang::get(key)))
                     .or_else(|| {
                         o.get("fallback")
                             .and_then(|f| f.as_str())
@@ -599,10 +604,18 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
 
 /// en_us.json from the prepared resources.
 pub fn load_language(resources: &std::path::Path) -> Language {
-    std::fs::read(resources.join("assets/minecraft/lang/en_us.json"))
+    let path = resources.join("assets/minecraft/lang/en_us.json");
+    let table = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if table.is_empty() {
+        // `json_text` still asks the process-wide language per key, but a pack that
+        // cannot be read here is worth saying out loud: it is the difference between
+        // a server's words and its translation keys.
+        log::warn!("Horizon: no language table at {}", path.display());
+    }
+    table
 }
 
 /// Ask a server for its status (ServerStatusPinger): MOTD, players and the

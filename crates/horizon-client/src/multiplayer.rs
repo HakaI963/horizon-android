@@ -124,6 +124,28 @@ fn favicon_bytes(json: &serde_json::Value) -> Option<Vec<u8>> {
         .replace('\n', "");
     crate::skins::base64_decode(&base64)
 }
+
+/// The description a row shows. A MOTD that is nothing but a translation key this
+/// client does not carry was written for a client that does — a server saying, in
+/// effect, "your version is not one I can describe this to". Printing the key puts a
+/// machine word where the server's own words belong, so the row keeps the name and
+/// the player count and leaves the line blank.
+fn readable_motd(motd: &Text) -> Text {
+    if let Some(key) = motd.translation_key()
+        && !crate::lang::has(key)
+    {
+        return Text::empty();
+    }
+    // Some server software renders its own untranslatable description to a marker
+    // like "No translation (motd_version_…)" and sends that as plainly literal text.
+    // It is a machine talking to itself, not a description of the server.
+    let plain = motd.plain();
+    let plain = plain.trim();
+    if plain.starts_with("No translation (") && plain.ends_with(')') {
+        return Text::empty();
+    }
+    motd.resolve_legacy()
+}
 fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) {
     for s in servers {
         let address = s.ip.clone();
@@ -732,7 +754,7 @@ impl Screen {
                                 Some(Ping::Ok {
                                     motd, players, ms, ..
                                 }) => (
-                                    motd.resolve_legacy(),
+                                    readable_motd(motd),
                                     Ping::player_count(*players),
                                     format!(
                                         "server_list/ping_{}",
@@ -1397,6 +1419,20 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_motd_that_is_a_machine_word_is_not_shown() {
+        // A description written for a client that has the key: there is nothing here
+        // for this one to read, and the key itself is not a description.
+        let unknown = Text::translate("motd_version_minimal_not_supported", &[]);
+        assert_eq!(readable_motd(&unknown).plain(), "");
+        // Software that renders its own untranslatable MOTD sends the marker as text.
+        let marker = Text::literal("No translation (motd_version_minimal_not_supported)");
+        assert_eq!(readable_motd(&marker).plain(), "");
+        // A description with words in it is the server's own and is kept.
+        let words = Text::literal("Hypixel Network §6HALLOWEEN EVENT");
+        assert_eq!(readable_motd(&words).plain(), "Hypixel Network HALLOWEEN EVENT");
+    }
 
     #[test]
     fn direct_connection_joins_a_pasted_invite_and_keeps_host_names() {
