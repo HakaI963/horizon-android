@@ -1648,7 +1648,7 @@ fn mods_page(
         let _f = ui.push_font(fonts.small);
         draw.add_text(
             [bx + bw + 56.0 * dpi, y - 2.0 * dpi],
-            rgba(if model.failed { c.danger } else { c.muted }, 1.0),
+            rgba(if model.mods_failed { c.danger } else { c.muted }, 1.0),
             fit(ui, &model.status, g.x + g.w - g.pad - bx - bw - 64.0 * dpi),
         );
     }
@@ -1668,7 +1668,7 @@ fn mods_page(
         for (i, part) in wrap(ui, line, g.w - 2.0 * g.pad).iter().enumerate() {
             draw.add_text(
                 [g.x + g.pad, y + i as f32 * 18.0 * dpi],
-                rgba(if model.failed { c.danger } else { c.muted }, 1.0),
+                rgba(if model.mods_failed { c.danger } else { c.muted }, 1.0),
                 part.as_str(),
             );
         }
