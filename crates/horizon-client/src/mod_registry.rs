@@ -70,6 +70,10 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(30))
+        // GitHub's API answers 403 to a request with no User-Agent, which is what the
+        // mod listing is. The Mojang downloads elsewhere do not care, so this agent is
+        // the one that says who is asking.
+        .user_agent("Horizon-Android")
         .build()
 }
 
@@ -144,7 +148,7 @@ fn get(agent: &ureq::Agent, url: &str) -> Result<String, String> {
     if !url.starts_with("https://") {
         return Err(format!("refusing a plain-http fetch: {url}"));
     }
-    let response = agent.get(url).call().map_err(|error| error.to_string())?;
+    let response = agent.get(url).call().map_err(|error| format!("{url}: {error}"))?;
     let mut text = String::new();
     response
         .into_reader()
