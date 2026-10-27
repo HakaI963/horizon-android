@@ -680,7 +680,6 @@ impl Loading {
         let PhysicalKey::Code(code) = event.physical_key else {
             return;
         };
-        log::info!("launcher: key {code:?} text {:?}", event.text);
         match code {
             KeyCode::Backspace | KeyCode::Delete => {
                 self.menu.launcher_draft.pop();
@@ -733,7 +732,6 @@ impl Loading {
         // key at a time. Everything else about it is the same edit the title's fields
         // take.
         if horizon_overlay::with(|o| o.launcher_editing()).unwrap_or(false) {
-            log::info!("launcher: field takes {:?} + {:?}", input.backspaces, input.text);
             for _ in 0..input.backspaces {
                 self.menu.launcher_draft.pop();
             }
@@ -1080,53 +1078,55 @@ impl Loading {
 /// Java name may hold comes back.
 #[cfg(target_os = "android")]
 fn typed_char(code: KeyCode, text: Option<&str>, shift: bool) -> Option<char> {
-    let plain = match text.and_then(|t| t.chars().next()) {
-        Some(ch) => ch,
-        None => match code {
-            KeyCode::KeyA => 'a',
-            KeyCode::KeyB => 'b',
-            KeyCode::KeyC => 'c',
-            KeyCode::KeyD => 'd',
-            KeyCode::KeyE => 'e',
-            KeyCode::KeyF => 'f',
-            KeyCode::KeyG => 'g',
-            KeyCode::KeyH => 'h',
-            KeyCode::KeyI => 'i',
-            KeyCode::KeyJ => 'j',
-            KeyCode::KeyK => 'k',
-            KeyCode::KeyL => 'l',
-            KeyCode::KeyM => 'm',
-            KeyCode::KeyN => 'n',
-            KeyCode::KeyO => 'o',
-            KeyCode::KeyP => 'p',
-            KeyCode::KeyQ => 'q',
-            KeyCode::KeyR => 'r',
-            KeyCode::KeyS => 's',
-            KeyCode::KeyT => 't',
-            KeyCode::KeyU => 'u',
-            KeyCode::KeyV => 'v',
-            KeyCode::KeyW => 'w',
-            KeyCode::KeyX => 'x',
-            KeyCode::KeyY => 'y',
-            KeyCode::KeyZ => 'z',
-            KeyCode::Digit0 => '0',
-            KeyCode::Digit1 => '1',
-            KeyCode::Digit2 => '2',
-            KeyCode::Digit3 => '3',
-            KeyCode::Digit4 => '4',
-            KeyCode::Digit5 => '5',
-            KeyCode::Digit6 => '6',
-            KeyCode::Digit7 => '7',
-            KeyCode::Digit8 => '8',
-            KeyCode::Digit9 => '9',
-            KeyCode::Minus => '_',
-            _ => return None,
-        },
+    // Whatever the platform says the key produced is taken as given: it knows about
+    // layout, dead keys and case, and the code below knows about none of them.
+    if let Some(ch) = text.and_then(|t| t.chars().next()) {
+        return (ch.is_ascii_alphanumeric() || ch == '_').then_some(ch);
+    }
+    let plain = match code {
+        KeyCode::KeyA => 'a',
+        KeyCode::KeyB => 'b',
+        KeyCode::KeyC => 'c',
+        KeyCode::KeyD => 'd',
+        KeyCode::KeyE => 'e',
+        KeyCode::KeyF => 'f',
+        KeyCode::KeyG => 'g',
+        KeyCode::KeyH => 'h',
+        KeyCode::KeyI => 'i',
+        KeyCode::KeyJ => 'j',
+        KeyCode::KeyK => 'k',
+        KeyCode::KeyL => 'l',
+        KeyCode::KeyM => 'm',
+        KeyCode::KeyN => 'n',
+        KeyCode::KeyO => 'o',
+        KeyCode::KeyP => 'p',
+        KeyCode::KeyQ => 'q',
+        KeyCode::KeyR => 'r',
+        KeyCode::KeyS => 's',
+        KeyCode::KeyT => 't',
+        KeyCode::KeyU => 'u',
+        KeyCode::KeyV => 'v',
+        KeyCode::KeyW => 'w',
+        KeyCode::KeyX => 'x',
+        KeyCode::KeyY => 'y',
+        KeyCode::KeyZ => 'z',
+        KeyCode::Digit0 => '0',
+        KeyCode::Digit1 => '1',
+        KeyCode::Digit2 => '2',
+        KeyCode::Digit3 => '3',
+        KeyCode::Digit4 => '4',
+        KeyCode::Digit5 => '5',
+        KeyCode::Digit6 => '6',
+        KeyCode::Digit7 => '7',
+        KeyCode::Digit8 => '8',
+        KeyCode::Digit9 => '9',
+        KeyCode::Minus => '_',
+        _ => return None,
     };
     let ch = if shift {
         plain.to_ascii_uppercase()
     } else {
-        plain.to_ascii_lowercase()
+        plain
     };
     (ch.is_ascii_alphanumeric() || ch == '_').then_some(ch)
 }
