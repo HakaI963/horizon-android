@@ -355,6 +355,14 @@ pub(crate) fn pillar_type(kind: &str) -> Option<&'static str> {
 /// place, or `None` when it has none (or is not YUNG's).
 pub(crate) fn processor(kind: &str, p: &Value) -> Option<Vec<Value>> {
     let (ns, _) = kind.split_once(':')?;
+    // A match guard cannot carry a `let` — that is still unstable — so the desert
+    // temple case is decided before the match. Falling through when it has no
+    // processor is what the guard did, and it still reaches `yung_spawner` below.
+    if ns == "betterdeserttemples"
+        && let Some(processor) = desert_temple(kind)
+    {
+        return Some(vec![processor]);
+    }
     Some(match kind {
         // Better Fortresses' stair supports get the blocks its Java code
         // names.
@@ -365,11 +373,10 @@ pub(crate) fn processor(kind: &str, p: &Value) -> Option<Vec<Value>> {
             "front": "minecraft:red_nether_brick_stairs",
             "pillar": "minecraft:red_nether_bricks"})]
         }
-        _ if ns == "betterdeserttemples"
-            && let Some(processor) = desert_temple(kind) =>
-        {
-            vec![processor]
-        }
+        _ if ns == "betterdeserttemples" => match desert_temple(kind) {
+            Some(processor) => vec![processor],
+            None => vec![],
+        },
         "betterdungeons:small_dungeon_chest_processor" => {
             // Its config's defaults: one chest at least, two at most, a
             // fifth of the others kept until then; ChestBlock covers both.
