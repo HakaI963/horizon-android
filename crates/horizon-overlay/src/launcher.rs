@@ -453,10 +453,14 @@ pub fn draw(
         .position([0.0, 0.0], Condition::Always)
         .size([width, height], Condition::Always)
         .build(|| {
-            let draw = ui.get_window_draw_list();
-            // The page is behind everything on every frame, the opening included: the
-            // glass is never the game's own surface showing through.
-            fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+            // imgui hands out one `DrawListMut` per window at a time and panics on a
+            // second live one, so every acquisition here is scoped: the page is painted,
+            // the handle is dropped, and only then does anything that needs its own ask
+            // for one. Holding it across a helper was the crash.
+            {
+                let draw = ui.get_window_draw_list();
+                fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+            }
             if matches!(opening, Some(t) if t <= 0.0) {
                 splash(ui, fonts, c, dpi, width, height);
                 return;
@@ -487,6 +491,7 @@ pub fn draw(
                 // so the veil is what fades. The rise above is the polish on top of it.
                 let ease = horizon_theme::ease_out_cubic(t);
                 if ease < 1.0 {
+                    let draw = ui.get_window_draw_list();
                     fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0 - ease, 0.0);
                 }
             }
@@ -964,6 +969,9 @@ fn play_page(
             );
         }
     }
+    // The handle goes back before the button and the rows: imgui allows one live
+    // `DrawListMut` per window, and `row_card` asks for its own.
+    drop(draw);
 
     // The one button on the front page does the one thing that is missing: play what
     // is installed, install what is not — or, when the platform has something else to
@@ -994,6 +1002,7 @@ fn play_page(
 
     let mut y = y0 + hero + g.gap;
     {
+        let draw = ui.get_window_draw_list();
         let _f = ui.push_font(fonts.pixel);
         draw.add_text([g.x, y], rgba(c.muted, 1.0), "WORLDS");
     }
@@ -1003,6 +1012,7 @@ fn play_page(
         if y + h > height {
             return;
         }
+        let draw = ui.get_window_draw_list();
         panel(
             &draw,
             c,
