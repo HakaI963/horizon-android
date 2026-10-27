@@ -8,14 +8,16 @@ use horizon_client::{
 use winit::{event::KeyEvent, keyboard::ModifiersState};
 
 #[cfg(target_os = "android")]
-use horizon_overlay::{LauncherEvent, LauncherModel, LauncherPage, LauncherRow};
+use horizon_overlay::{
+    LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
+};
 
-#[derive(Default)]
 /// Horizon's own mod registry, where a mod's page lives. The launcher shows the same
 /// registry in its Mods page; this is the link out to the site for everything else.
 #[cfg(target_os = "android")]
 const MODS_SITE: &str = "https://playhorizon.dev/mods";
 
+#[derive(Default)]
 pub(super) struct StartupMenu {
     title: Option<Title>,
     options: OptionsUi,
@@ -35,10 +37,6 @@ pub(super) struct StartupMenu {
     /// What the last export or import said, shown under the settings page.
     #[cfg(target_os = "android")]
     launcher_notice: Option<String>,
-    /// The mod registry as it was fetched, kept for the visit to the Mods page rather
-    /// than fetched on every frame.
-    #[cfg(target_os = "android")]
-    mod_registry: Option<horizon_client::mod_registry::Registry>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -604,7 +602,7 @@ impl Loading {
             model.mods = registry
                 .entries
                 .iter()
-                .map(|entry| horizon_overlay::LauncherMod {
+                .map(|entry| LauncherMod {
                     id: entry.id.clone(),
                     name: entry.name.clone(),
                     summary: entry.summary.clone(),
@@ -749,20 +747,18 @@ impl Loading {
                     self.menu.launcher_notice = Some(format!("Skin set to {name}"));
                 }
                 LauncherEvent::RefreshMods => {
-                    self.menu.mod_registry = None;
+                    self.mod_registry = None;
                     self.menu.launcher_notice = None;
                 }
                 LauncherEvent::InstallMod(id) => {
                     let import = horizon_client::gfx::import_dir();
-                    // Cloned out before the install: `mod_registry` borrows the menu, and
-                    // the entry has to outlive that borrow to be passed to the download.
+                    // Cloned out before the install: `mod_registry` borrows `self`, and
+                    // the entry has to outlive that borrow to reach the download.
                     let registry = self.mod_registry().clone();
-                    let entry = registry.entries.iter().find(|e| e.id == id).cloned();
-                    let Some(entry) = entry else {
-                        return;
-                    };
-                    self.menu.launcher_notice =
-                        Some(match horizon_client::mod_registry::install(&import, &entry) {
+                    // A miss means the list was refreshed between the tap and here, which
+                    // is not an error worth dropping the rest of this frame's events for.
+                    if let Some(entry) = registry.entries.iter().find(|e| e.id == id).cloned() {
+                        let notice = match horizon_client::mod_registry::install(&import, &entry) {
                             // The game reads `import/mods/` when a world opens, so a mod
                             // installed from here is live on the next world, not this one.
                             Ok(path) => format!(
@@ -772,12 +768,13 @@ impl Loading {
                                     .unwrap_or_else(|| id.clone())
                             ),
                             Err(error) => format!("Install failed: {error}"),
-                        });
-                    // The list is stale now: it says "Install" where the file is already
-                    // there. Dropping it re-fetches on the next frame, and the notice
-                    // above it survives because only the registry is cleared.
-                    self.menu.mod_registry = None;
-                    self.menu.launcher_page = Some(LauncherPage::Mods);
+                        };
+                        self.menu.launcher_notice = Some(notice);
+                        // The list is stale now: it says "Install" where the file is
+                        // already there. Dropping it re-fetches on the next frame, and the
+                        // notice above it survives because only the registry is cleared.
+                        self.mod_registry = None;
+                    }
                 }
                 LauncherEvent::OpenModsSite => {
                     if let Err(error) = horizon_client::clipboard::open_url(MODS_SITE) {
@@ -869,13 +866,10 @@ impl Loading {
     /// would be both slow and rude. Refresh clears it.
     #[cfg(target_os = "android")]
     fn mod_registry(&mut self) -> &horizon_client::mod_registry::Registry {
-        if self.menu.mod_registry.is_none() {
-            self.menu.mod_registry = Some(horizon_client::mod_registry::fetch());
+        if self.mod_registry.is_none() {
+            self.mod_registry = Some(horizon_client::mod_registry::fetch());
         }
-        self.menu
-            .mod_registry
-            .as_ref()
-            .expect("filled above")
+        self.mod_registry.as_ref().expect("filled above")
     }
 
     /// The settings the launcher's own page offers, read from the live options so a

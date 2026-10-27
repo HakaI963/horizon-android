@@ -593,3 +593,33 @@ fn storage_key_ok(key: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
 }
+
+#[cfg(test)]
+mod tests {
+    /// The engine the phone builds must be the interpreter, not a JIT.
+    ///
+    /// Android's SELinux policy refuses `PROT_EXEC` on anonymous memory, so a
+    /// Cranelift host target there would abort at the first component instead of
+    /// running it. The configuration is a `cfg` in `engine`, which means a mistake
+    /// would only show up on a device; this pins the property that matters where a
+    /// host test can see it.
+    #[cfg(target_os = "android")]
+    #[test]
+    fn the_android_engine_interprets() {
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true).consume_fuel(true);
+        config.target("pulley64").expect("pulley64 is a target");
+        let engine = wasmtime::Engine::new(&config).expect("a pulley engine");
+        assert!(engine.is_pulley(), "the phone must interpret, not compile");
+    }
+
+    /// A desktop build keeps the host target: native code, and much faster.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn the_desktop_engine_compiles() {
+        let mut config = wasmtime::Config::new();
+        config.wasm_component_model(true).consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config).expect("a host engine");
+        assert!(!engine.is_pulley(), "a desktop should compile to native code");
+    }
+}

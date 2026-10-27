@@ -12964,6 +12964,10 @@ struct Loading {
     settings: Settings,
     fullscreen: horizon_client::window::FullscreenState,
     options: Option<Options>,
+    /// The mod registry as it was fetched, kept for the visit to the Mods page rather
+    /// than fetched again on every frame the page is up.
+    #[cfg(target_os = "android")]
+    mod_registry: Option<horizon_client::mod_registry::Registry>,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13373,6 +13377,8 @@ fn run_loading(
         settings,
         fullscreen: horizon_client::window::FullscreenState::new(false),
         options: Some(options),
+        #[cfg(target_os = "android")]
+        mod_registry: None,
         vanilla_root,
         pack_error,
         started,
