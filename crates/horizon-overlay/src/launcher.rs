@@ -553,7 +553,9 @@ fn list_page(
     out: &mut Vec<LauncherEvent>,
 ) {
     for row in &model.rows {
-        row_card(ui, fonts, c, dpi, width, pad, row, out, if model.page == LauncherPage::Instances { LauncherEvent::PlayRow } else { LauncherEvent::SelectRow });
+        // A listed instance or version is picked, not played: the rows on this page
+        // are not worlds, and a tap must not open one that happens to share its index.
+        row_card(ui, fonts, c, dpi, width, pad, row, out, LauncherEvent::SelectRow);
     }
     if model.page == LauncherPage::Instances {
         ui.dummy([0.0, 6.0 * dpi]);
