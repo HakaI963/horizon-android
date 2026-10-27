@@ -23,20 +23,19 @@ use std::time::Duration;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// The registry's built index. One document, refreshed on every visit to the Mods
-/// page rather than cached for days: a mod that has been taken down must stop being
-/// offered as soon as the registry says so.
-const INDEX: &str =
-    "https://raw.githubusercontent.com/ludovic111/horizon-mods/main/.github/index/index.json";
-
-/// The same index at the address the registry's CI publishes it to, tried second: the
-/// raw URL is the one that is always there, and a generated one is the one that is
-/// cheap.
-const INDEX_ALT: &str =
-    "https://raw.githubusercontent.com/ludovic111/horizon-mods/main/index.json";
+/// The registry repository, whose `mods/*.toml` files are the entries themselves.
+///
+/// There is no published `index.json` yet — that file is what the registry's CI
+/// builds, and until it exists the entries are the source of truth. Reading them
+/// directly also means the launcher sees a mod the moment it is merged rather than
+/// when a build catches up.
+const REPO: &str = "ludovic111/horizon-mods";
+const ENTRIES_API: &str =
+    "https://api.github.com/repos/ludovic111/horizon-mods/contents/mods";
+const ENTRY_RAW: &str = "https://raw.githubusercontent.com/ludovic111/horizon-mods/main/mods/";
 
 /// Where the registry's files are served from. A download outside this is refused,
-/// which is what stops a tampered index pointing the launcher at another host.
+/// which is what stops a tampered entry pointing the launcher at another host.
 const FILE_HOST: &str = "https://github.com/ludovic111/horizon-mods/releases/download/";
 
 /// One mod as the launcher shows it.
@@ -74,34 +73,70 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-/// Fetch and parse the registry. Blocking, so the caller runs it on a worker: the
-/// page draws while it happens.
+/// Fetch the registry. Blocking, so the caller runs it on a worker or accepts the
+/// pause: the page is only up when the player asked for it.
 pub fn fetch() -> Registry {
     let agent = agent();
-    let mut last = String::from("no attempt made");
-    for url in [INDEX, INDEX_ALT] {
-        match get(&agent, url) {
-            Ok(text) => match parse(&text) {
-                Ok(entries) => {
-                    return Registry {
-                        status: format!(
-                            "{} {}",
-                            entries.len(),
-                            if entries.len() == 1 { "mod" } else { "mods" }
-                        ),
-                        entries,
-                        failed: false,
-                    };
-                }
-                Err(error) => last = error,
-            },
+    let listing = match get(&agent, ENTRIES_API) {
+        Ok(text) => text,
+        Err(error) => {
+            return Registry {
+                entries: Vec::new(),
+                status: format!("Could not reach the mod registry: {error}"),
+                failed: true,
+            }
+        }
+    };
+    let names = match entry_names(&listing) {
+        Ok(names) => names,
+        Err(error) => {
+            return Registry {
+                entries: Vec::new(),
+                status: format!("The mod registry answered oddly: {error}"),
+                failed: true,
+            }
+        }
+    };
+    let mut entries = Vec::new();
+    let mut last = String::new();
+    for name in &names {
+        let url = format!("{ENTRY_RAW}{name}");
+        let text = match get(&agent, &url) {
+            Ok(text) => text,
+            Err(error) => {
+                last = error;
+                continue;
+            }
+        };
+        match parse_entry(&text) {
+            Ok(Some(entry)) => entries.push(entry),
+            // A mod for another version, or one with no usable file: skipped, not an
+            // error. The page says how many there are, and one bad entry must not hide
+            // the rest.
+            Ok(None) => {}
             Err(error) => last = error,
         }
     }
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    if entries.is_empty() {
+        return Registry {
+            entries,
+            status: if last.is_empty() {
+                "The registry has no mods for this build".to_string()
+            } else {
+                format!("Could not read the mod registry: {last}")
+            },
+            failed: true,
+        };
+    }
     Registry {
-        entries: Vec::new(),
-        status: format!("Could not reach the mod registry: {last}"),
-        failed: true,
+        status: format!(
+            "{} {} from {REPO}",
+            entries.len(),
+            if entries.len() == 1 { "mod" } else { "mods" }
+        ),
+        entries,
+        failed: false,
     }
 }
 
@@ -119,108 +154,56 @@ fn get(agent: &ureq::Agent, url: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// Read the index into entries. The document is the registry's, so a shape this build
-/// does not understand is an error with the field named rather than a silent empty
-/// list: an empty list is indistinguishable from "the registry has no mods".
-fn parse(text: &str) -> Result<Vec<Entry>, String> {
-    let index: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-    let schema = index.get("schema").and_then(Value::as_u64).unwrap_or(0);
-    if schema != 1 {
-        return Err(format!(
-            "the registry is schema {schema}; this build reads 1"
-        ));
+/// The `*.toml` file names in the registry's `mods/` folder, from GitHub's contents
+/// API. The listing is the only place the set of entries is published, so it is read
+/// rather than a list of ids compiled into the app that would go stale.
+fn entry_names(listing: &str) -> Result<Vec<String>, String> {
+    let items: Value = serde_json::from_str(listing).map_err(|error| error.to_string())?;
+    let Some(items) = items.as_array() else {
+        return Err("the listing is not an array".into());
+    };
+    Ok(items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("file"))
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .filter(|name| name.ends_with(".toml") && !name.starts_with('.'))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// One `mods/<id>.toml` as an [`Entry`], or `None` when this build cannot use it.
+///
+/// The shape is the registry's own, so it is read with the registry's own type:
+/// `horizon_mods::index::registry::Entry` is the definition a submission is reviewed
+/// against, which means the launcher cannot drift from it.
+fn parse_entry(text: &str) -> Result<Option<Entry>, String> {
+    use horizon_mods::index::registry::Entry as RegistryEntry;
+    let entry: RegistryEntry = toml::from_str(text).map_err(|error| error.to_string())?;
+    if entry.kind != horizon_mods::index::Kind::Mod {
+        return Ok(None);
     }
-    // A file the registry has taken down is refused by hash, whatever the project
-    // list says about it.
-    let revoked: Vec<(String, Option<String>)> = index
-        .get("revoked")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .map(|r| {
-                    (
-                        r.get("id").and_then(Value::as_str).unwrap_or("").to_owned(),
-                        r.get("sha256").and_then(Value::as_str).map(str::to_owned),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut entries = Vec::new();
-    for project in index
-        .get("projects")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        // Only what this build can actually do something with.
-        if project.get("kind").and_then(Value::as_str) != Some("mod") {
-            continue;
-        }
-        let id = project.get("id").and_then(Value::as_str).unwrap_or("");
-        let Some(version) = project
-            .get("versions")
-            .and_then(Value::as_array)
-            .and_then(|versions| versions.last())
-        else {
-            continue;
-        };
-        let game = version.get("game").and_then(Value::as_str).unwrap_or("");
-        // The engine plays one version, so offering a mod for another is a broken
-        // promise; the page says so instead of installing something that cannot load.
-        if game != horizon_core::VANILLA_VERSION {
-            continue;
-        }
-        let Some(file) = version.get("file") else {
-            continue;
-        };
-        let sha256 = file
-            .get("sha256")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        if revoked
-            .iter()
-            .any(|(rid, hash)| rid == id && hash.as_deref().is_none_or(|h| h == sha256))
-        {
-            continue;
-        }
-        let Some(url) = file.get("url").and_then(Value::as_str) else {
-            continue;
-        };
-        if !url.starts_with(FILE_HOST) {
-            continue;
-        }
-        entries.push(Entry {
-            id: id.to_owned(),
-            name: project
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(id)
-                .to_owned(),
-            summary: project
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
-            version: version
-                .get("version")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
-            game: game.to_owned(),
-            url: url.to_owned(),
-            sha256,
-            size: file.get("size").and_then(Value::as_u64).unwrap_or(0),
-            icon: project
-                .get("icon")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
-        });
+    let Some(version) = entry.versions.first() else {
+        return Ok(None);
+    };
+    // The engine plays one version; offering a mod built for another is a promise it
+    // cannot keep.
+    if version.game != horizon_core::VANILLA_VERSION {
+        return Ok(None);
     }
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(entries)
+    let url = format!("{FILE_HOST}{}/{}/{}", entry.id, version.version, version.file);
+    Ok(Some(Entry {
+        id: entry.id.clone(),
+        name: entry.name,
+        summary: entry.summary,
+        version: version.version.clone(),
+        game: version.game.clone(),
+        url,
+        sha256: version.sha256.clone(),
+        // The registry does not record a size in the entry; the file's own length is
+        // what the download checks instead.
+        size: 0,
+        icon: entry.icon.unwrap_or_default(),
+    }))
 }
 
 /// Where installed mods go: `import/mods/`, the folder the game reads.

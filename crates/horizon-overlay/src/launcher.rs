@@ -554,6 +554,11 @@ pub fn draw(
                 splash(ui, fonts, c, dpi, width, height);
                 return;
             }
+            // The column is drawn first because it is what applies a tab tap to the
+            // model. Reading `model.page` before it would decide the background from
+            // the page that was up a frame ago, which is how a page ended up drawn
+            // over the panorama with nothing behind it.
+            sidebar(ui, model, fonts, c, dpi, width, height, rise, &mut sink);
             // The Play page is the title panorama with things laid over it, so the
             // launcher must not paint over the glass there: the engine's cube map is
             // already drawn behind this window. Every other page is opaque. When there
@@ -561,9 +566,10 @@ pub fn draw(
             let over_panorama = panorama && model.page == LauncherPage::Play;
             if !over_panorama {
                 let draw = ui.get_window_draw_list();
-                fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+                // Only the page's own region: the column has already painted itself,
+                // and covering it here would undo the selection highlight.
+                fill(&draw, [g.x, 0.0], [width, height], c.page, 1.0, 0.0);
             }
-            sidebar(ui, model, fonts, c, dpi, width, height, rise, &mut sink);
             match model.page {
                 LauncherPage::Play => play_page(
                     ui,
