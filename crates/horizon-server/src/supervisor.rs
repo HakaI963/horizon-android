@@ -41,7 +41,7 @@ pub fn note(shared: &Shared, level: &str, message: &str) {
 }
 
 /// The folder's lock: one supervisor per server folder. Released when the process ends, even by a crash.
-pub fn lock(dir: &Path) -> Result<File, String> {
+pub fn lock(dir: &Path) -> Result<Guard, String> {
     let state = dir.join(".horizon");
     std::fs::create_dir_all(&state).map_err(|e| format!("{}: {e}", state.display()))?;
     let file = File::options()
@@ -50,12 +50,51 @@ pub fn lock(dir: &Path) -> Result<File, String> {
         .write(true)
         .open(state.join("lock"))
         .map_err(|e| e.to_string())?;
+    // `flock` belongs to the open file description, so two `open`s of this path in one
+    // process both take it and neither is a second server. The claim therefore has to
+    // be made here as well as with the kernel lock, exactly as `SessionLock` does for a
+    // world; without it the second `lock` succeeds and the *release* is what fails.
+    let key = std::fs::canonicalize(&state).unwrap_or_else(|_| state.clone());
+    {
+        let mut held = HELD.lock().unwrap_or_else(|error| error.into_inner());
+        if held.iter().any(|path| *path == key) {
+            return Err(format!("a server is already running in {}", dir.display()));
+        }
+        held.push(key.clone());
+    }
     match file.try_lock() {
-        Ok(()) => Ok(file),
+        Ok(()) => Ok(Guard { file, key }),
         Err(std::fs::TryLockError::WouldBlock) => {
+            release(&key);
             Err(format!("a server is already running in {}", dir.display()))
         }
-        Err(std::fs::TryLockError::Error(e)) => Err(e.to_string()),
+        Err(std::fs::TryLockError::Error(e)) => {
+            release(&key);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// The folders this process has locked, so a second `lock` in it fails like a second
+/// process would.
+static HELD: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn release(key: &Path) {
+    if let Ok(mut held) = HELD.lock() {
+        held.retain(|path| path != key);
+    }
+}
+
+/// A held lock: releasing the file is what ends the claim, so the folder goes with it.
+pub struct Guard {
+    file: File,
+    key: std::path::PathBuf,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+        release(&self.key);
     }
 }
 
