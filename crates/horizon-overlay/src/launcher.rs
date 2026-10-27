@@ -510,8 +510,11 @@ fn play_page(
         }
     }
     if !model.status.is_empty() {
-        ui.set_cursor_screen_pos([x + w - btn_w - 24.0 * dpi, y + hero_h - 34.0 * dpi]);
-        ui.text_colored(rgba(c.muted, 1.0), model.status.as_str());
+        // Inside the card and under the version line: an install error is as long as
+        // the URL in it, and a message that runs under the rail beside the page is a
+        // message nobody can finish reading.
+        ui.set_cursor_screen_pos([x + 24.0 * dpi, y + hero_h - 34.0 * dpi]);
+        ui.text_colored(rgba(c.muted, 1.0), fit(ui, &model.status, w - 48.0 * dpi));
     }
     ui.set_cursor_screen_pos([x, y + hero_h + 20.0 * dpi]);
 
@@ -575,8 +578,32 @@ fn list_page(
     }
     if !model.status.is_empty() {
         ui.dummy([0.0, 10.0 * dpi]);
-        ui.text_colored(rgba(c.muted, 1.0), model.status.as_str());
+        ui.text_colored(
+            rgba(c.muted, 1.0),
+            fit(ui, &model.status, width - 2.0 * pad),
+        );
     }
+}
+
+/// The text cut to what fits, with an ellipsis. A status line is the one string the
+/// launcher does not get to choose the length of — an install failure carries a URL —
+/// and a clipped message reads better than one that runs under the panel beside it.
+fn fit(ui: &Ui, text: &str, max_w: f32) -> String {
+    if ui.calc_text_size(text)[0] <= max_w {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        out.push(ch);
+        let mut probe = out.clone();
+        probe.push_str("...");
+        if ui.calc_text_size(&probe)[0] > max_w {
+            out.pop();
+            break;
+        }
+    }
+    out.push_str("...");
+    out
 }
 
 fn row_card(
