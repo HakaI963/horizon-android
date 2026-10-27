@@ -218,9 +218,17 @@ impl SessionLock {
             }
             log::warn!("session lock: {message} on {}; continuing without it", world.display());
         }
-        file.set_len(0)?;
-        file.write_all(&[0x26, 0x03])?;
-        file.flush()?;
+        if let Err(error) = file.set_len(0).and_then(|()| {
+            file.write_all(&[0x26, 0x03])?;
+            file.flush()
+        }) {
+            // The claim must not outlive a failed acquire, or the world could never
+            // be opened again in this process.
+            if let Ok(mut held) = HELD.lock() {
+                held.retain(|path| *path != key);
+            }
+            return Err(error.into());
+        }
         Ok(Self { file, key })
     }
 }
@@ -3845,8 +3853,11 @@ mod tests {
     fn session_lock_releases_while_a_descriptor_copy_lives() {
         let dir = std::env::temp_dir().join(format!("horizon-lock-copy-{}", std::process::id()));
         let lock = super::SessionLock::acquire(&dir).expect("first lock");
-        let copy = lock.0.try_clone().unwrap();
+        let copy = lock.file.try_clone().unwrap();
         drop(lock);
+        // Released means released: the in-process claim goes with the lock even
+        // though a copy of the descriptor is still open, and the next `acquire`
+        // takes it again.
         assert!(super::SessionLock::acquire(&dir).is_ok());
         drop(copy);
         let _ = std::fs::remove_dir_all(&dir);
