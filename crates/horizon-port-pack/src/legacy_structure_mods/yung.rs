@@ -356,8 +356,9 @@ pub(crate) fn pillar_type(kind: &str) -> Option<&'static str> {
 pub(crate) fn processor(kind: &str, p: &Value) -> Option<Vec<Value>> {
     let (ns, _) = kind.split_once(':')?;
     // A match guard cannot carry a `let` — that is still unstable — so the desert
-    // temple case is decided before the match. Falling through when it has no
-    // processor is what the guard did, and it still reaches `yung_spawner` below.
+    // temple processors are decided before the match. When one is not in that table
+    // the kind still has to reach `yung_spawner` below, which is the fall-through
+    // the guard used to give.
     if ns == "betterdeserttemples"
         && let Some(processor) = desert_temple(kind)
     {
@@ -373,10 +374,6 @@ pub(crate) fn processor(kind: &str, p: &Value) -> Option<Vec<Value>> {
             "front": "minecraft:red_nether_brick_stairs",
             "pillar": "minecraft:red_nether_bricks"})]
         }
-        _ if ns == "betterdeserttemples" => match desert_temple(kind) {
-            Some(processor) => vec![processor],
-            None => vec![],
-        },
         "betterdungeons:small_dungeon_chest_processor" => {
             // Its config's defaults: one chest at least, two at most, a
             // fifth of the others kept until then; ChestBlock covers both.
