@@ -110,7 +110,15 @@ pub fn servers_file(saves: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("servers.dat"), |p| p.join("servers.dat"))
 }
 /// `FaviconTexture.upload`: a PNG of exactly 64x64 pixels, else no icon.
+///
+/// The size is checked from the IHDR before the decoder is handed the data: the
+/// favicon comes from the server, and a decoder will size its output buffer from
+/// whatever header it is given, so a 30000x30000 one would be an out-of-memory kill
+/// before the 64x64 filter below ever ran.
 fn icon_pixels(png: &[u8]) -> Option<Arc<Vec<u8>>> {
+    if crate::hud::png_size_bytes(png) != Some((64, 64)) {
+        return None;
+    }
     crate::hud::decode_bytes(png)
         .ok()
         .filter(|(w, h, _)| *w == 64 && *h == 64)

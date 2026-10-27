@@ -98,14 +98,6 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
-    // A server list ping carries a favicon the server chose, and the decoder will
-    // happily size its output buffer from the header it sent. 64x64 is the largest
-    // thing anything here wants (a skin is 64x64, a server icon 64x64), so anything
-    // larger is refused before an allocation the phone cannot survive.
-    let (width, height) = reader.info().size();
-    if width > 64 || height > 64 {
-        return Err(format!("image is {width}x{height}; the largest accepted is 64x64").into());
-    }
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
@@ -129,6 +121,13 @@ fn png_size(path: &Path) -> Option<(u32, u32)> {
     use std::io::Read;
     let mut header = [0u8; 24];
     fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+    png_size_bytes(&header)
+}
+/// A PNG's width and height, from its header alone. The bytes are untrusted (a
+/// server's favicon, a player's dropped skin), so this reads the 24-byte header
+/// rather than letting the decoder size an allocation from it.
+pub fn png_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
+    let header = data.get(..24)?;
     let field = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap_or_default());
     (header[..8] == *b"\x89PNG\r\n\x1a\n" && header[12..16] == *b"IHDR")
         .then(|| (field(16), field(20)))

@@ -154,24 +154,54 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
 }
 /// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
 /// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock(fs::File);
+pub struct SessionLock {
+    file: fs::File,
+    /// The canonical world path, so `Drop` can release the in-process claim.
+    key: PathBuf,
+}
 impl Drop for SessionLock {
     /// `DirectoryLock.close`: release the lock, then close the file. Closing
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        let _ = self.file.unlock();
+        // `flock` is per open file description, so two `open`s in one process both
+        // succeed; this registry is what makes the lock exclusive within a process.
+        if let Ok(mut held) = HELD.lock() {
+            held.retain(|path| *path != self.key);
+        }
     }
 }
+/// The worlds this process has open, by canonical path.
+static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 impl SessionLock {
     pub fn acquire(world: &Path) -> Result<Self> {
         use std::io::Write;
         fs::create_dir_all(world)?;
-        let mut file = fs::OpenOptions::new()
+        let key = fs::canonicalize(world).unwrap_or_else(|_| world.to_path_buf());
+        {
+            let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+            if held.contains(&key) {
+                return Err(format!("{} is already open in this instance", world.display()).into());
+            }
+            // Claimed before the file is touched, so two threads racing on one world
+            // cannot both get past this point.
+            held.push(key.clone());
+        }
+        let mut file = match fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(world.join("session.lock"))?;
+            .open(world.join("session.lock"))
+        {
+            Ok(file) => file,
+            Err(error) => {
+                if let Ok(mut held) = HELD.lock() {
+                    held.retain(|path| *path != key);
+                }
+                return Err(error.into());
+            }
+        };
         if let Err(error) = file.try_lock() {
             // A real conflict says the lock would have blocked. Anything else —
             // and a clone's redirected data dir answers `flock` with EIO — means
@@ -179,6 +209,9 @@ impl SessionLock {
             // to live with, not the player's reason not to play.
             let message = error.to_string();
             if message.contains("would have blocked") {
+                if let Ok(mut held) = HELD.lock() {
+                    held.retain(|path| *path != key);
+                }
                 return Err(
                     format!("{} is already open in another instance", world.display()).into()
                 );
@@ -188,7 +221,7 @@ impl SessionLock {
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
-        Ok(Self(file))
+        Ok(Self { file, key })
     }
 }
 /// Bring a world last saved by an older game version to the current format, as

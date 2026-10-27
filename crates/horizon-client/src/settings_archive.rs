@@ -284,6 +284,15 @@ mod tests {
         fs::write(folder.join("horizon-settings-old.zip"), b"x").unwrap();
         fs::write(folder.join("horizon-settings-new.zip"), b"x").unwrap();
         fs::write(folder.join("something-else.zip"), b"x").unwrap();
+        // Written in the same instant, two files can share an mtime to the
+        // filesystem's resolution, so the order is set here rather than assumed.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(folder.join("horizon-settings-old.zip"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
         let newest = newest(&folder).unwrap();
         assert!(newest.ends_with("horizon-settings-new.zip"), "{newest:?}");
     }
