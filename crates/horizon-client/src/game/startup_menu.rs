@@ -521,6 +521,9 @@ impl Loading {
         // can never disagree even if the event reaches here a frame later.
         let page = horizon_overlay::with(|o| {
             o.show_launcher(true);
+            // The engine has the title panorama behind this window, and the front page
+            // is drawn over it rather than painting it out.
+            o.set_panorama(true);
             o.launcher_page()
         })
         .unwrap_or(LauncherPage::Play);
@@ -537,7 +540,7 @@ impl Loading {
         // frame the launcher is up — sixty times a second for a list that only changes
         // when a world is made or opened. The cache is rebuilt on the pages that show
         // it, not on every page.
-        let needs_worlds = matches!(page, LauncherPage::Play | LauncherPage::Instances);
+        let needs_worlds = matches!(page, LauncherPage::Play | LauncherPage::Installations);
         if needs_worlds && self.menu.launcher_worlds.is_none() {
             self.menu.launcher_worlds = Some(horizon_client::title::list_worlds(&saves));
         }
@@ -550,6 +553,18 @@ impl Loading {
             .options
             .as_ref()
             .map_or_else(|| "Player".into(), |o| o.player_name());
+        // The skins the page offers, and which one is chosen. Reading the folder is a
+        // directory listing, and this runs on every frame the page is up, so it is
+        // only done for the page that shows it.
+        let (skins, chosen_skin) = if page == LauncherPage::Skins {
+            let dir = horizon_client::gfx::import_dir().join("skins");
+            (
+                horizon_client::skin_choice::available(&dir),
+                horizon_client::skin_choice::load(&dir),
+            )
+        } else {
+            (Vec::new(), None)
+        };
         let mut model = LauncherModel {
             page,
             version: version.clone(),
@@ -560,6 +575,10 @@ impl Loading {
                 ("Engine".into(), "Horizon · Rust".into()),
                 ("Platform".into(), "Android · native".into()),
             ],
+            skins,
+            chosen_skin,
+            news: news_stories(),
+            patches: patch_stories(),
             ..Default::default()
         };
         match page {
@@ -573,53 +592,34 @@ impl Loading {
                     model.status = line;
                     model.progress = Some(fraction);
                 }
-                model.rows = worlds
-                    .iter()
-                    .enumerate()
-                    .map(|(i, w)| LauncherRow {
-                        id: i as u32,
+            }
+            LauncherPage::Installations => {
+                model.playable = true;
+                model.instance = "Default".into();
+                // One installation exists, and it is the pinned version; the worlds
+                // beneath it are the ones that version can open.
+                let mut rows = vec![LauncherRow {
+                    id: 0,
+                    title: format!("Minecraft {version}"),
+                    subtitle: "The pack this build was made for".into(),
+                    badge: "installed".into(),
+                    selected: true,
+                    enabled: true,
+                }];
+                for (i, w) in worlds.iter().enumerate() {
+                    rows.push(LauncherRow {
+                        id: (i + 1) as u32,
                         title: w.name.clone(),
                         subtitle: w.version.clone(),
                         badge: if w.creative { "Creative".into() } else { String::new() },
                         selected: false,
                         enabled: true,
-                    })
-                    .collect();
-            }
-            LauncherPage::Instances => {
-                model.playable = true;
-                model.instance = "Default".into();
-                model.rows = vec![LauncherRow {
-                    id: 0,
-                    title: "Default".into(),
-                    subtitle: format!("Minecraft {version}"),
-                    badge: String::new(),
-                    selected: true,
-                    enabled: true,
-                }];
-            }
-            LauncherPage::Versions => {
-                model.rows = vec![
-                    LauncherRow {
-                        id: 0,
-                        title: version.clone(),
-                        subtitle: "Native engine".into(),
-                        badge: "installed".into(),
-                        selected: true,
-                        enabled: true,
-                    },
-                    LauncherRow {
-                        id: 1,
-                        title: "1.21".into(),
-                        subtitle: String::new(),
-                        badge: "not supported".into(),
-                        selected: false,
-                        enabled: false,
-                    },
-                ];
+                    });
+                }
+                model.rows = rows;
             }
             LauncherPage::Settings => {
-                // The export/import result belongs where the buttons are.
+                model.settings = self.launcher_settings();
                 if let Some(notice) = self.menu.launcher_notice.clone() {
                     model.status = notice;
                 }
@@ -648,7 +648,7 @@ impl Loading {
                     self.menu.launcher_page = Some(page);
                     // A page that lists worlds re-reads them: a world may have been
                     // made, renamed or deleted since the list was last built.
-                    if matches!(page, LauncherPage::Play | LauncherPage::Instances) {
+                    if matches!(page, LauncherPage::Play | LauncherPage::Installations) {
                         self.menu.launcher_worlds = None;
                     }
                 }
@@ -682,8 +682,21 @@ impl Loading {
                     }
                 }
                 LauncherEvent::OpenSettings => {
+                    // The launcher has its own Settings page now, so this stays on the
+                    // glass instead of handing over to the game's options screen.
+                    self.menu.launcher_page = Some(LauncherPage::Settings);
+                }
+                LauncherEvent::OpenMultiplayer => {
+                    // Servers live in the engine's own list, and the launcher is the
+                    // front page of the same `Title`: switching its mode is the whole
+                    // handover, no separate screen to build.
                     self.menu.launcher_page = None;
-                    self.menu_action(event_loop, Action::Options);
+                    if let Some(title) = &mut self.menu.title {
+                        title.mode =
+                            horizon_client::title::Mode::Multiplayer(
+                                horizon_client::multiplayer::Screen::list(&title.saves),
+                            );
+                    }
                 }
                 // The Skins page's button promises a skin picker, so it opens one. It
                 // used to fall into the Options arm and land on the main options page,
@@ -691,6 +704,18 @@ impl Loading {
                 LauncherEvent::OpenSkins => {
                     self.menu.launcher_page = None;
                     self.open_menu_options(Page::Skins);
+                }
+                LauncherEvent::PickSkin(name) => {
+                    let import = horizon_client::gfx::import_dir();
+                    let dir = import.join("skins");
+                    horizon_client::skin_choice::save(&dir, Some(&name));
+                    self.menu.launcher_notice = Some(format!("Skin set to {name}"));
+                }
+                LauncherEvent::SetOption(key, value) => {
+                    self.apply_launcher_option(&key, value);
+                }
+                LauncherEvent::ToggleOption(key, on) => {
+                    self.apply_launcher_option(&key, if on { 1.0 } else { 0.0 });
                 }
                 // The Instances page lists what exists and offers a new one. Until
                 // instances are real (M1b) the honest answer is to say so, not to
@@ -762,6 +787,157 @@ impl Loading {
             log::warn!("Horizon: could not keep the player name: {error}");
         }
         self.save_menu_settings();
+    }
+
+    /// The settings the launcher's own page offers, read from the live options so a
+    /// slider shows the value the game is actually using rather than a copy that can
+    /// drift. Keys are `options.txt` names; see `apply_launcher_option`.
+    #[cfg(target_os = "android")]
+    fn launcher_settings(&self) -> Vec<horizon_overlay::LauncherSetting> {
+        use horizon_overlay::LauncherSetting;
+        let f = &self.settings.file;
+        let slider = |key: &str, label: &str, min: f32, max: f32, value: f32| LauncherSetting {
+            key: key.to_string(),
+            label: label.to_string(),
+            value,
+            min,
+            max,
+            toggle: false,
+            on: false,
+        };
+        let toggle = |key: &str, label: &str, on: bool| LauncherSetting {
+            key: key.to_string(),
+            label: label.to_string(),
+            value: if on { 1.0 } else { 0.0 },
+            min: 0.0,
+            max: 1.0,
+            toggle: true,
+            on,
+        };
+        vec![
+            slider(
+                "renderDistance",
+                "Render distance (chunks)",
+                2.0,
+                32.0,
+                f.int("renderDistance") as f32,
+            ),
+            slider(
+                "simulationDistance",
+                "Simulation distance",
+                4.0,
+                32.0,
+                f.int("simulationDistance") as f32,
+            ),
+            slider(
+                "guiScale",
+                "GUI scale (0 = automatic)",
+                0.0,
+                4.0,
+                f.int("guiScale") as f32,
+            ),
+            slider(
+                "fov",
+                "Field of view",
+                30.0,
+                110.0,
+                f.int("fov") as f32,
+            ),
+            slider(
+                "gamma",
+                "Brightness",
+                0.0,
+                1.0,
+                f.double("gamma") as f32,
+            ),
+            slider(
+                "masterVolume",
+                "Volume",
+                0.0,
+                1.0,
+                f.double("soundCategory_master") as f32,
+            ),
+            toggle(
+                "enableVsync",
+                "V-Sync",
+                f.bool("enableVsync"),
+            ),
+            toggle(
+                "bobView",
+                "View bobbing",
+                f.bool("bobView"),
+            ),
+            toggle(
+                "autoJump",
+                "Auto-jump",
+                f.bool("autoJump"),
+            ),
+            toggle(
+                "showSubtitles",
+                "Subtitles",
+                f.bool("showSubtitles"),
+            ),
+        ]
+    }
+
+    /// Write one setting the launcher's own Settings page changed.
+    ///
+    /// `options.txt` is the file the game reads at start, so writing it is the whole
+    /// job: the value is live for the next world, and the running menu reads it back
+    /// through the same parse it uses for every other option. The keys are the ones
+    /// `options_file.rs` names, so a slider here and the game's own options screen
+    /// cannot disagree about what "render distance" is called.
+    #[cfg(target_os = "android")]
+    fn apply_launcher_option(&mut self, key: &str, value: f32) {
+        let path = Game::options_path();
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        // A float is written the way Java writes one: no trailing `.0` for a whole
+        // number, because that is what the parser on both sides expects.
+        let rendered = if (value - value.round()).abs() < 0.001 {
+            format!("{}", value.round() as i64)
+        } else {
+            format!("{value:.3}")
+        };
+        let mut replaced = false;
+        let mut lines: Vec<String> = Vec::new();
+        for line in text.lines() {
+            match line.split_once(':') {
+                Some((name, _)) if name == key => {
+                    lines.push(format!("{key}:{rendered}"));
+                    replaced = true;
+                }
+                _ => lines.push(line.to_string()),
+            }
+        }
+        if !replaced {
+            lines.push(format!("{key}:{rendered}"));
+        }
+        text = lines.join("\n");
+        text.push('\n');
+        if let Err(error) = std::fs::write(&path, &text) {
+            log::warn!("launcher: could not write {key}: {error}");
+            self.menu.launcher_notice = Some(format!("Could not save {key}"));
+            return;
+        }
+        // The live copy has to follow, or the next save from the game's own options
+        // screen would write its stale value back over this one.
+        let file = &mut self.settings.file;
+        let parsed = match file.get(key) {
+            Some(horizon_client::options_file::V::Bool(_)) => {
+                Some(horizon_client::options_file::V::Bool(value >= 0.5))
+            }
+            Some(horizon_client::options_file::V::Int(_)) => {
+                Some(horizon_client::options_file::V::Int(value.round() as i32))
+            }
+            Some(horizon_client::options_file::V::Double(_)) => {
+                Some(horizon_client::options_file::V::Double(f64::from(value)))
+            }
+            _ => None,
+        };
+        if let Some(parsed) = parsed {
+            self.settings.file.set(key, parsed);
+        }
+        self.menu.launcher_notice = Some(format!("{key} set to {rendered}"));
     }
 
     /// A key press over the launcher's name field.
@@ -1351,4 +1527,107 @@ mod tests {
             "resource loader stopped before finishing"
         );
     }
+}
+
+/// The launcher's News page. Horizon has no feed to fetch and no server to ask, so
+/// these are the things a player of this build actually needs to know, written where
+/// they will read them. The first card is the one that is always true.
+#[cfg(target_os = "android")]
+fn news_stories() -> Vec<horizon_overlay::LauncherStory> {
+    use horizon_overlay::LauncherStory;
+    let story = |title: &str, tag: &str, body: &str| LauncherStory {
+        title: title.to_string(),
+        tag: tag.to_string(),
+        body: body.to_string(),
+    };
+    vec![
+        story(
+            "Horizon runs natively on Android",
+            "THIS BUILD",
+            "No Java, no emulator and no compatibility layer: the engine is Rust compiled \
+             to arm64, drawing through Vulkan. Minecraft's own files are read as data — the \
+             client JAR supplies textures, models and world data, and the game logic is \
+             Horizon's own.",
+        ),
+        story(
+            "One version at a time",
+            "HOW IT WORKS",
+            "This build plays Minecraft Java 26.3. The engine's protocol, registry and block \
+             tables are generated for one version, so the Versions list shows what exists and \
+             says plainly that anything else is not supported. Porting another version is a \
+             new build, not a download.",
+        ),
+        story(
+            "Sound packs fill in on their own",
+            "FIRST LAUNCH",
+            "The client JAR carries no sounds. They are separate objects in Mojang's asset \
+             index, and the launcher fetches them in the background while you are already in \
+             the menu. A pass that is interrupted resumes where it stopped, so a slow \
+             connection costs nothing.",
+        ),
+        story(
+            "Skins come from a file",
+            "SKINS",
+            "There is no account sign-in on a phone, so a skin is a PNG you drop into \
+             import/skins and pick on the Skins page. The choice is kept in horizon-skin.txt \
+             beside options.txt and applies to your player model.",
+        ),
+        story(
+            "Mods need a runtime this build does not carry",
+            "MODS",
+            "Android forbids the executable memory a JIT needs, so Horizon's WebAssembly mods \
+             cannot run here. Modpacks ported to 26.3 do work as resource and data packs.",
+        ),
+    ]
+}
+
+/// The launcher's Patch Notes page: what changed in the build the player is holding.
+/// Newest first, and written for someone who wants to know whether their problem was
+/// fixed rather than what was refactored.
+#[cfg(target_os = "android")]
+fn patch_stories() -> Vec<horizon_overlay::LauncherStory> {
+    use horizon_overlay::LauncherStory;
+    let story = |title: &str, tag: &str, body: &str| LauncherStory {
+        title: title.to_string(),
+        tag: tag.to_string(),
+        body: body.to_string(),
+    };
+    vec![
+        story(
+            "0.1.2 — the launcher is a launcher",
+            "LATEST",
+            "The front page is the title panorama with Play over it, and a column of \
+             destinations beside it. Skins, Settings, News and Patch Notes are pages in the \
+             launcher now, so changing a skin or the render distance no longer means entering \
+             the game. Settings write options.txt directly, so the launcher and the game's own \
+             options screen cannot disagree.",
+        ),
+        story(
+            "0.1.2 — every tap lands",
+            "FIXED",
+            "No control on the launcher responded: the release imgui needs to turn a press \
+             into a click was being cleared on the frame after it arrived. Also fixed: the app \
+             died on its first painted frame because two draw lists were open on the same \
+             window at once.",
+        ),
+        story(
+            "0.1.2 — sounds arrive in minutes, not hours",
+            "FASTER",
+            "The sound pack used to be fetched one small file at a time. It is a pool of \
+             connections now, and files already on disk are counted before it starts, so a \
+             resumed pass neither repeats work nor reports itself as starting from zero.",
+        ),
+        story(
+            "0.1.2 — first launch no longer freezes",
+            "FIXED",
+            "The install used to run before the app could draw, which Android treats as an \
+             ANR. The bring-up card owns it now and keeps drawing while it downloads.",
+        ),
+        story(
+            "0.1.1 — an icon, and an opening",
+            "RELEASED",
+            "The APK has a real adaptive icon and an API 31 splash, so it no longer opens on a \
+             black flash, and the launcher fades its interface in behind a wordmark.",
+        ),
+    ]
 }

@@ -435,6 +435,14 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
         .and_then(Value::as_str)
         .ok_or("the version JSON's assetIndex has no url")?;
     let index = get_json(&agent, url)?;
+    // The title's cube map is seven more objects from the same index, and the JAR's
+    // copies are placeholders. Fetching them here means the menu has real art on the
+    // next open, and costs one request each.
+    match fill_panorama(&agent, &target, &index) {
+        Ok(0) => {}
+        Ok(faces) => log::info!("minecraft: {faces} title panorama faces ready"),
+        Err(error) => log::warn!("minecraft: title panorama not fetched: {error}"),
+    }
     let objects = index
         .get("objects")
         .and_then(Value::as_object)
@@ -560,6 +568,74 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
     } else {
         Err(format!("{missing} sound files still missing"))
     }
+}
+
+/// The title's cube map, which the client JAR only carries as a 1×1 grey
+/// placeholder: the real faces are objects in the asset index, like the sounds. Without
+/// them `panorama::Faces::load` falls back to a flat colour, which is why the title
+/// screen was blank.
+const PANORAMA: [&str; 7] = [
+    "minecraft/textures/gui/title/background/panorama_0.png",
+    "minecraft/textures/gui/title/background/panorama_1.png",
+    "minecraft/textures/gui/title/background/panorama_2.png",
+    "minecraft/textures/gui/title/background/panorama_3.png",
+    "minecraft/textures/gui/title/background/panorama_4.png",
+    "minecraft/textures/gui/title/background/panorama_5.png",
+    "minecraft/textures/gui/title/background/panorama_overlay.png",
+];
+
+/// Whether the pack's panorama is real rather than the JAR's placeholder. A
+/// placeholder is 1×1, so the face's own size says which one it is; the check reads
+/// the PNG header and never decodes the image.
+fn panorama_ready(target: &Path) -> bool {
+    let dir = target.join("assets/minecraft/textures/gui/title/background");
+    PANORAMA.iter().all(|name| {
+        let path = dir.join(name.rsplit('/').next().unwrap_or(name));
+        std::fs::read(&path)
+            .ok()
+            .and_then(|data| horizon_client::hud::png_size_bytes(&data))
+            .is_some_and(|(w, h)| w > 1 && h > 1)
+    })
+}
+
+/// Fetch the title's cube map on the same background thread as the sounds, so the
+/// menu has real art the second time the app opens. Seven small objects: this is not
+/// worth its own thread, and it must not delay the sounds.
+fn fill_panorama(agent: &ureq::Agent, target: &Path, index: &Value) -> Result<usize, String> {
+    if panorama_ready(target) {
+        return Ok(0);
+    }
+    let objects = index
+        .get("objects")
+        .and_then(Value::as_object)
+        .ok_or("the asset index has no objects")?;
+    let mut got = 0usize;
+    for name in PANORAMA {
+        let Some(entry) = objects.get(name) else {
+            return Err(format!("{name} is missing from the asset index"));
+        };
+        let hash = entry
+            .get("hash")
+            .and_then(Value::as_str)
+            .ok_or("a panorama object has no hash")?;
+        let Some(relative) = safe_relative(name) else {
+            return Err(format!("{name} is not a safe path"));
+        };
+        let destination = target.join("assets").join(&relative);
+        if destination.is_file() {
+            // The placeholder is a real file, so its presence is not the question —
+            // its size is. Re-fetching a real face is cheap; leaving a placeholder in
+            // place is the bug this exists to fix.
+            if let Ok(data) = std::fs::read(&destination)
+                && horizon_client::hud::png_size_bytes(&data).is_some_and(|(w, _)| w > 1)
+            {
+                continue;
+            }
+        }
+        fetch_object(agent, hash, &destination)?;
+        got += 1;
+    }
+    Ok(got)
 }
 
 /// One asset object, checked against the SHA-1 that names it. Retried a few

@@ -202,6 +202,12 @@ pub fn reduced_far_detail_suggested() -> bool {
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
 pub const INTEGRATED_LOD_DISTANCE: u32 = 128;
+/// What a phone starts at. A phone's GPU is integrated and its thermal budget is a
+/// few seconds, so far terrain is the first thing that has to give: this is the
+/// distance at which LOD still hides the chunk edge without paying for tiles the
+/// player will never resolve on a 6-inch screen. It is a default, not a ceiling —
+/// the graphics page can raise it.
+pub const ANDROID_LOD_DISTANCE: u32 = 96;
 /// Whether `INTEGRATED_LOD_DISTANCE` applies to this adapter. Apple's GPUs
 /// are integrated too, with memory and bandwidth enough for every distance.
 pub fn lod_capped(info: &wgpu::AdapterInfo) -> bool {
@@ -215,6 +221,30 @@ impl Graphics {
             distance.min(INTEGRATED_LOD_DISTANCE)
         } else {
             distance
+        }
+    }
+    /// The graphics a phone starts with, when nothing has been saved yet.
+    ///
+    /// Every one of these is a default the player can change, not a policy: a phone
+    /// gets a shorter render distance, a capped LOD range, a smaller upload budget
+    /// and the reduced far detail, because the alternative is a first launch that
+    /// runs at nine frames a second and teaches the player the app is slow. The
+    /// values are the ones `Preset::Balanced` uses for vanilla's own options, so the
+    /// two screens still agree about what "balanced" means.
+    #[cfg(target_os = "android")]
+    pub fn android_defaults() -> Self {
+        Self {
+            preset: Preset::Balanced,
+            lod_distance: ANDROID_LOD_DISTANCE,
+            far_detail: FarDetail::Reduced,
+            cave_culling: true,
+            entity_culling: true,
+            // A few hundred kilobytes a frame keeps the upload from spiking the
+            // frame it lands on, which is the spike a phone feels as a stutter.
+            chunk_updates: 8,
+            upload_budget_kib: 1024,
+            pacing: Pacing::Efficient,
+            ..Self::default()
         }
     }
 }
@@ -283,9 +313,15 @@ fn bool_text(v: bool) -> &'static str {
 }
 impl Graphics {
     pub fn load(dir: &Path) -> Self {
+        // A phone that has never been configured gets the phone's defaults; once the
+        // player saves anything, the file is the whole answer.
+        #[cfg(target_os = "android")]
+        let fresh = Self::android_defaults();
+        #[cfg(not(target_os = "android"))]
+        let fresh = Self::default();
         fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
-            .unwrap_or_default()
+            .unwrap_or(fresh)
     }
     pub fn parse(text: &str) -> Self {
         let mut g = Self::default();

@@ -572,6 +572,9 @@ impl BringUp {
         ];
         let _ = horizon_overlay::with(|overlay| {
             overlay.show_launcher(true);
+            // No engine here, so there is no panorama behind the launcher: the front
+            // page has to paint its own background instead of showing a void.
+            overlay.set_panorama(false);
             overlay.set_launcher_model(LauncherModel {
                 instance: "Default".to_string(),
                 version,
@@ -598,12 +601,17 @@ impl BringUp {
                 LauncherEvent::Install
                 | LauncherEvent::Play
                 | LauncherEvent::PlayRow(_)
+                | LauncherEvent::SelectRow(_)
                 | LauncherEvent::NewInstance
                     if !installing && !installed =>
                 {
                     self.install_now();
                 }
                 LauncherEvent::Quit => event_loop.exit(),
+                // The card has no engine behind it, so a page that would hand over to
+                // one has nowhere to go. Play and Settings are the two the card offers
+                // and both mean the same thing here: fetch the pack.
+                LauncherEvent::OpenSettings => {}
                 LauncherEvent::Restart if installed => {
                     // The pack is on disk and this loop is the only one the activity
                     // will ever give out, so the engine cannot be started from here.

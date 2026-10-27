@@ -27,7 +27,9 @@ use imgui::{
 };
 
 mod launcher;
-pub use launcher::{LauncherEvent, LauncherModel, LauncherPage, LauncherRow};
+pub use launcher::{
+    LauncherEvent, LauncherModel, LauncherPage, LauncherRow, LauncherSetting, LauncherStory,
+};
 
 /// The button at rest: dark enough to see through, bright enough to find.
 const IDLE: [u8; 3] = [12, 16, 24];
@@ -85,6 +87,11 @@ pub struct Overlay {
     /// and to nothing else, and the only place to learn that from is the window
     /// imgui has just laid out.
     panel_rect: Option<Rect>,
+    /// The engine already drew the title panorama behind this overlay, and the
+    /// launcher's front page is meant to show it. The platform clears this when it
+    /// knows there is nothing back there — the bring-up card's black surface — so the
+    /// page falls back to its own background instead of showing a void.
+    panorama: bool,
     pointer: Pointer,
     /// A finger lifted off an imgui widget, waiting for the release to be sent at the
     /// end of the frame that rendered the press — see [`Overlay::paint`].
@@ -132,6 +139,7 @@ impl Overlay {
             launcher_events: Vec::new(),
             launcher_fonts: None,
             panel_rect: None,
+            panorama: true,
             pointer: Pointer::idle(),
             pending_release: false,
             game_pointer: None,
@@ -354,6 +362,7 @@ impl Overlay {
             launcher_events,
             launcher_fonts,
             panel_rect,
+            panorama,
             dpi,
             show_status,
             status,
@@ -421,6 +430,7 @@ impl Overlay {
                         width,
                         height,
                         opening,
+                        *panorama,
                         launcher_events,
                     );
                 }
@@ -548,6 +558,14 @@ impl Overlay {
 
     pub fn panel_open(&self) -> bool {
         self.panel
+    }
+
+    /// Tell the overlay whether the engine's title panorama is behind it. The
+    /// launcher's front page is drawn over that panorama and must not paint it out;
+    /// the bring-up card has no engine and passes `false`, so the page keeps its own
+    /// background there.
+    pub fn set_panorama(&mut self, on: bool) {
+        self.panorama = on;
     }
 
     /// Show or hide the launcher's front page. Showing it lets go of any held
