@@ -1509,6 +1509,17 @@ impl Title {
         }
     }
     pub fn confirm_edit(&mut self) {
+        // The phone's keyboard covers Done on the server form, so its Enter is the
+        // Done button: the same press, the same save.
+        if matches!(&self.mode, Mode::Multiplayer(_)) {
+            let saves = self.saves.clone();
+            if let Mode::Multiplayer(screen) = &mut self.mode
+                && screen.ready_to_add()
+            {
+                let _ = screen.click(Some(50), 0.0, 0.0, (0.0, 0.0), &saves);
+            }
+            return;
+        }
         let Mode::Edit {
             world,
             name,

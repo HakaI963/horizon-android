@@ -1009,6 +1009,15 @@ impl Screen {
             }
         }
     }
+    /// Whether the screen is the Add/Edit form with an address the game can use: the
+    /// state the phone keyboard's Enter can finish, because the keyboard covers Done.
+    pub fn ready_to_add(&self) -> bool {
+        matches!(
+            self,
+            Self::Edit { address, .. } if servers::parse_address(address).is_some()
+        )
+    }
+
     pub fn click(
         &mut self,
         id: Option<u8>,

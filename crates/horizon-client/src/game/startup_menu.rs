@@ -538,10 +538,10 @@ impl Loading {
         match page {
             LauncherPage::Play => {
                 model.playable = true;
-                model.instance = worlds
-                    .first()
-                    .map(|w| w.name.clone())
-                    .unwrap_or_else(|| "New World".into());
+                // The front page launches the instance, and there is one: naming it
+                // after a world would promise the button starts that world, and Play
+                // opens the game's own menu.
+                model.instance = "Default".into();
                 model.rows = worlds
                     .iter()
                     .enumerate()

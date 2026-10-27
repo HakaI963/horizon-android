@@ -531,7 +531,7 @@ fn play_page(
             draw.add_text(
                 [x + 20.0 * dpi, y + 44.0 * dpi],
                 rgba(c.muted, 1.0),
-                "Play starts a new one, or make one from Singleplayer.",
+                "Make one from Singleplayer.",
             );
         }
         ui.dummy([0.0, h]);
