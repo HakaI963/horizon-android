@@ -594,9 +594,16 @@ impl Loading {
             // `&mut self`, so nothing else on `self` can be touched while it is held.
             let notice = self.menu.launcher_notice.clone();
             let registry = self.mod_registry();
-            // The install result belongs above the list it changed, not hidden behind
-            // the registry's own count.
-            model.status = notice.unwrap_or_else(|| registry.status.clone());
+            // A fetch failure is the more urgent line: the install notice describes
+            // something that already worked, and a registry that could not be reached
+            // is why the list is empty. So the error wins, then the notice, then the
+            // count.
+            model.status = if registry.failed {
+                registry.status.clone()
+            } else {
+                notice.unwrap_or_else(|| registry.status.clone())
+            };
+            model.mods_failed = registry.failed;
             model.installed_mods = horizon_client::mod_registry::installed(&import);
             model.mods_site = MODS_SITE.to_string();
             model.mods = registry

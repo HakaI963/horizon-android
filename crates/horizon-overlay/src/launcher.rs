@@ -136,6 +136,9 @@ pub struct LauncherModel {
     pub installed_mods: Vec<String>,
     /// Where the mod registry's website is, so the page can offer it.
     pub mods_site: String,
+    /// The last registry fetch failed, so the page says why rather than showing an
+    /// empty list that reads like "there is nothing to install".
+    pub mods_failed: bool,
 }
 
 /// One mod from Horizon's registry: enough to show it, and enough to install it.
@@ -1645,16 +1648,30 @@ fn mods_page(
         let _f = ui.push_font(fonts.small);
         draw.add_text(
             [bx + bw + 56.0 * dpi, y - 2.0 * dpi],
-            rgba(if model.status.starts_with("Could not") { c.danger } else { c.muted }, 1.0),
+            rgba(if model.failed { c.danger } else { c.muted }, 1.0),
             fit(ui, &model.status, g.x + g.w - g.pad - bx - bw - 64.0 * dpi),
         );
     }
     y += 40.0 * dpi;
 
     if model.mods.is_empty() {
+        // The reason, not a shrug: an empty list is either "the registry has nothing
+        // for this build" or "the fetch failed", and only the status line can say
+        // which.
         let draw = ui.get_window_draw_list();
-        let line = "No mods to show. Refresh to ask the registry again.";
-        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), line);
+        let line = if model.status.is_empty() {
+            "No mods to show. Refresh to ask the registry again."
+        } else {
+            model.status.as_str()
+        };
+        let _f = ui.push_font(fonts.small);
+        for (i, part) in wrap(ui, line, g.w - 2.0 * g.pad).iter().enumerate() {
+            draw.add_text(
+                [g.x + g.pad, y + i as f32 * 18.0 * dpi],
+                rgba(if model.failed { c.danger } else { c.muted }, 1.0),
+                part.as_str(),
+            );
+        }
         return;
     }
     let row_h = 64.0 * dpi;
