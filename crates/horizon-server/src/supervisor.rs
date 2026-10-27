@@ -86,6 +86,10 @@ fn release(key: &Path) {
 }
 
 /// A held lock: releasing the file is what ends the claim, so the folder goes with it.
+///
+/// `Debug` because the tests assert on the `Err` side of `lock`, and `unwrap_err`
+/// needs both halves printable.
+#[derive(Debug)]
 pub struct Guard {
     file: File,
     key: std::path::PathBuf,
