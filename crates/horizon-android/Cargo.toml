@@ -28,7 +28,9 @@ png = "0.18"
 # The engine. The same feature set the `engine check` job surveys, so the APK is
 # built from exactly the code that was checked: sound, no controllers (evdev and
 # libudev are not a phone's), no wasmtime.
-horizon-client = { path = "../horizon-client", default-features = false, features = ["audio"] }
+# `mods` here is the interpreter-only feature: wasmtime runs the components through
+# Pulley, which needs no executable memory and so works under Android's W^X rule.
+horizon-client = { path = "../horizon-client", default-features = false, features = ["audio", "mods"] }
 # Only for `VANILLA_VERSION`, the single source of truth for the resource folder's name.
 horizon-core = { path = "../horizon-core" }
 # The touch layout and what a press means, tested where there is a host that can

@@ -48,6 +48,8 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     let _ = APP.set(app.clone());
     // The clipboard's JNI goes through `APP`, so it can only be registered after it.
     clipboard::install();
+    // The launcher's links open in the phone's browser, over the same seam.
+    clipboard::install_opener();
     // The soft keyboard's JNI too: the editable view lives on the activity.
     ime::install();
     paths::enter_app_storage(&app);

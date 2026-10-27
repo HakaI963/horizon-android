@@ -15,7 +15,7 @@ use jni::objects::{JObject, JString, Reference};
 use jni::vm::JavaVM;
 use jni::{Env, JValue, jni_sig, jni_str, sys};
 
-use horizon_client::clipboard::{install_system, SystemHooks};
+use horizon_client::clipboard::{install_opener as register_opener, install_system, SystemHooks};
 
 use crate::APP;
 
@@ -34,6 +34,37 @@ pub fn install() {
     if !install_system(SystemHooks { get, set }) {
         log::warn!("clipboard: installed twice, keeping the first activity's");
     }
+}
+
+/// Hand the engine the activity's browser.
+///
+/// The same seam as the clipboard, for the same reason: this crate owns the JNI and
+/// the engine owns the link. A `false` is the activity's own refusal, which the
+/// launcher turns into a log line rather than a dead button.
+pub fn install_opener() {
+    if !register_opener(open) {
+        log::warn!("clipboard: the URL opener was installed twice");
+    }
+}
+
+fn open(url: &str) -> bool {
+    let Some((vm, activity)) = context() else {
+        return false;
+    };
+    vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+        // SAFETY: the pointer is the activity's global reference, held by `APP`.
+        let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
+        let url: JString = env.new_string(url)?;
+        env.call_method(
+            &*activity,
+            jni_str!("horizonOpenUrl"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&url)],
+        )?
+        .v()?;
+        Ok(true)
+    })
+    .unwrap_or(false)
 }
 
 /// The machine, and the activity as the JVM's own global reference.

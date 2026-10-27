@@ -177,6 +177,39 @@ pub struct SystemHooks {
     pub set: fn(&str) -> bool,
 }
 
+/// A way out of the app: the platform's browser, handed over the same way the
+/// clipboard is, because the engine may not touch JNI and an `https` link has to reach
+/// the phone's own browser rather than a web view inside the game's surface.
+#[cfg(target_os = "android")]
+static OPENER: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
+
+/// Register the platform's URL opener. The adapter crate calls this before the event
+/// loop exists, beside `install_system`.
+#[cfg(target_os = "android")]
+pub fn install_opener(open: fn(&str) -> bool) -> bool {
+    OPENER.set(open).is_ok()
+}
+
+/// Open `url` in the platform's browser. `https` only, and an error when there is no
+/// opener: a desktop has no activity to hand an intent to.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err(format!("refusing to open {url:?}"));
+    }
+    #[cfg(target_os = "android")]
+    {
+        match OPENER.get() {
+            Some(open) if open(url) => Ok(()),
+            Some(_) => Err(format!("the phone could not open {url}")),
+            None => Err("no URL opener was registered".to_string()),
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Err("opening a browser is a phone feature here".to_string())
+    }
+}
+
 /// The clipboard the adapter crate registered, if it registered one before the
 /// game first asked.
 #[cfg(target_os = "android")]

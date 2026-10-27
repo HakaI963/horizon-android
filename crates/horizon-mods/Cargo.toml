@@ -13,7 +13,12 @@ toml = "1.1.6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
 # The 36 LTS line: security fixes until August 2027, and it builds on the client's Rust.
-wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "cranelift", "component-model", "std"], optional = true }
+#
+# `cranelift` is what compiles wasm to machine code, and Android's SELinux forbids the
+# executable memory it needs. It is optional so a phone build can leave it out: the
+# `runtime` feature alone still brings wasmtime's Pulley interpreter, which runs the
+# same components without generating any code. Desktop builds keep Cranelift.
+wasmtime = { version = "36.0.18", default-features = false, features = ["runtime", "component-model", "std"], optional = true }
 # Turns a mod's core module into a component (cargo horizon-mod build, the tests).
 wit-component = { version = "0.239", optional = true }
 wit-parser = { version = "0.239", optional = true }
@@ -25,7 +30,13 @@ minisign-verify = { version = "0.3", optional = true }
 # Loads and runs mods (the game's `mods` feature); without it only manifests,
 # content and packaging. Off by default so builds that don't run mods (the
 # game's tests and probes) skip wasmtime and cranelift.
+#
+# The interpreter is the baseline, so `runtime` runs mods with no JIT at all. That is
+# what makes them possible on Android, where the OS refuses to make memory executable.
 runtime = ["dep:wasmtime"]
+# Compile wasm to native code instead of interpreting it. Faster, and impossible on
+# Android; every desktop release turns it on.
+jit = ["wasmtime/cranelift"]
 pack = ["dep:wit-component", "dep:wit-parser"]
 # The mod registry's index (docs/api/mod-index.md): the launcher, the registry server and its CI.
 index = ["dep:sha2", "dep:minisign-verify"]

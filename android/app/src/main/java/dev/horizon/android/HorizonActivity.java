@@ -3,6 +3,8 @@ package dev.horizon.android;
 import android.app.AlertDialog;
 import android.app.NativeActivity;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputType;
@@ -232,6 +234,28 @@ public class HorizonActivity extends NativeActivity {
         runOnUiThread(() -> {
             dismissInstallDialog();
             Toast.makeText(this, "Minecraft install failed: " + message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    /**
+     * Open an https address in whatever the phone uses for browsing.
+     *
+     * The launcher has links to its own site, and a NativeActivity has no browser of
+     * its own: an ACTION_VIEW intent is the only way out of the app that does not
+     * involve a web view inside the game's surface.
+     */
+    public void horizonOpenUrl(String url) {
+        if (url == null || !url.startsWith("https://")) {
+            return;
+        }
+        runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception error) {
+                Toast.makeText(this, "No browser for " + url, Toast.LENGTH_SHORT).show();
+            }
         });
     }
 

@@ -180,6 +180,12 @@ impl Mods {
         if self.engine.is_none() {
             let mut config = Config::new();
             config.wasm_component_model(true).consume_fuel(true);
+            // Android forbids the executable memory a JIT needs (SELinux's W^X), so a
+            // phone build has no Cranelift to select: the `runtime` feature carries
+            // wasmtime's Pulley interpreter, and wasmtime uses it for the host target
+            // when no compiler is compiled in. Nothing else about the sandbox changes —
+            // the same fuel, the same memory cap, the same hooks.
+            config.wasm_backtrace(false);
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)

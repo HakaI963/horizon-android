@@ -130,6 +130,24 @@ pub struct LauncherModel {
     pub chosen_skin: Option<String>,
     pub news: Vec<LauncherStory>,
     pub patches: Vec<LauncherStory>,
+    /// The registry's mods, as the platform fetched them.
+    pub mods: Vec<LauncherMod>,
+    /// The `.hmod` files already in `import/mods/`, by name.
+    pub installed_mods: Vec<String>,
+    /// Where the mod registry's website is, so the page can offer it.
+    pub mods_site: String,
+}
+
+/// One mod from Horizon's registry: enough to show it, and enough to install it.
+#[derive(Clone, Debug, Default)]
+pub struct LauncherMod {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub version: String,
+    /// The file name the registry will install as, so the page can tell whether it is
+    /// already on disk.
+    pub file: String,
 }
 
 /// What the player asked for, for the platform to carry out.
@@ -165,6 +183,12 @@ pub enum LauncherEvent {
     SetOption(String, f32),
     /// A switch flipped.
     ToggleOption(String, bool),
+    /// Install this mod from the registry.
+    InstallMod(String),
+    /// Fetch the registry again.
+    RefreshMods,
+    /// Open the mod registry's site in a browser.
+    OpenModsSite,
 }
 
 /// The palette: the launcher's own, not the game's menus. Cool near-black plates,
@@ -292,12 +316,20 @@ pub fn theme(imgui: &mut imgui::Context, dpi: f32) -> Fonts {
 }
 
 /// The column's width, the height of a destination, and the air around them, in
-/// logical pixels. One set of numbers, so a row in the column and a row in a page
-/// are inset by the same amount.
-const SIDE_W: f32 = 318.0;
-const NAV_H: f32 = 64.0;
-const NAV_GAP: f32 = 10.0;
-const PAD: f32 = 26.0;
+/// logical pixels. These are measured off the reference launcher at 1920x953 and
+/// divided by the dpi it reports (1.3236), so the same proportions come back at any
+/// screen size: a column of 397 px, rows of 62 with 9 between them, an avatar of 46.
+const SIDE_FRACTION: f32 = 0.207;
+const NAV_H: f32 = 46.8;
+const NAV_GAP: f32 = 6.8;
+const NAV_INSET: f32 = 13.6;
+const PAD: f32 = 20.4;
+/// The avatar's face, the play button and the version dropdown, likewise measured.
+const FACE: f32 = 34.8;
+const PLAY_W: f32 = 347.6;
+const PLAY_H: f32 = 54.4;
+const DROP_W: f32 = 257.0;
+const DROP_H: f32 = 59.0;
 
 /// The one geometry every element is placed from: the sidebar's edge is where the
 /// page begins, and the page's own gutter is the same number everywhere.
@@ -316,7 +348,7 @@ impl Grid {
     fn new(width: f32, dpi: f32) -> Self {
         // A phone in landscape has room for a column; a narrow one gets a third of
         // the glass rather than a column that leaves no page.
-        let side = (SIDE_W * dpi).min(width * 0.30);
+        let side = (width * SIDE_FRACTION).max(220.0 * dpi).min(width * 0.42);
         Self {
             x: side,
             w: width - side,
@@ -578,7 +610,7 @@ pub fn draw(
                     rise,
                 ),
                 LauncherPage::Mods => {
-                    mods_page(ui, fonts, c, dpi, &g, height, rise)
+                    mods_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
                 }
                 LauncherPage::Profile => {
                     profile_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
@@ -649,15 +681,18 @@ fn sidebar(
     rise: f32,
     sink: &mut Sink<'_>,
 ) {
-    let side = (SIDE_W * dpi).min(width * 0.30);
+    let side = (width * SIDE_FRACTION).max(220.0 * dpi).min(width * 0.42);
     let pad = 20.0 * dpi;
+    let face = FACE * dpi;
+    let fy = 18.0 * dpi + rise;
     // Scoped: imgui allows one live `DrawListMut` per window, and the nav loop below
     // asks for its own.
     {
         let draw = ui.get_window_draw_list();
         fill(&draw, [0.0, rise], [side, height + rise], c.side, 1.0, 0.0);
-        // A hairline between the column and the page. On the Play page it is the seam
-        // between the opaque column and the panorama, so it has to be there.
+        // The seam. On the Play page this is the edge between an opaque column and
+        // the panorama, so it is drawn on every page rather than only on the opaque
+        // ones.
         fill(
             &draw,
             [side - 1.0, rise],
@@ -666,11 +701,9 @@ fn sidebar(
             1.0,
             0.0,
         );
-
-        // Who is playing, at the top: a face, the name, and the account kind.
-        let face = 46.0 * dpi;
-        let fy = 22.0 * dpi + rise;
-        fill(&draw, [pad, fy], [pad + face, fy + face], c.face(), 1.0, 6.0 * dpi);
+        // The avatar: a square block face, because that is what a Minecraft player
+        // recognises as themselves.
+        fill(&draw, [pad, fy], [pad + face, fy + face], c.face(), 1.0, 2.0 * dpi);
         {
             let _f = ui.push_font(fonts.pixel);
             let initial: String = model
@@ -691,23 +724,26 @@ fn sidebar(
                 initial.as_str(),
             );
         }
+        // The name is the largest text in the column, and the account kind under it is
+        // the quietest: the reference gives the player's own name that weight.
         {
             let _f = ui.push_font(fonts.pixel);
             draw.add_text(
-                [pad + face + 12.0 * dpi, fy + 4.0 * dpi],
+                [pad + face + 11.0 * dpi, fy + 1.0 * dpi],
                 rgba(c.ink, 1.0),
-                fit(ui, &model.account, side - pad * 2.0 - face - 12.0 * dpi),
+                fit(ui, &model.account, side - pad * 2.0 - face - 11.0 * dpi),
             );
         }
-        draw.add_text(
-            [pad + face + 12.0 * dpi, fy + 28.0 * dpi],
-            rgba(c.muted, 1.0),
-            "(Offline)",
-        );
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [pad + face + 11.0 * dpi, fy + 21.0 * dpi],
+                rgba(c.muted, 1.0),
+                "(Offline)",
+            );
+        }
     }
     // The whole header is the rename target, because it looks like the account.
-    let face = 46.0 * dpi;
-    let fy = 22.0 * dpi + rise;
     ui.set_cursor_screen_pos([pad, fy]);
     if ui.invisible_button("##account", [side - 2.0 * pad, face]) {
         if sink.live() {
@@ -716,57 +752,36 @@ fn sidebar(
         sink.push(LauncherEvent::RenameAccount);
     }
 
-    // The destinations. The footer is placed first so the column cannot run past it.
-    let footer = 34.0 * dpi;
-    let quit_w = text_width(ui, fonts.small, "Quit") + 20.0 * dpi;
-    let nav_top = fy + face + 26.0 * dpi;
-    let nav_bottom = height + rise - footer - 12.0 * dpi;
-    let count = PAGES.len() as f32;
+    // The destinations. Rows are fixed height and evenly spaced from the header, so
+    // the column reads as a list rather than as a set of buttons that happen to be
+    // stacked; the reference leaves the space below the last row empty.
+    let row_h = NAV_H * dpi;
     let gap = NAV_GAP * dpi;
-    let row_h = ((nav_bottom - nav_top - gap * (count - 1.0)) / count).clamp(34.0 * dpi, NAV_H * dpi);
-    let mut y = nav_top;
+    let mut y = fy + face + 30.0 * dpi;
     for (i, page) in PAGES.iter().enumerate() {
         let page = *page;
         let selected = page == model.page
             // Settings is reached from Profile, so the column keeps Profile lit while
             // it is open rather than lighting nothing.
             || (page == LauncherPage::Profile && model.page == LauncherPage::Settings);
-        let x = pad * 0.5;
-        let w = side - pad;
+        let inset = NAV_INSET * dpi;
+        let x = inset;
+        let w = side - inset * 2.0;
+        if y + row_h > height + rise {
+            break;
+        }
         {
             let draw = ui.get_window_draw_list();
             if selected {
-                fill(
-                    &draw,
-                    [x, y],
-                    [x + w, y + row_h],
-                    c.raised,
-                    1.0,
-                    4.0 * dpi,
-                );
-                stroke(
-                    &draw,
-                    [x, y],
-                    [x + w, y + row_h],
-                    c.accent,
-                    0.85,
-                    4.0 * dpi,
-                    2.0,
-                );
-                // The bright marker on the leading edge is what makes the selection
-                // read at a glance on a screen that is mostly dark.
-                fill(
-                    &draw,
-                    [x, y],
-                    [x + 3.0 * dpi, y + row_h],
-                    c.accent,
-                    1.0,
-                    2.0 * dpi,
-                );
+                // The reference's selection is a green outline with a dark face, not a
+                // filled green bar: the label stays white and the block is the mark.
+                fill(&draw, [x, y], [x + w, y + row_h], c.raised, 1.0, 3.0 * dpi);
+                stroke(&draw, [x, y], [x + w, y + row_h], c.accent, 1.0, 3.0 * dpi, 2.0);
             }
-            nav_icon(&draw, page, x + 16.0 * dpi, y + row_h / 2.0, 20.0 * dpi, c, selected);
+            let icon = 22.0 * dpi;
+            nav_icon(&draw, page, x + 14.0 * dpi, y + row_h / 2.0, icon, c, selected);
             let _f = ui.push_font(fonts.pixel);
-            let label_x = x + 16.0 * dpi + 20.0 * dpi + 14.0 * dpi;
+            let label_x = x + 14.0 * dpi + icon + 13.0 * dpi;
             draw.add_text(
                 [label_x, y + row_h / 2.0 - 9.0 * dpi],
                 rgba(if selected { c.ink } else { c.ink_soft }, 1.0),
@@ -787,25 +802,27 @@ fn sidebar(
         y += row_h + gap;
     }
 
-    // Footer: the build, and the way out of it.
-    let fy = height + rise - footer;
+    // The footer: the build and the way out, on one line at the very bottom, which is
+    // where the reference puts them and where a thumb in landscape cannot reach by
+    // accident.
+    let fy = height + rise - 26.0 * dpi;
+    let quit_w = text_width(ui, fonts.small, "Quit") + 18.0 * dpi;
     {
         let draw = ui.get_window_draw_list();
-        fill(&draw, [pad, fy - 8.0 * dpi], [side - pad, fy - 7.0 * dpi], c.rule, 1.0, 0.0);
+        let _f = ui.push_font(fonts.small);
         draw.add_text(
             [pad, fy],
             rgba(c.muted, 1.0),
-            format!("Horizon {} · native", model.version),
+            fit(ui, &format!("Horizon {} · native", model.version), side - pad * 2.0 - quit_w),
         );
-        let _f = ui.push_font(fonts.small);
         draw.add_text(
-            [side - pad - quit_w + 10.0 * dpi, fy],
+            [side - pad - quit_w + 9.0 * dpi, fy],
             rgba(c.muted, 1.0),
             "Quit",
         );
     }
     ui.set_cursor_screen_pos([side - pad - quit_w, fy - 4.0 * dpi]);
-    if ui.invisible_button("##quit", [quit_w, 24.0 * dpi]) {
+    if ui.invisible_button("##quit", [quit_w, 22.0 * dpi]) {
         sink.push(LauncherEvent::Quit);
     }
 }
@@ -814,55 +831,80 @@ fn sidebar(
 /// palette is four colours and the shapes are a handful of rects each, which is
 /// both smaller than a texture and exactly as sharp as the pixel font beside it.
 fn nav_icon(draw: &DrawListMut<'_>, page: LauncherPage, x: f32, cy: f32, s: f32, c: &Css, lit: bool) {
+    // A 16x16 grid, the size Minecraft's own icons are drawn on. Each mark is a few
+    // rects placed on that grid, so it stays crisp at any dpi and costs no texture.
+    let u = s / 16.0;
     let y = cy - s / 2.0;
-    let tone = if lit { c.accent } else { c.muted };
-    let half = s / 2.0;
+    let px = |gx: f32, gy: f32, gw: f32, gh: f32| {
+        [x + gx * u, y + gy * u, x + (gx + gw) * u, y + (gy + gh) * u]
+    };
+    let block = |gx: f32, gy: f32, gw: f32, gh: f32, col: u32| {
+        let r = px(gx, gy, gw, gh);
+        fill(draw, [r[0], r[1]], [r[2], r[3]], col, 1.0, 0.0);
+    };
+    let _ = (c, lit);
     match page {
-        // A grass block: green lid, earth below.
+        // A grass block seen at an angle: green lid, dirt body, a dark seam.
         LauncherPage::Play => {
-            fill(draw, [x, y], [x + s, y + s * 0.38], ACCENT_HOVER, 1.0, 1.0);
-            fill(draw, [x, y + s * 0.38], [x + s, y + s], 0x6b4a2f, 1.0, 1.0);
+            block(1.0, 2.0, 14.0, 5.0, 0x5bbf4a);
+            block(1.0, 2.0, 14.0, 1.5, 0x74d95f);
+            block(1.0, 7.0, 14.0, 7.0, 0x7a5433);
+            block(2.0, 9.0, 3.0, 2.0, 0x63421f);
+            block(9.0, 11.0, 4.0, 2.0, 0x63421f);
+            block(5.0, 8.0, 2.0, 1.5, 0x8c6440);
         }
-        // Three stacked crates.
+        // Three stacked crates with a lid on each.
         LauncherPage::Installations => {
             for i in 0..3 {
-                let h = s * 0.26;
-                fill(draw, [x, y + i as f32 * (h + 2.0)], [x + s, y + i as f32 * (h + 2.0) + h], tone, 1.0, 1.0);
+                let top = 1.0 + i as f32 * 5.0;
+                block(2.0, top, 12.0, 4.0, 0x9a6a3a);
+                block(2.0, top, 12.0, 1.2, 0xc08b52);
+                block(7.0, top, 2.0, 4.0, 0x6f4824);
             }
         }
-        // A head and shoulders.
+        // A player head: hair, skin, eyes, mouth.
         LauncherPage::Skins => {
-            fill(draw, [x + half - s * 0.28, y], [x + half + s * 0.28, y + s * 0.55], 0xc79a72, 1.0, 1.0);
-            fill(draw, [x, y + s * 0.62], [x + s, y + s], 0x4a8ea8, 1.0, 1.0);
+            block(3.0, 2.0, 10.0, 11.0, 0xc79a72);
+            block(3.0, 2.0, 10.0, 3.0, 0x4a3423);
+            block(5.0, 6.0, 2.0, 2.0, 0x2b2b30);
+            block(9.0, 6.0, 2.0, 2.0, 0x2b2b30);
+            block(6.0, 10.0, 4.0, 1.2, 0x8a5a44);
         }
-        // A page with a turned corner.
+        // A page with ruled lines and a turned corner.
         LauncherPage::PatchNotes => {
-            fill(draw, [x + 2.0, y], [x + s - 2.0, y + s], 0xd8d2c4, 1.0, 1.0);
-            fill(draw, [x + s - 8.0, y], [x + s - 2.0, y + 6.0], c.muted, 1.0, 0.0);
-            for i in 0..3 {
-                let ly = y + s * 0.35 + i as f32 * s * 0.2;
-                fill(draw, [x + 6.0, ly], [x + s - 6.0, ly + 1.5], 0x6b6558, 1.0, 0.0);
-            }
+            block(3.0, 1.0, 10.0, 14.0, 0xd9d3c6);
+            block(10.0, 1.0, 3.0, 3.0, 0x9c968a);
+            block(5.0, 6.0, 6.0, 1.0, 0x6d6759);
+            block(5.0, 8.5, 6.0, 1.0, 0x6d6759);
+            block(5.0, 11.0, 4.0, 1.0, 0x6d6759);
         }
         // A folded newspaper.
         LauncherPage::News => {
-            fill(draw, [x, y + 2.0], [x + s, y + s - 2.0], 0xcfc9bb, 1.0, 1.0);
-            fill(draw, [x + 3.0, y + 5.0], [x + half - 1.0, y + s * 0.5], 0x8c8578, 1.0, 0.0);
-            fill(draw, [x + 3.0, y + s * 0.6], [x + s - 3.0, y + s * 0.6 + 1.5], 0x8c8578, 1.0, 0.0);
+            block(1.0, 3.0, 14.0, 10.0, 0xd9d3c6);
+            block(3.0, 5.0, 5.0, 4.0, 0x8c8578);
+            block(9.0, 5.0, 4.0, 1.0, 0x8c8578);
+            block(9.0, 7.0, 4.0, 1.0, 0x8c8578);
+            block(9.0, 9.0, 4.0, 1.0, 0x8c8578);
+            block(3.0, 11.0, 10.0, 1.0, 0x8c8578);
         }
-        // A pickaxe.
+        // A pickaxe: handle and head.
         LauncherPage::Mods => {
-            fill(draw, [x + half - 1.5, y + s * 0.3], [x + half + 1.5, y + s], 0x8a6a45, 1.0, 0.0);
-            fill(draw, [x + s * 0.1, y + s * 0.18], [x + s * 0.9, y + s * 0.34], tone, 1.0, 1.0);
+            block(7.0, 5.0, 2.0, 10.0, 0x8a6a45);
+            block(2.0, 2.0, 12.0, 2.0, 0x9aa0a8);
+            block(2.0, 2.0, 2.0, 5.0, 0x9aa0a8);
+            block(12.0, 2.0, 2.0, 5.0, 0x9aa0a8);
         }
-        // A player head.
+        // A player head, the same one the account uses.
         LauncherPage::Profile => {
-            fill(draw, [x + 2.0, y + 2.0], [x + s - 2.0, y + s - 2.0], 0xc79a72, 1.0, 1.0);
-            fill(draw, [x + s * 0.24, y + s * 0.36], [x + s * 0.4, y + s * 0.5], 0x2a2a2e, 1.0, 0.0);
-            fill(draw, [x + s * 0.6, y + s * 0.36], [x + s * 0.76, y + s * 0.5], 0x2a2a2e, 1.0, 0.0);
+            block(2.0, 2.0, 12.0, 12.0, 0xc79a72);
+            block(2.0, 2.0, 12.0, 3.0, 0x4a3423);
+            block(4.5, 6.5, 2.0, 2.0, 0x2b2b30);
+            block(9.5, 6.5, 2.0, 2.0, 0x2b2b30);
+            block(6.0, 10.0, 4.0, 1.2, 0x8a5a44);
         }
         LauncherPage::Settings => {
-            fill(draw, [x, y + s * 0.2], [x + s, y + s * 0.8], tone, 1.0, 1.0);
+            block(2.0, 6.0, 12.0, 4.0, 0x9aa0a8);
+            block(6.0, 3.0, 4.0, 10.0, 0x9aa0a8);
         }
     }
 }
@@ -883,6 +925,31 @@ fn play_page(
     sink: &mut Sink<'_>,
 ) {
     let playable = model.playable && !model.instance.is_empty();
+    {
+        let draw = ui.get_window_draw_list();
+        // The wordmark sits over the panorama's own art, in the middle of the page and
+        // above the scrim, which is where the reference puts it: it is the one element
+        // that says what the page is, and it needs the least competition.
+        {
+            let _f = ui.push_font(fonts.title);
+            let [tw, th] = ui.calc_text_size("MINECRAFT");
+            let cx = g.x + (g.w - tw) / 2.0;
+            let cy = height * 0.16 + rise;
+            // A drop shadow first, offset down, so the letters read over a bright sky.
+            draw.add_text([cx + 3.0 * dpi, cy + 4.0 * dpi], rgba(0x000000, 0.55), "MINECRAFT");
+            draw.add_text([cx, cy], rgba(0xffffff, 1.0), "MINECRAFT");
+            {
+                let _g = ui.push_font(fonts.small);
+                let sub = "JAVA EDITION";
+                let [sw, _] = ui.calc_text_size(sub);
+                draw.add_text(
+                    [g.x + (g.w - sw) / 2.0, cy + th + 4.0 * dpi],
+                    rgba(0xd8d8d8, 0.95),
+                    sub,
+                );
+            }
+        }
+    }
     {
         let draw = ui.get_window_draw_list();
         // Over the panorama this is a scrim: the art stays visible at the top where the
@@ -926,77 +993,86 @@ fn play_page(
         }
     }
 
-    // Top right: the two things a player reaches for besides Play.
-    let bw = 132.0 * dpi;
-    let bh = 40.0 * dpi;
-    let by = 18.0 * dpi + rise;
+    // Top right: the two things a player reaches for besides Play. They are pinned to
+    // the page's top-right corner in the reference, not to the content column, which
+    // is why they sit above the art rather than beside the title.
+    let bw = 108.0 * dpi;
+    let bh = 32.0 * dpi;
+    let by = 12.0 * dpi + rise;
     let mut bx = g.x + g.w - g.pad - bw;
     if raised_button(ui, fonts, c, dpi, bx, by, bw, bh, "MULTIPLAYER", c.accent, c.accent_lip, c.on_accent) {
         // Servers live in the engine's own multiplayer screen, so this is the one
         // button on the page that hands over to the game.
         sink.push(LauncherEvent::OpenMultiplayer);
     }
-    bx -= bw + 10.0 * dpi;
+    bx -= bw + 8.0 * dpi;
     if raised_button(ui, fonts, c, dpi, bx, by, bw, bh, "FILES", c.button, c.bevel, c.ink) {
         sink.push(LauncherEvent::Goto(LauncherPage::Installations));
     }
 
-    // Bottom left: which installation Play would start.
-    let dw = 300.0 * dpi;
-    let dh = 62.0 * dpi;
+    // Bottom left: which installation Play would start. The reference's card is dark
+    // with the label small and the version large, and a chevron on the right.
+    let dw = DROP_W * dpi;
+    let dh = DROP_H * dpi;
+    let dx = g.x + g.pad;
     let dy = height + rise - g.pad - dh;
     {
         let draw = ui.get_window_draw_list();
-        panel(&draw, c, [g.x + g.pad, dy], [g.x + g.pad + dw, dy + dh], c.panel, 4.0 * dpi);
-        draw.add_text(
-            [g.x + g.pad + 16.0 * dpi, dy + 12.0 * dpi],
-            rgba(c.muted, 1.0),
-            "Latest Release",
-        );
-        let _f = ui.push_font(fonts.pixel);
-        draw.add_text(
-            [g.x + g.pad + 16.0 * dpi, dy + 32.0 * dpi],
-            rgba(c.ink, 1.0),
-            fit(ui, &model.version, dw - 48.0 * dpi),
-        );
+        panel(&draw, c, [dx, dy], [dx + dw, dy + dh], c.panel, 3.0 * dpi);
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [dx + 14.0 * dpi, dy + 11.0 * dpi],
+                rgba(c.muted, 1.0),
+                "Latest Release",
+            );
+        }
+        {
+            let _f = ui.push_font(fonts.pixel);
+            draw.add_text(
+                [dx + 14.0 * dpi, dy + 30.0 * dpi],
+                rgba(c.ink, 1.0),
+                fit(ui, &model.version, dw - 56.0 * dpi),
+            );
+        }
         // A chevron, drawn as two strokes rather than a glyph.
-        let cx = g.x + g.pad + dw - 24.0 * dpi;
+        let cx = dx + dw - 22.0 * dpi;
         let cy = dy + dh / 2.0;
-        draw.add_line([cx - 5.0 * dpi, cy - 2.0 * dpi], [cx, cy + 4.0 * dpi], rgba(c.muted, 1.0))
+        draw.add_line([cx - 4.5 * dpi, cy - 2.0 * dpi], [cx, cy + 3.5 * dpi], rgba(c.muted, 1.0))
             .thickness(2.0)
             .build();
-        draw.add_line([cx, cy + 4.0 * dpi], [cx + 5.0 * dpi, cy - 2.0 * dpi], rgba(c.muted, 1.0))
+        draw.add_line([cx, cy + 3.5 * dpi], [cx + 4.5 * dpi, cy - 2.0 * dpi], rgba(c.muted, 1.0))
             .thickness(2.0)
             .build();
     }
-    ui.set_cursor_screen_pos([g.x + g.pad, dy]);
+    ui.set_cursor_screen_pos([dx, dy]);
     if ui.invisible_button("##version", [dw, dh]) {
         sink.push(LauncherEvent::Goto(LauncherPage::Installations));
     }
 
     // The status line and the download bar sit above the button, where a player
     // looking at Play cannot miss them.
-    let btn_w = 360.0 * dpi;
-    let btn_h = 62.0 * dpi;
+    let btn_w = PLAY_W * dpi;
+    let btn_h = PLAY_H * dpi;
     let btn_y = height + rise - g.pad - btn_h;
     let btn_x = g.right(btn_w);
     if !model.status.is_empty() || model.progress.is_some() {
-        let text_w = (btn_x - g.x - g.pad * 2.0).max(0.0);
+        let text_w = (btn_x - dx - dw - g.pad * 2.0).max(120.0 * dpi);
         let draw = ui.get_window_draw_list();
         if !model.status.is_empty() {
             draw.add_text(
-                [g.x + g.pad, btn_y - 26.0 * dpi],
+                [dx, btn_y - 24.0 * dpi],
                 rgba(c.ink_soft, 1.0),
                 fit(ui, &model.status, text_w),
             );
         }
         if let Some(p) = model.progress {
             let p = p.clamp(0.0, 1.0);
-            let (l, r) = (g.x + g.pad, g.x + g.pad + text_w.min(360.0 * dpi));
-            let t = btn_y - 10.0 * dpi;
-            fill(&draw, [l, t], [r, t + 5.0 * dpi], c.well, 1.0, 2.0 * dpi);
+            let (l, r) = (dx, dx + text_w.min(420.0 * dpi));
+            let t = btn_y - 8.0 * dpi;
+            fill(&draw, [l, t], [r, t + 4.0 * dpi], c.well, 1.0, 2.0 * dpi);
             if p > 0.0 {
-                fill(&draw, [l, t], [l + (r - l) * p, t + 5.0 * dpi], c.accent, 1.0, 2.0 * dpi);
+                fill(&draw, [l, t], [l + (r - l) * p, t + 4.0 * dpi], c.accent, 1.0, 2.0 * dpi);
             }
         }
     }
@@ -1535,27 +1611,102 @@ fn stories_page(
 
 fn mods_page(
     ui: &Ui,
+    model: &LauncherModel,
     fonts: &Fonts,
     c: &Css,
     dpi: f32,
     g: &Grid,
     height: f32,
     rise: f32,
+    sink: &mut Sink<'_>,
 ) {
-    let y = heading(ui, fonts, c, dpi, g, "MODS", rise);
-    let body = "Horizon's component mods need a runtime this build does not carry yet: \
-                Android forbids the executable memory a JIT needs. Modpacks ported to 26.3 \
-                run as resource and data packs instead, and those load normally.";
-    let lines = wrap(ui, body, g.w - 2.0 * g.pad - 36.0 * dpi);
-    let h = (lines.len() as f32 * 20.0 * dpi + 60.0 * dpi).min(height + rise - y - g.pad);
-    let draw = ui.get_window_draw_list();
-    panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + h], c.panel, 4.0 * dpi);
-    for (i, line) in lines.iter().enumerate() {
-        let ly = y + 22.0 * dpi + i as f32 * 20.0 * dpi;
-        if ly > y + h - 14.0 * dpi {
+    let mut y = heading(ui, fonts, c, dpi, g, "MODS", rise);
+    // The registry's own site, and a way to fetch it again: the list is a snapshot of
+    // what the registry said when the page opened, and a mod published since then is
+    // only visible after a refresh.
+    let bw = 150.0 * dpi;
+    let bh = 36.0 * dpi;
+    let mut bx = g.x + g.pad;
+    if raised_button(ui, fonts, c, dpi, bx, y - 10.0 * dpi, bw, bh, "Refresh", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::RefreshMods);
+    }
+    bx += bw + 8.0 * dpi;
+    if raised_button(ui, fonts, c, dpi, bx, y - 10.0 * dpi, bw + 40.0 * dpi, bh, "Browse the site", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::OpenModsSite);
+    }
+    if !model.status.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text(
+            [bx + bw + 56.0 * dpi, y - 2.0 * dpi],
+            rgba(if model.status.starts_with("Could not") { c.danger } else { c.muted }, 1.0),
+            fit(ui, &model.status, g.x + g.w - g.pad - bx - bw - 64.0 * dpi),
+        );
+    }
+    y += 40.0 * dpi;
+
+    if model.mods.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let line = "No mods to show. Refresh to ask the registry again.";
+        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), line);
+        return;
+    }
+    let row_h = 64.0 * dpi;
+    for m in &model.mods {
+        if y + row_h > height + rise {
             break;
         }
-        draw.add_text([g.x + g.pad + 18.0 * dpi, ly], rgba(c.ink_soft, 1.0), line.as_str());
+        let x = g.x + g.pad;
+        let w = g.w - 2.0 * g.pad;
+        let installed = model.installed_mods.iter().any(|name| name == &m.file);
+        // Scoped: `raised_button` asks for its own draw list at the end of the row.
+        {
+            let draw = ui.get_window_draw_list();
+            panel(&draw, c, [x, y], [x + w, y + row_h], c.panel, 3.0 * dpi);
+            // A block, not a downloaded icon: it cannot be a broken image, and it reads
+            // as the same family as the navigation's marks.
+            fill(&draw, [x + 14.0 * dpi, y + 14.0 * dpi], [x + 50.0 * dpi, y + row_h - 14.0 * dpi], c.well, 1.0, 2.0 * dpi);
+            fill(&draw, [x + 20.0 * dpi, y + 22.0 * dpi], [x + 44.0 * dpi, y + 30.0 * dpi], c.accent, 1.0, 1.0);
+            fill(&draw, [x + 20.0 * dpi, y + 34.0 * dpi], [x + 38.0 * dpi, y + 40.0 * dpi], c.bevel, 1.0, 1.0);
+        }
+        let text_x = x + 62.0 * dpi;
+        let btn_w = 104.0 * dpi;
+        let text_w = (x + w - 16.0 * dpi - btn_w - 12.0 * dpi - text_x).max(0.0);
+        {
+            let draw = ui.get_window_draw_list();
+            let _f = ui.push_font(fonts.pixel);
+            draw.add_text([text_x, y + 12.0 * dpi], rgba(c.ink, 1.0), fit(ui, &m.name, text_w));
+        }
+        {
+            let draw = ui.get_window_draw_list();
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [text_x, y + 34.0 * dpi],
+                rgba(c.muted, 1.0),
+                fit(ui, &format!("{} · {}", m.version, m.summary), text_w),
+            );
+        }
+        let label = if installed { "Installed" } else { "Install" };
+        let face = if installed { c.button } else { c.accent };
+        let ink = if installed { c.muted } else { c.on_accent };
+        if raised_button(
+            ui,
+            fonts,
+            c,
+            dpi,
+            x + w - 16.0 * dpi - btn_w,
+            y + (row_h - 34.0 * dpi) / 2.0,
+            btn_w,
+            34.0 * dpi,
+            label,
+            face,
+            c.bevel,
+            ink,
+        ) && !installed
+        {
+            sink.push(LauncherEvent::InstallMod(m.id.clone()));
+        }
+        y += row_h + 8.0 * dpi;
     }
 }
 

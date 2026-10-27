@@ -205,16 +205,18 @@ jobs:
 
       - name: Check the engine for aarch64-linux-android
         run: |
-          # No default features: `controllers` is evdev/libudev and GameInput, and
-          # `mods` is wasmtime, which is both a quarter of the build and W^X-hostile
-          # on Android. Both come later, if they come at all.
+          # No default features: `controllers` is evdev/libudev and GameInput, which a
+          # phone has neither of. `mods` is on, and it is the interpreter-only feature
+          # (`horizon-client/mods`): wasmtime's Pulley runs the components without
+          # generating any code, which is the only form Android's W^X rule allows. The
+          # JIT lives behind `mods-jit` and is desktop-only.
           #
           # The status is captured, not inferred from the log. It used to run under
           # `set +e` and pass or fail on `grep error:`, so a cargo that died of an OOM
           # kill or a missing target printed no `error:` line and the job went green.
           set +e
           cargo check --target "$CARGO_TARGET" --profile fast \
-            -p horizon-client --no-default-features --features audio \
+            -p horizon-client --no-default-features --features audio,mods \
             --message-format=short > /tmp/engine.log 2>&1
           status=$?
           set -e

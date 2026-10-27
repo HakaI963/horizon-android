@@ -99,7 +99,12 @@ audio = ["dep:cpal"]
 controllers = ["dep:gilrs", "dep:horizon-dualsense"]
 # Runs code mods (wasmtime and cranelift: a quarter of a clean build). On in every release build
 # (release.yml); the tests and probes don't need it. Content mods load without it.
+#
+# `mods` is the interpreter only, which is what a phone build uses: Android refuses to make
+# memory executable, so Cranelift cannot run there, and wasmtime's Pulley interpreter needs no
+# code generation at all. `mods-jit` adds the compiler back for desktop, where it is faster.
 mods = ["horizon-mods/runtime"]
+mods-jit = ["horizon-mods/runtime", "horizon-mods/jit"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 

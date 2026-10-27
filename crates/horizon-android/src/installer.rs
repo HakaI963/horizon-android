@@ -419,9 +419,7 @@ impl SoundObject {
 /// how far along it is.
 fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<usize, String> {
     let target = paths::resources_dir(app);
-    if target.join(".sounds-complete").is_file() {
-        return Ok(0);
-    }
+    let sounds_done = target.join(".sounds-complete").is_file();
     let manifest = seed_manifest()?;
     // This agent fetches the index, which is one file. The objects below get an
     // agent each, built by their own worker.
@@ -435,13 +433,17 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
         .and_then(Value::as_str)
         .ok_or("the version JSON's assetIndex has no url")?;
     let index = get_json(&agent, url)?;
-    // The title's cube map is seven more objects from the same index, and the JAR's
-    // copies are placeholders. Fetching them here means the menu has real art on the
-    // next open, and costs one request each.
+    // The title's cube map is seven objects from the same index, and the JAR's copies
+    // are placeholders. This runs before the sounds' own "already done" check on
+    // purpose: a pack whose sounds finished on an earlier launch still has a blank
+    // title until these land, and the marker says nothing about them.
     match fill_panorama(&agent, &target, &index) {
         Ok(0) => {}
         Ok(faces) => log::info!("minecraft: {faces} title panorama faces ready"),
         Err(error) => log::warn!("minecraft: title panorama not fetched: {error}"),
+    }
+    if sounds_done {
+        return Ok(0);
     }
     let objects = index
         .get("objects")
@@ -880,6 +882,20 @@ pub fn fail_dialog(message: &str) {
         "report",
         Some(message),
     );
+}
+
+/// Open an `https://` address in the phone's browser.
+///
+/// The launcher links to its own site, and a `NativeActivity` has no browser of its
+/// own: the activity's `ACTION_VIEW` intent is the way out of the app. Only `https` is
+/// accepted here as well as in Java, so a link that came from anywhere else cannot
+/// start a scheme the phone would rather it did not.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err(format!("refusing to open {url:?}"));
+    }
+    dialog(jni_str!("horizonOpenUrl"), "open", Some(url));
+    Ok(())
 }
 
 fn dialog(name: &'static JNIStr, what: &str, message: Option<&str>) {
