@@ -13304,6 +13304,14 @@ impl ApplicationHandler for App {
                 if loading.window.is_none() {
                     return;
                 }
+                // The launcher is the front page, and the game has no host for it: once
+                // the screen is handed over the model stops being fed and the clicks
+                // stop being read, which leaves a launcher that draws but answers to
+                // nothing. A finished load waits here until the player leaves.
+                #[cfg(target_os = "android")]
+                if loading.menu.launcher_up() {
+                    return;
+                }
                 match if loading.menu.reload_packs {
                     None
                 } else {

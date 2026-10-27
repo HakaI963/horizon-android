@@ -61,6 +61,13 @@ impl StartupMenu {
             ..Default::default()
         };
         menu.root = options.resources.clone();
+        // From the first frame, not only once the artwork arrives: the finished load
+        // asks whether the launcher is still up, and an answer of "not yet" would let
+        // the game take the screen out from under it.
+        #[cfg(target_os = "android")]
+        {
+            menu.launcher_page = Some(LauncherPage::Play);
+        }
         if let Some(error) = pack_error {
             menu.options.open_at(false, Page::Packs);
             menu.options.resource_error = Some(error.to_owned());
@@ -95,8 +102,14 @@ impl StartupMenu {
         }
     }
 
-    pub(super) fn handoff(&mut self, game: &mut Game<'_>) {
-        game.title = self.title.take();
+    /// Whether the launcher's front page is still on the screen. The engine may finish
+    /// loading behind it — it just must not take the screen over until the player leaves.
+    #[cfg(target_os = "android")]
+    pub(super) fn launcher_up(&self) -> bool {
+        self.launcher_page.is_some()
+    }
+
+    pub(super) fn handoff(&mut self, game: &mut Game<'_>) {        game.title = self.title.take();
         game.pending_entry = self.pending.take();
         game.cursor = self.cursor;
         game.modifiers = self.modifiers;
