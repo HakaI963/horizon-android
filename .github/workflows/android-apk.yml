@@ -85,6 +85,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `audio` links ALSA and `controllers` links udev on Linux; both are dev
+      # packages, and the runner has neither. AGENTS.md says so for a desktop build.
+      - name: Install the Linux audio and device libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
       - name: Install the pinned Rust toolchain
         run: |
           set -euo pipefail
@@ -321,7 +329,9 @@ jobs:
           if-no-files-found: ignore
 
   apk:
-    name: arm64-v8a (${{ inputs.cargo_profile || github.event.inputs.cargo_profile || 'fast' }})
+    # A static name: `inputs` is empty on a push, and an expression that reads it
+    # renders as literal `${{ … }}` in the checks list instead of a job name.
+    name: arm64-v8a
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # The APK is only worth building for a tree that checks. It used to depend on
