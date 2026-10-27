@@ -5486,6 +5486,34 @@ impl Game<'_> {
     fn inventory_quick_move(&mut self, slot: usize) -> bool {
         self.menu_click(Some(slot), 0, horizon_client::menu::Input::QuickMove)
     }
+    /// What a click on the title's own screen means, in one place: a tap and the
+    /// keyboard's Enter both arrive here, so a form that can be submitted by finger
+    /// can also be submitted by a key.
+    fn title_action(&mut self, event_loop: &ActiveEventLoop, action: Action) -> Result<()> {
+        match action {
+            Action::Quit => event_loop.exit(),
+            Action::Options => self.open_options(true),
+            Action::Accessibility => {
+                self.open_options_at(true, horizon_client::options_ui::Page::Accessibility)
+            }
+            Action::Language => {
+                self.open_options_at(true, horizon_client::options_ui::Page::Language)
+            }
+            Action::Play { folder } => self.open_world(&folder, None, None, false, None)?,
+            Action::Create {
+                folder,
+                name,
+                seed,
+                creative,
+                options,
+            } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
+            Action::Connect { address } => {
+                self.connect_server(&address, &self.options.player_name())?
+            }
+            Action::None => {}
+        }
+        Ok(())
+    }
     /// `AbstractContainerMenu.clicked` on the open inventory, crafting table,
     /// chest, hopper, dispenser or furnace menu, run by the verified menu
     /// engine (`horizon_client::menu`). `slot` None is outside the window.
@@ -11093,31 +11121,7 @@ impl ApplicationHandler for Game<'_> {
                     if sound {
                         self.audio.play_button_click();
                     }
-                    match action {
-                        Action::Quit => event_loop.exit(),
-                        Action::Options => self.open_options(true),
-                        Action::Accessibility => self
-                            .open_options_at(true, horizon_client::options_ui::Page::Accessibility),
-                        Action::Language => {
-                            self.open_options_at(true, horizon_client::options_ui::Page::Language)
-                        }
-                        Action::Play { folder } => {
-                            self.open_world(&folder, None, None, false, None)?
-                        }
-                        Action::Create {
-                            folder,
-                            name,
-                            seed,
-                            creative,
-                            options,
-                        } => {
-                            self.open_world(&folder, Some(&name), seed, creative, Some(&options))?
-                        }
-                        Action::Connect { address } => {
-                            self.connect_server(&address, &self.options.player_name())?
-                        }
-                        Action::None => {}
-                    }
+                    self.title_action(event_loop, action)?;
                 }
                 WindowEvent::MouseInput { .. } if self.title.is_some() => {}
                 WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
@@ -11352,9 +11356,11 @@ impl ApplicationHandler for Game<'_> {
                         }
                         match event.physical_key {
                             PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                                if let Some(t) = self.title.as_mut() {
-                                    t.confirm_edit();
-                                }
+                                let action = self
+                                    .title
+                                    .as_mut()
+                                    .map_or(Action::None, |t| t.confirm_edit());
+                                self.title_action(event_loop, action)?;
                             }
                             PhysicalKey::Code(
                                 key @ (KeyCode::Backspace

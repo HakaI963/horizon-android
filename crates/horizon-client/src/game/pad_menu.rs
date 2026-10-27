@@ -23,6 +23,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     options_ui::{Event, Page},
     osk::{self, Keyboard},
+    title::Action,
     widgets::{self, Kind, Target},
 };
 use std::time::Instant;
@@ -950,8 +951,30 @@ impl Game<'_> {
         } else if self.title.is_some() {
             match key {
                 Some(KeyCode::Enter) => {
-                    if let Some(t) = self.title.as_mut() {
-                        t.confirm_edit();
+                    // The pad's keyboard covers the same buttons the phone's does, so
+                    // its Enter submits the form rather than only leaving it.
+                    let action = self.title.as_mut().map_or(Action::None, |t| t.confirm_edit());
+                    match action {
+                        Action::Create {
+                            folder,
+                            name,
+                            seed,
+                            creative,
+                            options,
+                        } => {
+                            if let Err(error) =
+                                self.open_world(&folder, Some(&name), seed, creative, Some(&options))
+                            {
+                                log::warn!("Horizon: on-screen keyboard: {error}");
+                            }
+                        }
+                        Action::Connect { address } => {
+                            let name = self.options.player_name();
+                            if let Err(error) = self.connect_server(&address, &name) {
+                                log::warn!("Horizon: on-screen keyboard: {error}");
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Some(KeyCode::Backspace) => self.title_edit(None, true),

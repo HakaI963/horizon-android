@@ -63,6 +63,46 @@ pub fn installed(resources: &Path) -> bool {
     .all(|name| resources.join(name).is_file())
 }
 
+/// A retry of the install running on its own thread.
+///
+/// `install` downloads and unpacks for a minute or more, and the retry used to run it
+/// inside `RedrawRequested`: no frame was presented and no event processed until it
+/// returned, which on Android is the shape of an ANR. The work is the same; only the
+/// thread it runs on changes. The Java dialog is still the progress surface, and it
+/// is called from this thread through `attach_current_thread`, which is safe.
+pub struct InstallJob {
+    done: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+impl InstallJob {
+    /// The result, once. `None` while the install is still running.
+    pub fn poll(&mut self) -> Option<Result<(), String>> {
+        match self.done.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            // The thread is gone without sending: the process is in a state where
+            // nothing can be drawn anyway, so this is not a second error to report.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("the install thread stopped".into()))
+            }
+        }
+    }
+}
+
+/// Run [`install`] on a named worker thread. `None` when no thread could be made,
+/// which the caller reports rather than waiting for a result that never comes.
+pub fn spawn_install(app: &winit::platform::android::activity::AndroidApp) -> Option<InstallJob> {
+    let (sender, done) = std::sync::mpsc::channel();
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("horizon-install".into())
+        .spawn(move || {
+            let _ = sender.send(install(&app));
+        })
+        .ok()
+        .map(|_| InstallJob { done })
+}
+
 /// Install the pinned version into the launcher's import folder. The caller shows
 /// the result; this owns the progress dialog and the temporary folder.
 pub fn install(app: &winit::platform::android::activity::AndroidApp) -> Result<(), String> {
@@ -360,18 +400,26 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
     let deadline = Instant::now() + SOUND_BUDGET;
     let mut got = 0usize;
     let mut missing = 0usize;
-    for (name, entry) in objects.iter().filter(|(name, _)| is_sound(name)) {
+    let sounds = objects
+        .iter()
+        .filter(|(name, _)| is_sound(name))
+        .collect::<Vec<_>>();
+    horizon_client::sound_progress::begin(sounds.len() as u32);
+    for (name, entry) in sounds {
         if Instant::now() >= deadline {
+            horizon_client::sound_progress::stop();
             return Err("reached the time budget".into());
         }
         let hash = entry.get("hash").and_then(Value::as_str).unwrap_or("");
         let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
         let Some(relative) = safe_relative(name) else {
             missing += 1;
+            horizon_client::sound_progress::step();
             continue;
         };
         let destination = target.join("assets").join(&relative);
         if destination.is_file() && destination.metadata().is_ok_and(|meta| size == 0 || meta.len() == size) {
+            horizon_client::sound_progress::step();
             continue;
         }
         match fetch_object(&agent, hash, &destination) {
@@ -381,11 +429,14 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
                 log::debug!("minecraft: {name}: {error}");
             }
         }
+        horizon_client::sound_progress::step();
     }
     if missing == 0 {
         let _ = fs::write(target.join(".sounds-complete"), b"");
+        horizon_client::sound_progress::complete();
         Ok(got)
     } else {
+        horizon_client::sound_progress::stop();
         Err(format!("{missing} sound files still missing"))
     }
 }

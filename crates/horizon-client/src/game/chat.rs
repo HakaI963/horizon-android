@@ -592,6 +592,14 @@ impl Game<'_> {
             );
         }
     }
+    /// Whether the chat box holds nothing, or only the `/` the command button put
+    /// there. Selecting either is pointless and selecting the slash is destructive.
+    fn chat_is_blank_or_command(&self) -> bool {
+        self.ui
+            .chat_screen
+            .as_ref()
+            .is_none_or(|screen| matches!(screen.input.value.as_str(), "" | "/"))
+    }
     /// ChatScreen.handleChatInput: history, then a command or a chat line.
     pub(super) fn handle_chat_input(&mut self, message: &str) {
         self.ui.chat.add_recent(message);

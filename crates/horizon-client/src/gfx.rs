@@ -901,7 +901,7 @@ impl Renderer {
 /// gets no command line and the engine's working directory is one instance's saves,
 /// not the place a player can drop a file from a file manager.
 #[cfg(target_os = "android")]
-fn controls_path() -> std::path::PathBuf {
+pub(crate) fn controls_path() -> std::path::PathBuf {
     std::env::var_os("HORIZON_CONTROLS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -910,6 +910,28 @@ fn controls_path() -> std::path::PathBuf {
                 .join("controls.json")
         })
 }
+
+/// The folder a file manager on the phone can reach, which is where a settings
+/// archive and a skin are dropped. The layout sits in it, so it is derived from that
+/// rather than given a second environment variable. On a desktop there is no such
+/// folder, and a sibling of the working directory is the same idea.
+pub fn import_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(dir) = controls_path().parent() {
+            return dir.to_path_buf();
+        }
+    }
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("import")
+}
+
+/// The folder the Skins page lists: `import/skins`, where a player drops a PNG.
+pub fn skins_dir() -> std::path::PathBuf {
+    import_dir().join("skins")
+}
+
 impl Renderer {
     pub async fn new(
         window: Arc<Window>,

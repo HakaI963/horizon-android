@@ -22,6 +22,14 @@ pub(super) struct StartupMenu {
     /// What the phone's keyboard has given the launcher's name field so far.
     #[cfg(target_os = "android")]
     launcher_draft: String,
+    /// The world list the launcher draws, read once instead of every frame: each
+    /// entry costs a `level.dat` read and an NBT parse, and the launcher redraws at
+    /// the phone's refresh rate for as long as it is up.
+    #[cfg(target_os = "android")]
+    launcher_worlds: Option<Vec<horizon_client::title::WorldEntry>>,
+    /// What the last export or import said, shown under the settings page.
+    #[cfg(target_os = "android")]
+    launcher_notice: Option<String>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -94,12 +102,9 @@ impl StartupMenu {
             title.last_server = settings.file.string("lastServer");
             self.title = Some(title);
         }
-        // A phone opens on the launcher's front page; the desktop boots straight
-        // to the title. The launcher is drawn in imgui, not the title's own quads.
-        #[cfg(target_os = "android")]
-        {
-            self.launcher_page = Some(LauncherPage::Play);
-        }
+        // The front page is armed once, in `new`. This runs again for every reload
+        // (a resource pack changed from Options, the atlas rebuilt), and re-arming it
+        // here walked the player back onto the launcher from wherever they had got to.
     }
 
     /// Whether the launcher's front page is still on the screen. The engine may finish
@@ -109,7 +114,8 @@ impl StartupMenu {
         self.launcher_page.is_some()
     }
 
-    pub(super) fn handoff(&mut self, game: &mut Game<'_>) {        game.title = self.title.take();
+    pub(super) fn handoff(&mut self, game: &mut Game<'_>) {
+        game.title = self.title.take();
         game.pending_entry = self.pending.take();
         game.cursor = self.cursor;
         game.modifiers = self.modifiers;
@@ -175,9 +181,13 @@ impl StartupMenu {
         )
     }
 
-    fn title_key(&mut self, event: &KeyEvent) {
+    /// The title's own keys. Returns the action an Enter submits, so the caller can
+    /// carry it out exactly as a click would: `title_key` has no event loop of its own.
+    fn title_key(&mut self, event: &KeyEvent) -> Option<Action> {
         let shortcut = self.shortcut(event);
-        let Some(title) = &mut self.title else { return };
+        let Some(title) = &mut self.title else {
+            return None;
+        };
         if let Some(shortcut) = shortcut {
             if title.has_caret_field() {
                 title.field_shortcut(shortcut, &mut self.clipboard);
@@ -190,12 +200,17 @@ impl StartupMenu {
             {
                 title.search_changed();
             }
-            return;
+            return None;
         }
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => title.confirm_edit(),
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                let action = title.confirm_edit();
+                if !matches!(action, Action::None) {
+                    return Some(action);
+                }
+            }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
                 | KeyCode::Delete
@@ -227,6 +242,7 @@ impl StartupMenu {
                 }
             }
         }
+        None
     }
 
     /// Whether a text field has the focus, which on a phone is the only reason the
@@ -517,7 +533,18 @@ impl Loading {
             .as_ref()
             .map(|t| t.saves.clone())
             .unwrap_or_default();
-        let worlds = horizon_client::title::list_worlds(&saves);
+        // Listing a world reads and NBT-parses its `level.dat`, and this runs on every
+        // frame the launcher is up — sixty times a second for a list that only changes
+        // when a world is made or opened. The cache is rebuilt on the pages that show
+        // it, not on every page.
+        let needs_worlds = matches!(page, LauncherPage::Play | LauncherPage::Instances);
+        if needs_worlds && self.menu.launcher_worlds.is_none() {
+            self.menu.launcher_worlds = Some(horizon_client::title::list_worlds(&saves));
+        }
+        let worlds = self.menu.launcher_worlds.clone().unwrap_or_default();
+        // The sound pack fills in on its own thread and has no way to reach this one,
+        // so it leaves a counter behind for the card to read.
+        let sounds = horizon_client::sound_progress::snapshot();
         let version = horizon_core::VANILLA_VERSION.to_string();
         let account = self
             .options
@@ -542,6 +569,10 @@ impl Loading {
                 // after a world would promise the button starts that world, and Play
                 // opens the game's own menu.
                 model.instance = "Default".into();
+                if let Some((line, fraction)) = sounds {
+                    model.status = line;
+                    model.progress = Some(fraction);
+                }
                 model.rows = worlds
                     .iter()
                     .enumerate()
@@ -587,6 +618,12 @@ impl Loading {
                     },
                 ];
             }
+            LauncherPage::Settings => {
+                // The export/import result belongs where the buttons are.
+                if let Some(notice) = self.menu.launcher_notice.clone() {
+                    model.status = notice;
+                }
+            }
             _ => {}
         }
         let _ = horizon_overlay::with(|o| o.set_launcher_model(model));
@@ -607,7 +644,14 @@ impl Loading {
         for event in events {
             log::info!("launcher: {event:?}");
             match event {
-                LauncherEvent::Goto(page) => self.menu.launcher_page = Some(page),
+                LauncherEvent::Goto(page) => {
+                    self.menu.launcher_page = Some(page);
+                    // A page that lists worlds re-reads them: a world may have been
+                    // made, renamed or deleted since the list was last built.
+                    if matches!(page, LauncherPage::Play | LauncherPage::Instances) {
+                        self.menu.launcher_worlds = None;
+                    }
+                }
                 LauncherEvent::Play => {
                     self.menu.launcher_page = None;
                     if let Some(title) = &mut self.menu.title {
@@ -622,9 +666,14 @@ impl Loading {
                         .as_ref()
                         .map(|t| t.saves.clone())
                         .unwrap_or_default();
-                    if let Some(world) =
-                        horizon_client::title::list_worlds(&saves).into_iter().nth(id as usize)
-                    {
+                    // The list this id came from is the cached one; a miss means the
+                    // cache was cleared under the tap, so re-read rather than drop it.
+                    let worlds = self
+                        .menu
+                        .launcher_worlds
+                        .clone()
+                        .unwrap_or_else(|| horizon_client::title::list_worlds(&saves));
+                    if let Some(world) = worlds.into_iter().nth(id as usize) {
                         let name = self
                             .options
                             .as_ref()
@@ -632,9 +681,54 @@ impl Loading {
                         self.menu.queue_entry(Action::Play { folder: world.folder }, name);
                     }
                 }
-                LauncherEvent::OpenSettings | LauncherEvent::OpenSkins => {
+                LauncherEvent::OpenSettings => {
                     self.menu.launcher_page = None;
                     self.menu_action(event_loop, Action::Options);
+                }
+                // The Skins page's button promises a skin picker, so it opens one. It
+                // used to fall into the Options arm and land on the main options page,
+                // which is not a picker and never mentions skins.
+                LauncherEvent::OpenSkins => {
+                    self.menu.launcher_page = None;
+                    self.open_menu_options(Page::Skins);
+                }
+                // The Instances page lists what exists and offers a new one. Until
+                // instances are real (M1b) the honest answer is to say so, not to
+                // swallow the tap: the page's only two controls used to do nothing.
+                LauncherEvent::SelectRow(_) | LauncherEvent::NewInstance => {
+                    log::info!("launcher: instances are not separate yet; staying on Default");
+                }
+                // Only reachable on the bring-up card, which has its own handler.
+                LauncherEvent::Install | LauncherEvent::Restart => {}
+                // Settings travel as one archive in the folder a file manager can
+                // reach: the export writes it there, the import takes the newest one.
+                LauncherEvent::ExportSettings => {
+                    let import = horizon_client::gfx::import_dir();
+                    let home = std::env::current_dir().unwrap_or_default();
+                    self.menu.launcher_notice =
+                        Some(match horizon_client::settings_archive::export(&home, &import) {
+                            Ok(path) => format!("Saved to {}", path.display()),
+                            Err(error) => format!("Export failed: {error}"),
+                        });
+                }
+                LauncherEvent::ImportSettings => {
+                    let import = horizon_client::gfx::import_dir();
+                    let home = std::env::current_dir().unwrap_or_default();
+                    self.menu.launcher_notice =
+                        Some(match horizon_client::settings_archive::newest(&import) {
+                            None => "No archive in import/ to import".to_string(),
+                            Some(archive) => {
+                                match horizon_client::settings_archive::import(
+                                    &archive, &home, &import,
+                                ) {
+                                    // The running game read its options at start, so
+                                    // the honest instruction is to restart: applying
+                                    // half of them now would show a mix of old and new.
+                                    Ok(count) => format!("Imported {count} files. Restart to apply."),
+                                    Err(error) => format!("Import failed: {error}"),
+                                }
+                            }
+                        });
                 }
                 LauncherEvent::RenameAccount => self.menu.launcher_draft.clear(),
                 LauncherEvent::SetAccount(name) => {
@@ -642,7 +736,6 @@ impl Loading {
                     self.menu.launcher_draft.clear();
                 }
                 LauncherEvent::Quit => event_loop.exit(),
-                _ => {}
             }
         }
     }
@@ -783,7 +876,16 @@ impl Loading {
             title.type_text(&input.text);
         }
         if input.enter {
-            title.confirm_edit();
+            // Only a form's own submit comes back from here, and `menu_ime` has no
+            // event loop of its own: queuing the entry is what a click does too.
+            let action = title.confirm_edit();
+            if !matches!(action, Action::None) {
+                let name = self
+                    .options
+                    .as_ref()
+                    .map_or_else(|| "Player".into(), |o| o.player_name());
+                self.menu.queue_entry(action, name);
+            }
         }
         self.save_menu_address();
     }
@@ -987,7 +1089,9 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    self.menu.title_key(&event);
+                    if let Some(action) = self.menu.title_key(&event) {
+                        self.menu_action(event_loop, action);
+                    }
                     self.save_menu_address();
                 }
             }

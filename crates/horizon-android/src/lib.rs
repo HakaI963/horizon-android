@@ -36,8 +36,11 @@ pub(crate) static APP: std::sync::OnceLock<winit::platform::android::activity::A
 /// Called by `ANativeActivity_onCreate`, on the thread Android made for us.
 ///
 /// `android-activity` declares this side as `extern "Rust"`, so it is written the
-/// way its docs show rather than with a C ABI, and the activity calls it again
-/// when it is destroyed and recreated: everything it needs is idempotent.
+/// way its docs show rather than with a C ABI. It is *not* re-entrant: winit refuses
+/// a second event loop for the life of the process (`EVENT_LOOP_CREATED` is a static
+/// that is never cleared), and Android reuses a cached process when the player opens
+/// the app again. So this exits the process when the loop is spent, which is the only
+/// way the next launch gets a loop of its own.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity::AndroidApp) {
@@ -57,8 +60,11 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     );
     // A panic here would otherwise unwind into the C entry point and abort the
     // process before the hook's log record reached logcat.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| play(&app))) {
-        Ok(()) => log::info!("Horizon for Android stopped"),
+    let code = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| play(&app))) {
+        Ok(()) => {
+            log::info!("Horizon for Android stopped");
+            0
+        }
         Err(panic) => {
             let message = panic
                 .downcast_ref::<String>()
@@ -66,8 +72,14 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
                 .or_else(|| panic.downcast_ref::<&str>().copied())
                 .unwrap_or("no message");
             log::error!("Horizon for Android panicked: {message}");
+            1
         }
-    }
+    };
+    // Returning would leave android-activity finishing the activity in a process that
+    // can never make another loop, so the next launch would close itself on the spot.
+    // Exiting here is what makes "close Horizon and open it again" true.
+    log::logger().flush();
+    std::process::exit(code);
 }
 
 /// Run the game, or what stands in for it until the game can run.

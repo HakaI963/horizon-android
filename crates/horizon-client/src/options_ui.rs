@@ -871,6 +871,8 @@ pub enum Page {
     Extras,
     /// CreditsAndAttributionScreen.
     Credits,
+    /// The player's own skin: an account skin or a PNG from import/skins.
+    Skins,
     /// Horizon Settings: every page Horizon adds, as a mod's settings
     /// screen hangs off vanilla's Options.
     Horizon,
@@ -895,6 +897,8 @@ enum Act {
     OpenModFolder,
     /// Credits & Attribution's Credits button (WinScreen without the poem).
     Credits,
+    /// The Skins page: pick one of the files listed there.
+    PickSkin(usize),
     CopyAgentDetails,
 }
 enum WKind {
@@ -1088,6 +1092,9 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Mods => {
             "Mods made for Horizon, from the horizon-mods folder. Each runs in a sandbox and stays off until you turn it on."
         }
+        Page::Skins => {
+            "A PNG in import/skins, or your account's own skin. A local file wins over the account."
+        }
         _ => return None,
     })
 }
@@ -1198,6 +1205,7 @@ impl OptionsUi {
             Page::PadBinds => "Controller Binds",
             Page::Extras => "Horizon Extras",
             Page::Credits => "credits_and_attribution.screen.title",
+            Page::Skins => "Skins",
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
         }
@@ -1528,6 +1536,30 @@ impl OptionsUi {
                     })
                     .collect()
             }
+            Page::Skins => {
+                if s.skins.is_empty() {
+                    return vec![Row::Header(
+                        "No skins: drop a 64x64 PNG into import/skins",
+                    )];
+                }
+                s.skins
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        // The chosen one is marked with a prefix, not `inactive()`:
+                        // greying it out would also disable the tap that re-selects it.
+                        let label = if s.skin.as_deref() == Some(name.as_str()) {
+                            Text::literal(format!("> {name}"))
+                        } else {
+                            Text::literal(name.clone())
+                        };
+                        Row::Buttons(
+                            button(0.0, 0.0, 310.0, label, Act::PickSkin(i)),
+                            None,
+                        )
+                    })
+                    .collect()
+            }
             _ => {
                 let _ = s;
                 Vec::new()
@@ -1569,7 +1601,7 @@ impl OptionsUi {
                     Act::None,
                 )));
                 let entries = [
-                    ("options.skinCustomisation", None),
+                    ("options.skinCustomisation", Some(Page::Skins)),
                     ("options.sounds", Some(Page::Sound)),
                     ("options.video", Some(Page::Video)),
                     ("options.controls", Some(Page::Controls)),
@@ -2512,6 +2544,12 @@ impl OptionsUi {
                             events.push(Event::Changed);
                         }
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PickSkin(i) => {
+                            if let Some(name) = s.skins.get(i) {
+                                s.skin = Some(name.clone());
+                                events.push(Event::Changed);
+                            }
+                        }
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::None => {}

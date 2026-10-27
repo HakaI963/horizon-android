@@ -197,6 +197,16 @@ impl Overlay {
     /// it. The context and the layout stay, and no finger is holding anything.
     pub fn detach(&mut self) {
         self.renderer = None;
+        // imgui outlives the renderer, so its button has to be let go here too: a
+        // finger that was down when the surface went away sends no lift, and a stale
+        // `MouseDown` makes the first tap after the resume look like a duplicate and
+        // vanish. An up with no press is filtered by imgui, so this is always safe.
+        if self.pointer.down {
+            self.imgui
+                .io_mut()
+                .add_mouse_button_event(MouseButton::Left, false);
+        }
+        self.pending_release = false;
         self.pointer = Pointer::idle();
         self.game_pointer = None;
         self.hud.release_all();
@@ -231,8 +241,22 @@ impl Overlay {
         // The launcher owns the whole glass, so a tap there is never a HUD press.
         let on_button =
             !inside_panel && !self.launcher && self.hud.down(id, x, y, width, height);
-        if self.interactive() && (self.pointer.finger.is_none() || inside_panel) {
-            let was_down = self.pointer.down;
+        // One finger at a time for imgui. A second finger inside the panel used to take
+        // the pointer over from a finger that was mid-press: the new finger could not
+        // click (its press was filtered as a duplicate), the first finger's lift then
+        // matched nothing, and the second finger's lift released whatever the first one
+        // had grabbed, at the second one's position. Holding the opacity slider and
+        // tapping Save with the other thumb moved the slider to Save and swallowed the
+        // tap.
+        if self.interactive() && self.pointer.finger.is_none() {
+            // A press that arrives before the previous lift was flushed would be
+            // filtered as a duplicate and never click, so the lift goes out first.
+            if self.pending_release {
+                self.imgui
+                    .io_mut()
+                    .add_mouse_button_event(MouseButton::Left, false);
+                self.pending_release = false;
+            }
             self.pointer = Pointer {
                 finger: Some(id),
                 down: true,
@@ -243,9 +267,7 @@ impl Overlay {
             // there instead — on a phone, on a panel that has only just opened.
             let io = self.imgui.io_mut();
             io.add_mouse_pos_event([x, y]);
-            if !was_down {
-                io.add_mouse_button_event(MouseButton::Left, true);
-            }
+            io.add_mouse_button_event(MouseButton::Left, true);
         }
         // Only while nothing of the overlay's own wants the screen: a finger that is
         // arranging buttons must not click whatever is drawn behind them.
@@ -253,7 +275,6 @@ impl Overlay {
             self.game_pointer = Some(id);
         }
     }
-
     /// Whether `id` is the finger the game should read as its pointer. The overlay
     /// decides which finger that is, and keeps it across the moves and the lift, so a
     /// menu gets one click rather than one click per finger on the glass.
@@ -366,6 +387,8 @@ impl Overlay {
         let mut sel_opacity = selected
             .and_then(|action| hud.control_opacity(action))
             .unwrap_or(opacity);
+        // Whether the panel's per-button sliders actually moved this frame.
+        let mut sel_touched = false;
         let buttons: Vec<(Action, Rect, f32)> = hud
             .buttons(width, height)
             .into_iter()
@@ -414,6 +437,7 @@ impl Overlay {
                         selected_label.as_deref(),
                         &mut sel_size,
                         &mut sel_opacity,
+                        &mut sel_touched,
                         &mut save,
                         &mut reset,
                         &mut close,
@@ -427,10 +451,11 @@ impl Overlay {
         hud.layout.opacity = opacity;
         hud.layout.look_sensitivity = sensitivity;
         hud.layout.drag_to_look = drag_to_look;
-        if edit && panel_open {
+        if edit && panel_open && sel_touched {
             // The panel edited the selected button's own size and opacity; commit them
-            // back. Only while editing with the panel up, so a leftover selection cannot
-            // restyle a button the player is only playing on.
+            // back. Only when a slider actually moved, and only while editing with the
+            // panel up: a write on every frame would pin the button to whatever the
+            // layout opacity was when it was selected, and restyle it while playing.
             if let Some(action) = selected {
                 hud.set_control_size(action, sel_size);
                 hud.set_control_opacity(action, sel_opacity);
@@ -515,6 +540,16 @@ impl Overlay {
     pub fn show_launcher(&mut self, on: bool) {
         if on {
             self.hud.release_all();
+            // The panel and the arrange mode are for the game behind the HUD, and the
+            // launcher hides the HUD entirely. Left set, they came back with the HUD
+            // when the launcher closed — and an open panel makes `interactive()` true,
+            // so no bare-glass finger could ever reach the game's own screens again.
+            self.panel = false;
+            self.hud.edit = false;
+            self.hud.set_selected(None);
+            self.panel_rect = None;
+            self.pointer = Pointer::idle();
+            self.pending_release = false;
         }
         self.launcher = on;
     }
@@ -672,6 +707,12 @@ fn hud_buttons(
 
 /// The settings panel. Everything a player can reach without a file manager and
 /// without this repository is behind one of these widgets.
+///
+/// The per-button sliders are only committed when they actually moved: `set_control_opacity`
+/// stores an explicit value, and writing one every frame a button happened to be selected
+/// pinned that button to the layout opacity it had at the moment of the tap and detached it
+/// from the layout-wide slider from then on.
+#[allow(clippy::too_many_arguments)]
 fn settings(
     ui: &Ui,
     status: &str,
@@ -684,6 +725,7 @@ fn settings(
     selected_label: Option<&str>,
     sel_size: &mut f32,
     sel_opacity: &mut f32,
+    sel_touched: &mut bool,
     save: &mut bool,
     reset: &mut bool,
     close: &mut bool,
@@ -720,8 +762,12 @@ fn settings(
                     Some(label) => {
                         let line = format!("Selected: {label}");
                         ui.text(line.as_str());
-                        ui.slider("This button size", 0.03, 0.4, sel_size);
-                        ui.slider("This button opacity", 0.08, 1.0, sel_opacity);
+                        if ui.slider("This button size", 0.03, 0.4, sel_size) {
+                            *sel_touched = true;
+                        }
+                        if ui.slider("This button opacity", 0.08, 1.0, sel_opacity) {
+                            *sel_touched = true;
+                        }
                     }
                     None => {
                         ui.text("Tap a button to edit it");

@@ -182,6 +182,12 @@ pub struct Settings {
     pub extras: crate::extras::Extras,
     /// The Horizon mods turned on (`horizon-mods.txt`), all off by default.
     pub mods: crate::mod_list::ModList,
+    /// The skins found in import/skins, and which one the player picked. Read at
+    /// load because the page lists them; empty when the folder is absent.
+    pub skins: Vec<String>,
+    /// `None` means the account's own skin, which is what every launch did before a
+    /// local picker existed.
+    pub skin: Option<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -255,6 +261,8 @@ impl Default for Settings {
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
+            skins: Vec::new(),
+            skin: None,
         }
     }
 }
@@ -307,12 +315,29 @@ impl Settings {
             .parent()
             .map(crate::mod_list::ModList::load)
             .unwrap_or_default();
+        // The Skins page lists what is in the reachable folder, and the choice is a
+        // sidecar beside options.txt; both are read here so the page has them before
+        // it first draws.
+        let (skins, skin) = match path.parent() {
+            Some(dir) => {
+                let folder = crate::gfx::skins_dir();
+                let found = crate::skin_choice::available(&folder);
+                // A choice whose file is gone falls back to the account skin rather
+                // than naming a texture that cannot be loaded.
+                let chosen = crate::skin_choice::load(dir)
+                    .filter(|name| found.iter().any(|file| file == name));
+                (found, chosen)
+            }
+            None => (Vec::new(), None),
+        };
         let settings = match fs::read(path) {
             Ok(bytes) => Self {
                 horizon,
                 controller,
                 extras,
                 mods,
+                skins,
+                skin,
                 ..Self::parse(&String::from_utf8_lossy(&bytes))
             },
             Err(_) => Self {
@@ -320,6 +345,8 @@ impl Settings {
                 controller,
                 extras,
                 mods,
+                skins,
+                skin,
                 ..Self::default()
             },
         };
@@ -556,6 +583,9 @@ impl Settings {
             self.controller.save(dir);
             self.extras.save(dir);
             self.mods.save(dir);
+            // Only written when the player picked one, so an untouched install keeps
+            // no file and goes on following the account skin.
+            crate::skin_choice::save(dir, self.skin.as_deref());
         }
     }
     /// Volume of a sound source (master excluded).

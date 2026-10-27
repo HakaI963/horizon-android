@@ -161,8 +161,28 @@ impl Game<'_> {
             if !input.text.is_empty() {
                 self.title_edit(Some(&input.text), false);
             }
-            if input.enter && let Some(title) = self.title.as_mut() {
-                title.confirm_edit();
+            if input.enter {
+                // `confirm_edit` only ever answers with the form's own submit, so this
+                // needs none of the loop's business (quitting, opening Options).
+                let action = self
+                    .title
+                    .as_mut()
+                    .map_or(horizon_client::title::Action::None, |t| t.confirm_edit());
+                match action {
+                    horizon_client::title::Action::Create {
+                        folder,
+                        name,
+                        seed,
+                        creative,
+                        options,
+                    } => {
+                        self.open_world(&folder, Some(&name), seed, creative, Some(&options))?
+                    }
+                    horizon_client::title::Action::Connect { address } => {
+                        self.connect_server(&address, &self.options.player_name())?
+                    }
+                    _ => {}
+                }
             }
         }
         Ok(())
@@ -171,10 +191,16 @@ impl Game<'_> {
     /// Select All in the focused screen's field, on the frame the keyboard opens.
     /// The edits above are relative, so what is selected is still the game's text
     /// even though the phone's empty field knows nothing about it.
+    ///
+    /// The chat box is the exception: the command button opens it with a `/` already
+    /// in it, and a selection there meant the first character typed replaced the slash
+    /// and a command was sent as ordinary chat.
     fn ime_select_all(&mut self) {
         let all = horizon_client::clipboard::EditShortcut::SelectAll;
         if self.title.is_none() && self.screen == Screen::Chat {
-            self.chat_select_all();
+            if !self.chat_is_blank_or_command() {
+                self.chat_select_all();
+            }
         } else if self.sign_edit.is_some() {
             self.sign_shortcut(all);
         } else if self.book_typing() {

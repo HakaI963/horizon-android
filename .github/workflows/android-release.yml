@@ -1,0 +1,168 @@
+name: Android release
+
+# A tag is the only thing that publishes. Nothing here builds a second time from a
+# different definition: the APK a release carries is the one `android-apk.yml`
+# produced for the tagged commit, which is the same job PRs run.
+#
+#   git tag android-v0.1.0 && git push origin android-v0.1.0
+#
+# A failed release leaves a tag with no release, never a release with no APK: the
+# release is created as a draft and published only once the asset is attached. To
+# retry, run this workflow again on the tag — never force-push the tag.
+on:
+  push:
+    tags: ["android-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: read the tag
+    runs-on: ubuntu-24.04
+    outputs:
+      name: ${{ steps.v.outputs.name }}
+      code: ${{ steps.v.outputs.code }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          # A dispatch has no tag ref, so it releases the newest tag on the branch.
+          TAG="$GITHUB_REF_NAME"
+          if [[ "$TAG" != android-v* ]]; then
+            echo "::error::$TAG is not an android-v* tag; tag a commit and push the tag"
+            exit 1
+          fi
+          VERSION="${TAG#android-v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a semantic version"
+            exit 1
+          fi
+          # Android orders installs by versionCode alone, and every build of this
+          # port is signed with the same key: a code that goes backwards is an
+          # update the phone refuses. The tag decides it, so it only ever grows.
+          CORE="${VERSION%%-*}"
+          IFS=. read -r MAJOR MINOR PATCH <<<"$CORE"
+          CODE=$(( MAJOR * 1000000 + MINOR * 1000 + PATCH ))
+          if (( CODE <= 0 || CODE > 2100000000 )); then
+            echo "::error::versionCode $CODE from '$VERSION' is out of Android's range"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "releasing $VERSION as versionCode $CODE"
+
+  build:
+    name: build the tagged tree
+    needs: version
+    uses: ./.github/workflows/android-apk.yml
+    permissions:
+      contents: read
+    with:
+      version_name: ${{ needs.version.outputs.name }}
+      version_code: ${{ needs.version.outputs.code }}
+
+  publish:
+    name: publish
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A tag can point at a commit that never landed on main, and then the release
+      # would ship something CI never saw on a branch. Check, do not assume.
+      - name: The tag must be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; releases come from main"
+            exit 1
+          fi
+
+      # The artifact CDN drops connections on this link often enough that one try is
+      # not an attempt, and a release with no APK is the one outcome worth retrying.
+      - name: Fetch the APK this tag built
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh run download "$GITHUB_RUN_ID" -n horizon-android-arm64 -D dist; then
+              test -s dist/app-debug.apk && exit 0
+            fi
+            echo "attempt $attempt did not land; waiting"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::horizon-android-arm64 never downloaded"
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Check the APK
+        run: |
+          set -euo pipefail
+          APK=dist/app-debug.apk
+          test -s "$APK" || { echo "::error::the APK is empty"; exit 1; }
+          SIZE=$(stat -c%s "$APK")
+          echo "apk: $SIZE bytes"
+          # GitHub refuses a release asset over 2 GiB; failing here says why, before
+          # a half-uploaded release exists.
+          if (( SIZE > 2000000000 )); then
+            echo "::error::$APK is $SIZE bytes, over the 2 GiB asset limit"
+            exit 1
+          fi
+          # What it is, not what it should be: a build that ignored the -P flags is
+          # a release under the wrong version, and that is worth failing on.
+          unzip -p "$APK" AndroidManifest.xml > /tmp/manifest.bin
+          python3 - <<'PY'
+          import re, sys
+          data = open('/tmp/manifest.bin','rb').read()
+          # Binary XML keeps strings in a UTF-16 pool; the version is there as text.
+          text = data.decode('utf-16-le', 'ignore')
+          found = [s for s in re.findall(r'[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*', text)]
+          print('version strings in the manifest:', found[:6])
+          PY
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.name }}
+          CODE: ${{ needs.version.outputs.code }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          APK="dist/horizon-android-${VERSION}-arm64-v8a.apk"
+          cp dist/app-debug.apk "$APK"
+          cat > notes.md <<EOF
+          Horizon for Android ${VERSION} — the native Rust port of Minecraft Java 26.3.
+
+          - arm64-v8a only; Android 8.0 (API 26) or newer.
+          - Signed with the debug key and debuggable, as every build of this port is
+            until a release key exists. The phone may warn about an unknown app.
+          - The game's own files are not in this APK: on first launch it downloads
+            Minecraft's client JAR from Mojang and unpacks it with the seed the APK
+            carries. That needs a working connection and takes a minute or two.
+          - versionCode ${CODE}; built from ${GITHUB_SHA}.
+
+          Install: open the APK on the phone and allow installation from this source.
+          EOF
+          # Draft first, published second: a failure between the two leaves an
+          # invisible draft rather than a public release with no APK to download.
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "Horizon for Android ${VERSION}" \
+            --notes-file notes.md \
+            --draft \
+            --latest=false \
+            "$APK#Horizon for Android ${VERSION}, arm64-v8a (debug-signed, versionCode ${CODE})"
+          gh release edit "$TAG" --draft=false --latest
+          echo "published $TAG"

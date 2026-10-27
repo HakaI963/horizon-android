@@ -98,10 +98,22 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
+    // A server list ping carries a favicon the server chose, and the decoder will
+    // happily size its output buffer from the header it sent. 64x64 is the largest
+    // thing anything here wants (a skin is 64x64, a server icon 64x64), so anything
+    // larger is refused before an allocation the phone cannot survive.
+    let (width, height) = reader.info().size();
+    if width > 64 || height > 64 {
+        return Err(format!("image is {width}x{height}; the largest accepted is 64x64").into());
+    }
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut bytes)?;
     let channels = info.color_type.samples();
-    let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
+    let size = (info.width as usize)
+        .checked_mul(info.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("image dimensions overflow")?;
+    let mut rgba = Vec::with_capacity(size);
     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
         rgba.extend(match channels {
             4 => [p[0], p[1], p[2], p[3]],

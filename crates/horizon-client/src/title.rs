@@ -1508,17 +1508,52 @@ impl Title {
             self.scroll.set(crate::ui::Scroll::default());
         }
     }
-    pub fn confirm_edit(&mut self) {
-        // The phone's keyboard covers Done on the server form, so its Enter is the
-        // Done button: the same press, the same save.
+    /// The phone's Enter, said as whatever the screen's own Done button would do. It
+    /// returns the action so the caller can queue it the way a click does: the button
+    /// it stands in for is under the keyboard on three of these screens, so a key that
+    /// only *closed* the form would leave the player with no way to submit it at all.
+    pub fn confirm_edit(&mut self) -> Action {
+        // Multiplayer first: its Done buttons are the three forms the keyboard covers.
         if matches!(&self.mode, Mode::Multiplayer(_)) {
             let saves = self.saves.clone();
-            if let Mode::Multiplayer(screen) = &mut self.mode
-                && screen.ready_to_add()
-            {
-                let _ = screen.click(Some(50), 0.0, 0.0, (0.0, 0.0), &saves);
+            let ready_to_add = match &self.mode {
+                Mode::Multiplayer(screen) => screen.ready_to_add(),
+                _ => false,
+            };
+            let outcome = match &mut self.mode {
+                // Add/Edit Server: Done only once the address parses.
+                Mode::Multiplayer(screen) if ready_to_add => {
+                    let _ = screen.click(Some(50), 0.0, 0.0, (0.0, 0.0), &saves);
+                    crate::multiplayer::Outcome::None
+                }
+                Mode::Multiplayer(screen) => match screen {
+                    crate::multiplayer::Screen::Direct { .. } => {
+                        screen.click(Some(52), 0.0, 0.0, (0.0, 0.0), &saves)
+                    }
+                    crate::multiplayer::Screen::Friend { .. } => {
+                        screen.click(Some(56), 0.0, 0.0, (0.0, 0.0), &saves)
+                    }
+                    _ => crate::multiplayer::Outcome::None,
+                },
+                _ => crate::multiplayer::Outcome::None,
+            };
+            return match outcome {
+                crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
+                _ => Action::None,
+            };
+        }
+        // Create New World: the name field is focused from the first frame, so Enter
+        // is the only way to press "Create New World" while the keyboard is up.
+        if let Mode::Create {
+            name,
+            focus: 0 | 1,
+            ..
+        } = &self.mode
+        {
+            if name.trim().is_empty() {
+                return Action::None;
             }
-            return;
+            return self.create_action();
         }
         let Mode::Edit {
             world,
@@ -1526,16 +1561,17 @@ impl Title {
             focused: true,
         } = &self.mode
         else {
-            return;
+            return Action::None;
         };
         if name.trim().is_empty() {
-            return;
+            return Action::None;
         }
         let folder = world.folder.clone();
         match world_management::rename(&self.saves, &folder, name) {
             Ok(()) => self.return_to_list(Some(&folder)),
             Err(error) => self.failed(error),
         }
+        Action::None
     }
     pub fn tab(&mut self) {
         if let Mode::Edit { focused, .. } = &mut self.mode {

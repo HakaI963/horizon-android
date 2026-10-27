@@ -174,9 +174,15 @@ pub struct BringUp {
     /// has no terminal, and a missing resource pack looks exactly like a dead driver
     /// unless the picture says which it is.
     notice: String,
-    /// A retry of the install is running on this thread. The card cannot draw while it
-    /// waits, so the launcher says why before the silence starts.
+    /// A retry of the install is running on a worker thread. The card keeps drawing
+    /// and keeps taking taps while it does; the Java dialog is the progress surface.
     installing: bool,
+    install_job: Option<installer::InstallJob>,
+    /// The install state and the player name, read once rather than on every frame.
+    /// Both are files, and a card that draws at the phone's refresh rate has no
+    /// business stat-ing the pack sixty times a second.
+    cached_installed: Option<bool>,
+    cached_account: Option<String>,
     window: Option<Arc<Window>>,
     screen: Option<Screen>,
     dump: Arc<FrameDump>,
@@ -493,13 +499,30 @@ impl BringUp {
     /// so the model is what this half can see for itself: whether the pack landed, what
     /// went wrong if it did not, and the one action that helps — install it.
     fn sync_launcher(&mut self, event_loop: &ActiveEventLoop) {
-        let installed = installer::installed(&paths::resources_dir(&self.app));
+        // A worker's result lands before the model is built, so the frame that reports
+        // it is the frame after it finished.
+        self.poll_install();
         let installing = self.installing;
         let notice = self.notice.clone();
         let version = horizon_core::VANILLA_VERSION.to_string();
-        let account = std::env::current_dir()
-            .map(|dir| horizon_client::offline_name::load_or_create(&dir))
-            .unwrap_or_else(|_| "Player".to_string());
+        // The install state and the player name are files, and this runs on every
+        // frame the card is up. Both are re-read only when something could have
+        // changed them: an install finishing, or a name being saved from the card.
+        if self.cached_installed.is_none() {
+            self.cached_installed = Some(installer::installed(&paths::resources_dir(&self.app)));
+        }
+        let installed = self.cached_installed.unwrap_or(false);
+        if self.cached_account.is_none() {
+            self.cached_account = Some(
+                std::env::current_dir()
+                    .map(|dir| horizon_client::offline_name::load_or_create(&dir))
+                    .unwrap_or_else(|_| "Player".to_string()),
+            );
+        }
+        let account = self
+            .cached_account
+            .clone()
+            .unwrap_or_else(|| "Player".to_string());
         let status = if installing {
             "Installing Minecraft Java. Keep this open.".to_string()
         } else if !notice.is_empty() {
@@ -509,6 +532,9 @@ impl BringUp {
         } else {
             String::new()
         };
+        // The sound pack fills in behind the card on its own thread; this is the only
+        // place its counter can be read.
+        let sounds = horizon_client::sound_progress::snapshot();
         let rows = vec![LauncherRow {
             id: 0,
             title: format!("Minecraft Java {version}"),
@@ -518,7 +544,9 @@ impl BringUp {
                 "Fetched from Mojang and unpacked with the seed this APK carries".to_string()
             },
             badge: if installed { "installed" } else { "install" }.to_string(),
-            enabled: !installing,
+            // A row that is installed has nothing left to do here: the card cannot
+            // start the engine it does not own, so the row stops claiming to.
+            enabled: !installing && !installed,
             ..Default::default()
         }];
         let facts = vec![
@@ -532,9 +560,18 @@ impl BringUp {
                 instance: "Default".to_string(),
                 version,
                 rows,
-                status,
+                status: match (&sounds, status.is_empty()) {
+                    (Some((line, _)), true) => line.clone(),
+                    _ => status,
+                },
+                progress: sounds.as_ref().map(|(_, fraction)| *fraction),
                 account,
                 facts,
+                // The front button is Play only when there is something to play; the
+                // card has no engine to hand the screen to, so after a successful
+                // install it offers the restart that would reach one.
+                playable: false,
+                front: installed.then(|| "Close".to_string()),
                 ..Default::default()
             });
         });
@@ -551,24 +588,63 @@ impl BringUp {
                     self.install_now();
                 }
                 LauncherEvent::Quit => event_loop.exit(),
+                LauncherEvent::Restart if installed => {
+                    // The pack is on disk and this loop is the only one the activity
+                    // will ever give out, so the engine cannot be started from here.
+                    // Ending the process is what makes the next open a clean one.
+                    log::info!("bring-up: the pack is ready; closing so the next open plays it");
+                    event_loop.exit();
+                }
                 _ => {}
             }
         }
     }
 
-    /// Run the install again, on this thread. It holds the card still for as long as the
-    /// download takes, which is what the first launch already does; a retry is rare
-    /// enough not to want a second thread holding the activity, and the line above the
-    /// button says what is happening before the silence starts.
+    /// Run the install again, on a worker thread. It used to run here, inside
+    /// `RedrawRequested`, which froze the card for the whole download and unpack —
+    /// Android's definition of an ANR. Now the card keeps drawing, the Java dialog
+    /// keeps showing progress, and `poll_install` picks the result up next frame.
     fn install_now(&mut self) {
-        self.installing = true;
+        if self.install_job.is_some() {
+            return;
+        }
         self.notice.clear();
         log::info!("bring-up: installing Minecraft Java again");
-        self.notice = match installer::install(&self.app) {
-            Ok(()) => "Installed. Close Horizon and open it again to play.".to_string(),
-            Err(error) => format!("Minecraft install failed: {error}"),
+        match installer::spawn_install(&self.app) {
+            Some(job) => {
+                self.install_job = Some(job);
+                self.installing = true;
+            }
+            // No thread to run it on: say so instead of showing an install that will
+            // never finish.
+            None => {
+                self.notice = "Minecraft install failed: no thread to download with".to_string();
+            }
+        }
+    }
+
+    /// Take the worker's result, once it has one.
+    fn poll_install(&mut self) {
+        let Some(job) = self.install_job.as_mut() else {
+            return;
         };
+        let Some(result) = job.poll() else {
+            return;
+        };
+        self.install_job = None;
         self.installing = false;
+        // The install just changed the answer, so the cached one is stale.
+        self.cached_installed = None;
+        self.notice = match result {
+            Ok(()) => "Installed. Close Horizon and open it again to play.".to_string(),
+            Err(error) => {
+                // The Java dialog is the only surface during an install, and it is not
+                // cancelable: a failed retry that left it up trapped the player behind a
+                // spinner with no way back to the card.
+                installer::fail_dialog(&error);
+                format!("Minecraft install failed: {error}")
+            }
+        };
     }
 }
 
@@ -641,27 +717,19 @@ impl ApplicationHandler for BringUp {
                     .as_ref()
                     .map(|screen| (screen.config.width, screen.config.height))
                     .unwrap_or((1, 1));
-                // winit hands touch over in logical pixels; the buttons, the blocks and
-                // a frame dump are all in the framebuffer's own, so a tap has to be
-                // converted before either the layout or the picture sees it. On a
-                // 320 dpi phone the two spaces differ by a factor of two, which is the
-                // difference between a button answering and a button nowhere near it.
-                let scale = self
-                    .window
-                    .as_ref()
-                    .map(|window| window.scale_factor())
-                    .unwrap_or(1.0) as f32;
-                let (x, y) = (location.x as f32 * scale, location.y as f32 * scale);
+                // winit already reports a touch in the window's physical pixels — the
+                // same space the buttons, the menus and a frame dump are in — so it is
+                // used as it arrives. Scaling it by the display density here moved every
+                // press to twice the distance the finger went, which is why the Install
+                // button could not be tapped where it was drawn.
+                let (x, y) = (location.x as f32, location.y as f32);
                 match phase {
                     TouchPhase::Started => {
                         self.touches += 1;
                         self.fingers += 1;
                         self.touch = Some((f64::from(x), f64::from(y)));
                         log::info!(
-                            "bring-up: touch {id} down at {x:.0}x{y:.0} (logical {:.0}x{:.0}, \
-                             scale {scale}) force {:?}",
-                            location.x,
-                            location.y,
+                            "bring-up: touch {id} down at {x:.0}x{y:.0} force {:?}",
                             force
                         );
                         horizon_overlay::with(|overlay| {
@@ -790,6 +858,9 @@ pub fn run(
         app: app.clone(),
         notice: notice.to_owned(),
         installing: false,
+        install_job: None,
+        cached_installed: None,
+        cached_account: None,
         window: None,
         screen: None,
         dump: FrameDump::start(Some(paths::import_dir(app).join("frame.png"))),

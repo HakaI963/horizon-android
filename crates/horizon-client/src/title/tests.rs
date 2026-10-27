@@ -259,7 +259,7 @@ fn rename_preserves_unknown_metadata_and_cancel_discards_edits() {
     );
     f.click("Edit");
     f.title.type_text(" via Enter");
-    f.title.confirm_edit();
+    assert!(matches!(f.title.confirm_edit(), Action::None));
     assert_eq!(
         Level::read(&f.title.saves.join("World")).unwrap().name,
         "Renamed 世界 via Enter"

@@ -19,6 +19,10 @@ def prohibited(path):
     # Original Horizon mod sources may also be tracked.
     if parsed.suffix == ".java" and path.startswith(("mods/horizon/src/", "mods/horizon-lab/src/")):
         return not ("/dev/horizonlab/" in path)
+    # The Android activity is Horizon's own Java (the IME mailbox and the install
+    # dialog), not recovered game code, and the APK cannot be built without it.
+    if parsed.suffix == ".java" and path.startswith("android/app/src/main/java/"):
+        return False
     return bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS) or parsed.suffix.lower() in PRIVATE_EXTENSIONS
 
 

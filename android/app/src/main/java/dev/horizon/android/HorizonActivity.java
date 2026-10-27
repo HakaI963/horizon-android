@@ -168,7 +168,11 @@ public class HorizonActivity extends NativeActivity {
     }
 
     private synchronized void addKeys(int bits) {
-        keyboardKeys += bits;
+        // Enter is a flag and deletes are a count, but they share one int. Adding the
+        // whole word meant two Enters arrived as 2, which the native side reads as one
+        // delete; OR keeps Enter a flag, and the deletes (bits 1..) still accumulate.
+        keyboardKeys |= bits & 1;
+        keyboardKeys += bits & ~1;
     }
 
     private synchronized void clearKeys() {

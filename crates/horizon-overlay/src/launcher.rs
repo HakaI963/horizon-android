@@ -83,6 +83,10 @@ pub struct LauncherModel {
     pub status: String,
     /// 0.0 to 1.0 while something downloads, or `None` when idle.
     pub progress: Option<f32>,
+    /// What the front button says, when it is not Play or Install. The bring-up card
+    /// has no engine to hand the screen to, so once its install lands the one useful
+    /// thing left is a restart, and the button has to say so.
+    pub front: Option<String>,
     pub account: String,
     /// Extra one-line facts for the About page.
     pub facts: Vec<(String, String)>,
@@ -102,12 +106,19 @@ pub enum LauncherEvent {
     SelectRow(u32),
     NewInstance,
     Install,
+    /// The card's install landed but the loop it would need to play is already spent:
+    /// the honest button left is one that ends the process so the next open starts clean.
+    Restart,
     /// The account card was tapped: the platform opens a field and starts feeding it.
     RenameAccount,
     /// A new player name for the account card to keep.
     SetAccount(String),
     OpenSettings,
     OpenSkins,
+    /// Write the settings archive into import/.
+    ExportSettings,
+    /// Read the newest settings archive from import/.
+    ImportSettings,
     Quit,
 }
 
@@ -296,10 +307,21 @@ fn sidebar_panel(
                 fill(&draw, [pad, 88.0 * dpi], [sidebar - pad, 89.0 * dpi], c.accent, 1.0, 0.0);
             }
             ui.set_cursor_pos([0.0, 108.0 * dpi]);
+            // The footer is placed first, and the seven pages share what is left
+            // between the wordmark and it. At the phone's height they fit at 46; the
+            // keyboard (adjustResize) shortens the window while the rename dialog is
+            // open, and a fixed height used to paint the last pages under the account
+            // card and then clip them.
+            let ay = height - 64.0 * dpi;
+            let fy = ay - 46.0 * dpi;
+            let gap = 8.0 * dpi;
+            let nav_h = ((fy - gap - 108.0 * dpi - gap * (PAGES.len() - 1) as f32)
+                / PAGES.len() as f32)
+                .clamp(24.0 * dpi, 46.0 * dpi);
             for page in PAGES {
                 let selected = page == model.page;
                 let [x, y] = ui.cursor_screen_pos();
-                let h = 46.0 * dpi;
+                let h = nav_h;
                 let w = sidebar;
                 {
                     let draw = ui.get_window_draw_list();
@@ -323,8 +345,6 @@ fn sidebar_panel(
                 }
             }
             // Footer: where this build stands, a way out, and the account under it.
-            let ay = height - 64.0 * dpi;
-            let fy = ay - 46.0 * dpi;
             let quit = "Quit";
             let qw = ui.calc_text_size(quit)[0] + 16.0 * dpi;
             {
@@ -399,6 +419,10 @@ fn content(
         }
         LauncherPage::Settings => {
             action_card(ui, fonts, c, dpi, col, pad, "Settings", "Open settings", "Video, controls, language and accessibility live in the game's own settings.", LauncherEvent::OpenSettings, out);
+            // The same card again, for the thing a player moving phones wants: their
+            // settings as a file. A phone has no file picker the game can open, so the
+            // export lands in import/ and the import takes the newest archive there.
+            transfer_card(ui, fonts, c, dpi, col, pad, out);
         }
         LauncherPage::Mods => {
             info_card(ui, fonts, c, dpi, col, pad, "Mods", "Horizon's component mods need a runtime this build does not carry yet. Modpacks ported to 26.3 run as resource and data packs.");
@@ -500,13 +524,37 @@ fn play_page(
         );
         let _f = ui.push_font(fonts.pixel);
         // The one button on the front page does the one thing that is missing: play
-        // what is installed, install what is not.
-        if ui.button_with_size(if playable { "Play" } else { "Install" }, [btn_w, 44.0 * dpi]) {
-            out.push(if playable {
-                LauncherEvent::Play
-            } else {
-                LauncherEvent::Install
+        // what is installed, install what is not — or, when the platform has something
+        // else to offer (a restart after the card's own install), say that instead.
+        let label = model
+            .front
+            .clone()
+            .unwrap_or_else(|| if playable { "Play".to_string() } else { "Install".to_string() });
+        if ui.button_with_size(label.as_str(), [btn_w, 44.0 * dpi]) {
+            out.push(match model.front.as_deref() {
+                Some(_) => LauncherEvent::Restart,
+                None if playable => LauncherEvent::Play,
+                None => LauncherEvent::Install,
             });
+        }
+    }
+    if let Some(progress) = model.progress {
+        // A download in flight: the bar lives inside the hero card, under the version
+        // line, so the card says how far it has got instead of only that it is busy.
+        let p = progress.clamp(0.0, 1.0);
+        let (left, right) = (x + 24.0 * dpi, x + w - 24.0 * dpi);
+        let (top, bottom) = (y + hero_h - 18.0 * dpi, y + hero_h - 12.0 * dpi);
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [left, top], [right, bottom], c.rule, 1.0, 3.0);
+        if p > 0.0 {
+            fill(
+                &draw,
+                [left, top],
+                [left + (right - left) * p, bottom],
+                c.accent,
+                1.0,
+                3.0,
+            );
         }
     }
     if !model.status.is_empty() {
@@ -676,6 +724,50 @@ fn action_card(
     ui.set_cursor_screen_pos([x, y + h + 20.0 * dpi]);
 }
 
+/// Export and import of the settings archive: two buttons on one card, because they
+/// are the same idea in two directions and a player looking for one is looking for
+/// the other.
+fn transfer_card(
+    ui: &Ui,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    pad: f32,
+    out: &mut Vec<LauncherEvent>,
+) {
+    let [x, y] = ui.cursor_screen_pos();
+    let w = width - 2.0 * pad;
+    let h = 150.0 * dpi;
+    {
+        let draw = ui.get_window_draw_list();
+        fill(&draw, [x, y], [x + w, y + h], c.panel, 1.0, 14.0);
+        stroke(&draw, [x, y], [x + w, y + h], c.rule, 1.0, 14.0, 1.0);
+        draw.add_text(
+            [x + 24.0 * dpi, y + 24.0 * dpi],
+            rgba(c.muted, 1.0),
+            "Settings, keys and button layouts as one file in import/.",
+        );
+    }
+    let bw = 220.0 * dpi;
+    ui.set_cursor_screen_pos([x + 24.0 * dpi, y + h - 56.0 * dpi]);
+    {
+        let _b = ui.push_style_color(StyleColor::Button, rgba(c.button, 1.0));
+        let _t = ui.push_style_color(StyleColor::Text, rgba(c.ink, 1.0));
+        let _f = ui.push_font(fonts.pixel);
+        if ui.button_with_size("Export settings", [bw, 40.0 * dpi]) {
+            out.push(LauncherEvent::ExportSettings);
+        }
+        // Both buttons are placed by hand, so no `same_line`: it would advance the
+        // cursor from the first button and then this position would override it.
+        ui.set_cursor_screen_pos([x + 24.0 * dpi + bw + 12.0 * dpi, y + h - 56.0 * dpi]);
+        if ui.button_with_size("Import settings", [bw, 40.0 * dpi]) {
+            out.push(LauncherEvent::ImportSettings);
+        }
+    }
+    ui.set_cursor_screen_pos([x, y + h + 20.0 * dpi]);
+}
+
 fn info_card(
     ui: &Ui,
     fonts: &Fonts,
@@ -809,12 +901,20 @@ fn rename_dialog(
                     model.editing = false;
                 }
             }
-            // Away from the card either way is a way out: the bands above and below,
-            // which is where the keyboard and the rest of the launcher are.
-            for (i, (top, bottom)) in [(0.0, y), (y + h, height)].into_iter().enumerate() {
-                ui.set_cursor_screen_pos([0.0, top]);
+            // Away from the card in any direction is a way out. The side bands matter
+            // most: the card is a third of the screen wide at the phone's aspect, and
+            // the gutters beside it used to belong to the full-screen window with no
+            // widget under them, so a tap there did nothing at all.
+            let bands = [
+                (0.0, y, 0.0, width),
+                (y, y + h, 0.0, x),
+                (y, y + h, x + w, width),
+                (y + h, height, 0.0, width),
+            ];
+            for (i, (top, bottom, left, right)) in bands.into_iter().enumerate() {
+                ui.set_cursor_screen_pos([left, top]);
                 let id = format!("##away{i}");
-                if ui.invisible_button(id.as_str(), [width, bottom - top]) {
+                if ui.invisible_button(id.as_str(), [right - left, bottom - top]) {
                     model.editing = false;
                 }
             }

@@ -20,6 +20,36 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A release calls this workflow for its tag, so the APK a release publishes is
+  # built by the same definition CI just tested — not a second copy of it that can
+  # drift. `push`/`pull_request`/`workflow_dispatch` behave exactly as before.
+  workflow_call:
+    inputs:
+      ndk:
+        description: "Android NDK version to install (blank = newest available)"
+        required: false
+        type: string
+        default: ""
+      api:
+        description: "Android API level to link against"
+        required: false
+        type: string
+        default: "26"
+      cargo_profile:
+        description: "Cargo profile to build"
+        required: false
+        type: string
+        default: "fast"
+      version_name:
+        description: "versionName to put in the APK (blank = 0.1.0-<sha7>)"
+        required: false
+        type: string
+        default: ""
+      version_code:
+        description: "versionCode to put in the APK (blank = the run number)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -114,22 +144,25 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ env.CARGO_TARGET }}-
+          key: cargo-${{ env.CARGO_TARGET }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-${{ env.CARGO_TARGET }}-
 
       - name: Check the engine for aarch64-linux-android
         run: |
-          # Actions runs `bash -e`; the check is expected to fail, and its report
-          # is the whole point, so nothing here may stop the script.
-          set +e
-          set -uo pipefail
           # No default features: `controllers` is evdev/libudev and GameInput, and
           # `mods` is wasmtime, which is both a quarter of the build and W^X-hostile
           # on Android. Both come later, if they come at all.
+          #
+          # The status is captured, not inferred from the log. It used to run under
+          # `set +e` and pass or fail on `grep error:`, so a cargo that died of an OOM
+          # kill or a missing target printed no `error:` line and the job went green.
+          set +e
           cargo check --target "$CARGO_TARGET" --profile fast \
             -p horizon-client --no-default-features --features audio \
             --message-format=short > /tmp/engine.log 2>&1
-          echo "cargo exit: $?" >> /tmp/engine.log
+          status=$?
+          set -e
+          echo "cargo exit: $status" >> /tmp/engine.log
           {
             echo "## errors, grouped by message"
             grep -E 'error(\[|:)' /tmp/engine.log | sed -E 's/^[^ ]+ +//' | sort | uniq -c | sort -rn | head -60
@@ -137,7 +170,7 @@ jobs:
             grep -oE '^(crates|launcher|third_party)/[^:]+' /tmp/engine.log | sort | uniq -c | sort -rn | head -40
             echo "## first 80 error lines"
             grep -E 'error(\[|:)' /tmp/engine.log | head -80
-          } > /tmp/summary.txt
+          } > /tmp/summary.txt || true
           cat /tmp/summary.txt
           tail -30 /tmp/engine.log
           cat /tmp/engine.log /tmp/summary.txt > engine-check.log
@@ -145,8 +178,8 @@ jobs:
           # the list of what failed was the porting plan. It compiles now, so a failure
           # here is a regression, and one to hear about in a minute rather than in the
           # APK job six minutes later.
-          if grep -qE 'error(\[|:)' /tmp/engine.log; then
-            echo "::error::the engine does not compile for aarch64-linux-android"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the engine does not compile for aarch64-linux-android (cargo exit $status)"
             exit 1
           fi
 
@@ -191,7 +224,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-seed-
+          key: cargo-seed-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-seed-
 
       - name: Cache the prepared seed
@@ -199,7 +232,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci/seed.zip
-          key: minecraft-seed-${{ hashFiles('research-lock.json', 'crates/horizon-prepare/**', 'mods/horizon/src/test/java/**', '.github/scripts/**') }}
+          key: minecraft-seed-${{ hashFiles('research-lock.json', 'crates/horizon-core/src/version.rs', 'crates/horizon-prepare/**', 'mods/horizon/src/test/java/**', '.github/scripts/**') }}
 
       - name: Fetch the pinned Minecraft files
         if: steps.seed-cache.outputs.cache-hit != 'true'
@@ -243,10 +276,13 @@ jobs:
           if-no-files-found: ignore
 
   apk:
-    name: arm64-v8a (${{ github.event.inputs.cargo_profile || 'fast' }})
+    name: arm64-v8a (${{ inputs.cargo_profile || github.event.inputs.cargo_profile || 'fast' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    needs: seed
+    # The APK is only worth building for a tree that checks. It used to depend on
+    # `seed` alone, so a PR that broke the aarch64 engine check or the touch-layout
+    # tests still produced a green, downloadable APK.
+    needs: [seed, model, engine]
     outputs:
       ndk: ${{ steps.toolchain.outputs.ndk }}
     steps:
@@ -269,9 +305,9 @@ jobs:
       # variables and checked before anything uses them as a version or a path.
       - name: Check the requested inputs
         env:
-          NDK: ${{ github.event.inputs.ndk }}
-          API: ${{ github.event.inputs.api }}
-          PROFILE: ${{ github.event.inputs.cargo_profile }}
+          NDK: ${{ inputs.ndk || github.event.inputs.ndk }}
+          API: ${{ inputs.api || github.event.inputs.api }}
+          PROFILE: ${{ inputs.cargo_profile || github.event.inputs.cargo_profile }}
         run: |
           set -euo pipefail
           [ -z "${NDK:-}" ] || echo "$NDK" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -409,11 +445,19 @@ jobs:
 
       - name: Package and sign the APK
         working-directory: android
+        env:
+          # A release passes the tag's own version in; a branch build invents one
+          # from the commit, which is what every APK before the first tag carried.
+          VERSION_NAME: ${{ inputs.version_name || '' }}
+          VERSION_CODE: ${{ inputs.version_code || '' }}
         run: |
           set -euo pipefail
+          : "${VERSION_NAME:=0.1.0-${GITHUB_SHA::7}}"
+          : "${VERSION_CODE:=$GITHUB_RUN_NUMBER}"
+          echo "packaging $VERSION_NAME (versionCode $VERSION_CODE)"
           gradle --no-daemon assembleDebug \
-            -PhorizonVersionName="0.1.0-${GITHUB_SHA::7}" \
-            -PhorizonVersionCode="$GITHUB_RUN_NUMBER"
+            -PhorizonVersionName="$VERSION_NAME" \
+            -PhorizonVersionCode="$VERSION_CODE"
 
       - name: Report what came out
         run: |
@@ -435,6 +479,20 @@ jobs:
           readelf -h /tmp/from_apk.so | sed -n '1,12p'
           echo "minimum Android API the library declares:"
           readelf -p .note.android.ident /tmp/from_apk.so | sed -n '1,16p'
+
+      # A Gradle failure used to leave nothing behind: no report, no log, and the
+      # one artifact that would explain it was never uploaded. These run whatever
+      # happened, and the APK one is separate so a green build still ships.
+      - name: Keep the Gradle logs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-reports
+          path: |
+            android/app/build/reports/**
+            android/build/reports/**
+            android/app/build/outputs/logs/**
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         with:
