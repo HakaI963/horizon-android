@@ -98,6 +98,9 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
+          # `horizon-mods`'s sandbox tests build their guest modules for wasm32; that
+          # is also the crate's real check, per AGENTS.md.
+          rustup target add wasm32-unknown-unknown
           rustc --version
 
       - name: Cache the crates registry
