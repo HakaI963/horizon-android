@@ -448,6 +448,10 @@ impl Settings {
             controller: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
+            // Filled in by `Settings::load`, which is the only place that knows where
+            // the reachable folder and the sidecar are.
+            skins: Vec::new(),
+            skin: None,
             auto_jump: f.bool("autoJump"),
             language: f.string("lang"),
             force_unicode: f.bool("forceUnicodeFont"),

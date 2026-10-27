@@ -70,6 +70,51 @@ env:
   CARGO_TARGET: aarch64-linux-android
 
 jobs:
+  # The engine's own tests are the ones that would have caught the last two
+  # mistakes: a `Settings` field added without a default, and a method called from
+  # a sibling module without the visibility. Neither needs a phone, a GPU or a
+  # window, and both were found only after a nine-minute APK run. This job is the
+  # cheap version of that, and it gates the APK like the other checks do.
+  #
+  # `horizon-android` is excluded: every one of its modules is behind
+  # `cfg(target_os = "android")`, so on a host it is an empty crate.
+  verify:
+    name: engine tests (host)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Cache the crates registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-host-
+
+      # The two wasm guest cdylibs are built for wasm32 and cannot link on the host;
+      # their real check is `cargo test -p horizon-mods`, which builds them.
+      #
+      # `horizon-client` is the point of the job — it is what the APK compiles — and
+      # its tests need no GPU, window or network. The whole workspace is asked for so
+      # a crate the client depends on cannot break without being seen.
+      - name: Test the client, the layout and the engine's own crates
+        run: |
+          set -euo pipefail
+          cargo test --workspace \
+            --exclude coords-hud \
+            --exclude horizon-mods-test-guest \
+            --exclude horizon-android
+
   # The touch layout is the part of the port a person argues with, and it needs no
   # phone to be wrong: a button that cannot be pressed, a saved layout that does not
   # read back, a drag that turns the camera the wrong way are all questions a host
@@ -282,7 +327,7 @@ jobs:
     # The APK is only worth building for a tree that checks. It used to depend on
     # `seed` alone, so a PR that broke the aarch64 engine check or the touch-layout
     # tests still produced a green, downloadable APK.
-    needs: [seed, model, engine]
+    needs: [seed, model, engine, verify]
     outputs:
       ndk: ${{ steps.toolchain.outputs.ndk }}
     steps:

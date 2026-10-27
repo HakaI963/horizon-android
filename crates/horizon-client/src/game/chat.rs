@@ -594,7 +594,7 @@ impl Game<'_> {
     }
     /// Whether the chat box holds nothing, or only the `/` the command button put
     /// there. Selecting either is pointless and selecting the slash is destructive.
-    fn chat_is_blank_or_command(&self) -> bool {
+    pub(super) fn chat_is_blank_or_command(&self) -> bool {
         self.ui
             .chat_screen
             .as_ref()
