@@ -180,11 +180,15 @@ impl Mods {
         if self.engine.is_none() {
             let mut config = Config::new();
             config.wasm_component_model(true).consume_fuel(true);
-            // Android forbids the executable memory a JIT needs (SELinux's W^X), so a
-            // phone build has no Cranelift to select: the `runtime` feature carries
-            // wasmtime's Pulley interpreter, and wasmtime uses it for the host target
-            // when no compiler is compiled in. Nothing else about the sandbox changes —
-            // the same fuel, the same memory cap, the same hooks.
+            // A phone forbids executable memory (SELinux's W^X), so on Android the
+            // compiler is pointed at the Pulley target instead of the host: it still
+            // compiles the component — `Component::new` needs a compiler either way —
+            // but what it emits is interpreter bytecode, which the `runtime` feature's
+            // Pulley interpreter runs. Nothing is ever mapped executable.
+            #[cfg(target_os = "android")]
+            config
+                .target("pulley64")
+                .map_err(|e| format!("pulley64 is not a target this wasmtime knows: {e}"))?;
             config.wasm_backtrace(false);
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
