@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        API 31 draws the starting window itself: without these items the system uses
+        the theme's windowBackground and the app opens on a black flash. A background
+        slightly lighter than the game's black keeps the icon readable while the
+        surface is still being created, and the 400ms icon animation is the same
+        length as the platform's default exit, so the switch to the game does not
+        feel cut short.
+
+        Horizon keeps HorizonBase as its parent (values/styles.xml) rather than
+        repeating the fullscreen items, so this file only adds the splash items and
+        the two styles cannot drift.
+
+        There is deliberately no postSplashScreenTheme here: the framework has no
+        android:postSplashScreenTheme attribute (aapt2 would reject it), only
+        androidx.core:splashscreen defines one, and this APK depends on no AndroidX
+        at all. The platform splash simply hands the same theme to the activity,
+        which is what the theme already is.
+    -->
+    <style name="Horizon" parent="@style/HorizonBase">
+        <item name="android:windowSplashScreenBackground">#0F0D17</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenAnimationDuration">400</item>
+    </style>
+</resources>

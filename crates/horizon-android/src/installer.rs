@@ -13,14 +13,18 @@
 //! Nothing is committed: the client JAR stays the player's, and the seed is built
 //! from it in CI only.
 //!
-//! This runs before the event loop, because a pack cannot be installed into an
-//! engine that has already failed to find one. A progress dialog on the activity
-//! is the one surface that exists at that point; the native card needs the loop
-//! this code is still deciding to build.
+//! This used to run before the event loop, because a pack cannot be installed into
+//! an engine that has already failed to find one. That put a 41 MB download on the
+//! thread Android was waiting on for `onStart`, which is an ANR by definition, so the
+//! install now runs on the bring-up card's own worker: the loop exists, the card is
+//! drawing, and the Java dialog is a progress surface on top of it rather than the
+//! only thing that exists. Nothing here needs the loop itself — only `APP`, which is
+//! set before either.
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use jni::objects::{JObject, JString, Reference};
@@ -350,15 +354,20 @@ fn is_sound(name: &str) -> bool {
 }
 
 /// How long one background pass will spend on sounds before giving up and letting
-/// the next launch finish the rest. A few thousand small objects over a phone's
-/// network is slow; the title must not wait for it.
-const SOUND_BUDGET: Duration = Duration::from_secs(20 * 60);
+/// the next launch finish the rest.
+///
+/// The pool, not this number, is what makes the pass fast now: a few thousand small
+/// objects over a phone's network were slow one connection at a time, and a handful
+/// of them in parallel finish in seconds. The budget is only the backstop that stops
+/// a broken network from holding the background thread forever; a partial pass still
+/// resumes from what is already on disk.
+const SOUND_BUDGET: Duration = Duration::from_secs(30 * 60);
 
 /// Top the pack up with the version's sounds on a background thread, so the game
 /// launches silent and fills in. The client JAR has no sounds; they are objects in
-/// the asset index, fetched one at a time and checked against their own SHA-1.
-/// Files already present are kept, so a pass interrupted by the time budget, a
-/// dropped connection or a process death resumes where it stopped.
+/// the asset index, fetched by a small pool of threads and each checked against its
+/// own SHA-1. Files already present are kept, so a pass interrupted by the time
+/// budget, a dropped connection or a process death resumes where it stopped.
 pub fn top_up_sounds(app: &winit::platform::android::activity::AndroidApp) {
     if !seed_available() {
         return;
@@ -377,15 +386,48 @@ pub fn top_up_sounds(app: &winit::platform::android::activity::AndroidApp) {
     }
 }
 
+/// One sound object from the version's asset index: the name it has there, the
+/// SHA-1 that names it, its size, and where it goes under the pack. Owned, so the
+/// workers only ever borrow the list and never need a lock.
+struct SoundObject {
+    name: String,
+    hash: String,
+    size: u64,
+    destination: PathBuf,
+}
+
+impl SoundObject {
+    /// Whether the file is already on disk at the size the index gives it. A size of
+    /// zero in the index means it was not recorded, so the file's existence is all
+    /// there is to check.
+    fn present(&self) -> bool {
+        let Ok(meta) = self.destination.metadata() else {
+            return false;
+        };
+        meta.is_file() && (self.size == 0 || meta.len() == self.size)
+    }
+}
+
+/// Fetch every sound the version's asset index names that is not already in the
+/// pack, on a small pool of threads.
+///
+/// A few thousand small objects fetched one after another is what made this pass
+/// take minutes; a handful of connections at a time turns it into seconds. The list
+/// is built once, owned, and only borrowed by the workers; the queue is one atomic
+/// index, so there is no lock on the hot path. Files already there are counted before
+/// the pool starts, so a resumed pass neither spends a thread on them nor lies about
+/// how far along it is.
 fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<usize, String> {
     let target = paths::resources_dir(app);
     if target.join(".sounds-complete").is_file() {
         return Ok(0);
     }
     let manifest = seed_manifest()?;
+    // This agent fetches the index, which is one file. The objects below get an
+    // agent each, built by their own worker.
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(20))
-        .timeout_read(Duration::from_secs(60))
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(30))
         .build();
     let url = manifest
         .get("assetIndex")
@@ -398,45 +440,124 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
         .and_then(Value::as_object)
         .ok_or("the asset index has no objects")?;
     let deadline = Instant::now() + SOUND_BUDGET;
-    let mut got = 0usize;
-    let mut missing = 0usize;
-    let sounds = objects
-        .iter()
-        .filter(|(name, _)| is_sound(name))
-        .collect::<Vec<_>>();
-    horizon_client::sound_progress::begin(sounds.len() as u32);
-    for (name, entry) in sounds {
-        if Instant::now() >= deadline {
-            horizon_client::sound_progress::stop();
-            return Err("reached the time budget".into());
+
+    let mut unusable = 0usize;
+    let mut sounds = Vec::with_capacity(objects.len());
+    for (name, entry) in objects {
+        if !is_sound(name) {
+            continue;
         }
         let hash = entry.get("hash").and_then(Value::as_str).unwrap_or("");
         let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
         let Some(relative) = safe_relative(name) else {
-            missing += 1;
-            horizon_client::sound_progress::step();
+            // Not a path under the pack, so there is nothing to fetch. Counting it
+            // missing keeps a pass with one of these from being called complete.
+            unusable += 1;
             continue;
         };
-        let destination = target.join("assets").join(&relative);
-        if destination.is_file() && destination.metadata().is_ok_and(|meta| size == 0 || meta.len() == size) {
-            horizon_client::sound_progress::step();
-            continue;
+        sounds.push(SoundObject {
+            name: name.clone(),
+            hash: hash.to_string(),
+            size,
+            destination: target.join("assets").join(relative),
+        });
+    }
+
+    // A resumed pass is the common one, and most files are already there. Counting
+    // them here, on this thread, keeps them out of the pool entirely; the count is
+    // reported below so the bar starts at what has actually been done, not at zero.
+    let mut work = Vec::with_capacity(sounds.len());
+    let mut present = 0usize;
+    for sound in &sounds {
+        if sound.present() {
+            present += 1;
+        } else {
+            work.push(sound);
         }
-        match fetch_object(&agent, hash, &destination) {
-            Ok(()) => got += 1,
-            Err(error) => {
-                missing += 1;
-                log::debug!("minecraft: {name}: {error}");
-            }
-        }
+    }
+
+    // The total the bar counts against: every sound the index names, including the
+    // ones that could not be placed. `begin` resets the count, so it comes before any
+    // `step` for the files already done.
+    horizon_client::sound_progress::begin((sounds.len() + unusable) as u32);
+    let already = unusable + present;
+    for _ in 0..already {
         horizon_client::sound_progress::step();
     }
-    if missing == 0 {
+
+    // Bounded by the phone's cores, by a sane ceiling, and by the files left: a
+    // resumed pass with a handful of stragglers should not start sixteen threads
+    // for them.
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |count| count.get())
+        .clamp(4, 16)
+        .min(work.len());
+    let next = AtomicUsize::new(0);
+    let got = AtomicUsize::new(0);
+    let missing = AtomicUsize::new(unusable);
+    let expired = AtomicBool::new(false);
+    // What the workers share: the queue, the list, the two counters and the expired
+    // flag, all as `&`, plus the deadline as a `Copy` value. `thread::scope` joins
+    // every worker before it returns, so these borrows cannot outlive it, and none of
+    // the shared pieces needs a lock. The references are bound here rather than inside
+    // the scope's body because a worker may only borrow data that outlives the scope.
+    let queue = &next;
+    let files = work.as_slice();
+    let got_count = &got;
+    let missing_count = &missing;
+    let out_of_time = &expired;
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            // `Instant` is `Copy`, so this `move` gives each worker its own copy of
+            // the deadline instead of a shared reference.
+            scope.spawn(move || {
+                // One agent per worker, built here rather than shared: no worker
+                // depends on `Agent` being `Sync`, and each keeps its own connection
+                // pool for the handful of objects it fetches.
+                let agent = ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(15))
+                    .timeout_read(Duration::from_secs(30))
+                    .build();
+                loop {
+                    if Instant::now() >= deadline {
+                        out_of_time.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    // The queue: whoever takes the next index owns that file. The
+                    // list is unique by name, so no two workers share a destination.
+                    let index = queue.fetch_add(1, Ordering::Relaxed);
+                    let Some(sound) = files.get(index) else {
+                        return;
+                    };
+                    match fetch_object(&agent, &sound.hash, &sound.destination) {
+                        Ok(()) => {
+                            got_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(error) => {
+                            missing_count.fetch_add(1, Ordering::Relaxed);
+                            log::debug!("minecraft: {}: {error}", sound.name);
+                        }
+                    }
+                    horizon_client::sound_progress::step();
+                }
+            });
+        }
+    });
+
+    // The scope has joined, so every worker's stores are visible here.
+    let got = got.load(Ordering::Relaxed);
+    let missing = missing.load(Ordering::Relaxed);
+    // Everything arrived even if the clock ran out on the way: that is a finished
+    // pass, not a partial one.
+    if missing == 0 && got == work.len() {
         let _ = fs::write(target.join(".sounds-complete"), b"");
         horizon_client::sound_progress::complete();
-        Ok(got)
+        return Ok(got);
+    }
+    horizon_client::sound_progress::stop();
+    if expired.load(Ordering::Relaxed) {
+        Err("reached the time budget".into())
     } else {
-        horizon_client::sound_progress::stop();
         Err(format!("{missing} sound files still missing"))
     }
 }
@@ -445,6 +566,8 @@ fn fill_sounds(app: &winit::platform::android::activity::AndroidApp) -> Result<u
 /// times: this is a few thousand requests over a phone's network, and one dropped
 /// connection should not cost the whole sound set.
 fn fetch_object(agent: &ureq::Agent, hash: &str, destination: &Path) -> Result<(), String> {
+    // Attempts, and so how many `.part` names one object can use.
+    const ATTEMPTS: usize = 3;
     if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!("bad asset hash {hash:?}"));
     }
@@ -455,24 +578,50 @@ fn fetch_object(agent: &ureq::Agent, hash: &str, destination: &Path) -> Result<(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
-    let partial = destination.with_extension("part");
-    let mut last = String::from("no attempt made");
-    for _ in 0..3 {
+    // A `.part` name per attempt, so a retry never reuses a file an earlier attempt
+    // may have left half-written. The destination belongs to this object alone — the
+    // work list is unique by name and the pool hands each index to one worker — so no
+    // other thread renames onto it. `create_dir_all` above is idempotent, so two
+    // workers making the same parent need no lock.
+    let attempt_once = |attempt: usize| -> Result<(), String> {
+        let partial = partial_path(destination, attempt);
         // A total timeout, not just connect/read: one stalled connection must not
-        // hold the whole sound set (or the background thread) open indefinitely.
-        match agent.get(&url).timeout(Duration::from_secs(60)).call() {
-            Ok(response) => match write_verified(response.into_reader(), &partial, hash) {
-                Ok(()) => {
-                    return fs::rename(&partial, destination)
-                        .map_err(|error| format!("{}: {error}", destination.display()));
-                }
-                Err(error) => last = error,
-            },
-            Err(error) => last = error.to_string(),
+        // hold a worker's slot for the whole budget.
+        let response = agent
+            .get(&url)
+            .timeout(Duration::from_secs(60))
+            .call()
+            .map_err(|error| error.to_string())?;
+        write_verified(response.into_reader(), &partial, hash)?;
+        fs::rename(&partial, destination)
+            .map_err(|error| format!("{}: {error}", destination.display()))
+    };
+    let mut last = String::from("no attempt made");
+    for attempt in 0..ATTEMPTS {
+        match attempt_once(attempt) {
+            // The rename moved the partial onto the destination: nothing is left.
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = error;
+                // `write_verified` removes the file when the SHA-1 is wrong; a read
+                // or write error leaves it, and the next attempt uses a new name.
+                let _ = fs::remove_file(partial_path(destination, attempt));
+            }
         }
     }
-    let _ = fs::remove_file(&partial);
     Err(last)
+}
+
+/// Where one attempt at `destination` writes before it is renamed into place. The
+/// first attempt keeps the plain `.part` name the code has always used, so a file an
+/// earlier, interrupted run left behind is overwritten and cleaned up rather than
+/// accumulating; later attempts get a number, so a retry never reads a previous
+/// attempt's half-written bytes.
+fn partial_path(destination: &Path, attempt: usize) -> PathBuf {
+    match attempt {
+        0 => destination.with_extension("part"),
+        attempt => destination.with_extension(format!("{attempt}.part")),
+    }
 }
 
 /// Stream a body into `partial`, refusing it unless its SHA-1 is `expected`.

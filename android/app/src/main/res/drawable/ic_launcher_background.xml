@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The adaptive icon's background layer: a 108x108 field, of which only the
+    middle 72dp survives the launcher's mask, so the pattern is kept inside that
+    square and reads as blocks rather than as a picture. The lighter squares sit
+    on the checkerboard diagonal on purpose: they are a texture, not a logo, so
+    they stay at #2E2450 against #241C3D (barely above noise on an OLED panel).
+    Vector-only because the APK ships no bitmaps.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#241C3D"
+        android:pathData="M0,0 h108 v108 h-108 z" />
+
+    <!-- Offset 36x36 blocks, checkerboard so no two touch and no seam shows. -->
+    <path
+        android:fillColor="#2E2450"
+        android:pathData="M36,0 h36 v36 h-36 z" />
+    <path
+        android:fillColor="#2E2450"
+        android:pathData="M0,36 h36 v36 h-36 z" />
+    <path
+        android:fillColor="#2E2450"
+        android:pathData="M72,36 h36 v36 h-36 z" />
+    <path
+        android:fillColor="#2E2450"
+        android:pathData="M36,72 h36 v36 h-36 z" />
+</vector>

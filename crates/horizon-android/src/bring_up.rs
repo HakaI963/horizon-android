@@ -174,6 +174,12 @@ pub struct BringUp {
     /// has no terminal, and a missing resource pack looks exactly like a dead driver
     /// unless the picture says which it is.
     notice: String,
+    /// Start the install as soon as the card can draw. The first launch used to
+    /// download and unpack on the thread before the loop existed, which is an ANR by
+    /// definition: the activity's `onStart` blocked for half a minute. Now the card
+    /// owns the first install exactly as it owns a retry, and the player watches it
+    /// happen instead of a frozen screen.
+    auto_install: bool,
     /// A retry of the install is running on a worker thread. The card keeps drawing
     /// and keeps taking taps while it does; the Java dialog is the progress surface.
     installing: bool,
@@ -499,6 +505,16 @@ impl BringUp {
     /// so the model is what this half can see for itself: whether the pack landed, what
     /// went wrong if it did not, and the one action that helps — install it.
     fn sync_launcher(&mut self, event_loop: &ActiveEventLoop) {
+        // The first launch's install starts here rather than before the loop existed,
+        // so the card is already drawing and the player sees it happen. It is one
+        // shot: `install_now` refuses to start a second job. The check is direct
+        // because the cached answer below is not read yet on this frame.
+        if self.auto_install {
+            self.auto_install = false;
+            if !installer::installed(&paths::resources_dir(&self.app)) {
+                self.install_now();
+            }
+        }
         // A worker's result lands before the model is built, so the frame that reports
         // it is the frame after it finished.
         self.poll_install();
@@ -844,10 +860,15 @@ impl ApplicationHandler for BringUp {
 /// The loop comes in rather than being built here: Android registers winit's handler on
 /// the activity the first time a loop is made and refuses a second one, so whoever
 /// builds it decides what runs. `notice` says why that is the card and not the game.
+///
+/// `install` says the pack is missing and this card should fetch it. That used to happen
+/// before the loop existed, which blocked the activity's `onStart` for the length of a
+/// 41 MB download; the card owns it now and draws while it runs.
 pub fn run(
     app: &AndroidApp,
     event_loop: EventLoop<()>,
     notice: &str,
+    install: bool,
 ) -> Result<(), Box<dyn Error>> {
     log::info!("bring-up: running the event loop");
     // The on-screen controls are what the player has instead of a keyboard from the
@@ -857,6 +878,7 @@ pub fn run(
     event_loop.run_app(&mut BringUp {
         app: app.clone(),
         notice: notice.to_owned(),
+        auto_install: install,
         installing: false,
         install_job: None,
         cached_installed: None,

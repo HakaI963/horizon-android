@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-        Edge to edge, no bars: a game draws over the whole panel. The cutout item
-        is read from API 28 up and ignored below it, which is why minSdk can stay
-        at 26 (where AAudio starts).
+        The items every API level needs live in HorizonBase so that values-v31/styles.xml
+        can add the API 31 splash attributes to Horizon without repeating them. Horizon
+        keeps the name the manifest and the activity already point at, so nothing else
+        in the app changes.
     -->
-    <style name="Horizon" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+    <style name="HorizonBase" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+
+    <!--
+        Edge to edge, no bars: a game draws over the whole panel. The cutout item
+        is read from API 28 up and ignored below it, which is why minSdk can stay
+        at 26 (where AAudio starts).
+    -->
+    <style name="Horizon" parent="@style/HorizonBase" />
 </resources>

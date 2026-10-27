@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive icon: API 26+ composites the two layers itself, so no PNG mipmaps
+    are needed at minSdk 26. The monochrome layer is an API 33 element and lives
+    in mipmap-anydpi-v33 so aapt2 never sees it in a -v26 resource.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

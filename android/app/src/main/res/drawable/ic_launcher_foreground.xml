@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The adaptive icon's foreground layer. Everything lives in the 18..90 safe
+    zone so no launcher mask clips the mark. Square corners throughout: the brand
+    is blocky, and a rounded glyph would fight the block texture behind it.
+    No gradients: a flat fill stays legible at 48dp and tints cleanly for the
+    monochrome layer. The sun is offset to the right of centre, above the right
+    bar, so the H reads as a horizon with a sun clearing it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#EDEAF7"
+        android:pathData="M30,30 h14 v48 h-14 z" />
+    <path
+        android:fillColor="#EDEAF7"
+        android:pathData="M64,30 h14 v48 h-14 z" />
+    <path
+        android:fillColor="#EDEAF7"
+        android:pathData="M30,48 h48 v12 h-48 z" />
+
+    <path
+        android:fillColor="#9A86FF"
+        android:pathData="M70,18 h12 v12 h-12 z" />
+</vector>

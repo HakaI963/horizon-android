@@ -19,7 +19,7 @@
 use std::cell::RefCell;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use horizon_controls::{Action, Hud, Layout, Rect};
 use imgui::{
@@ -73,6 +73,8 @@ pub struct Overlay {
     panel: bool,
     /// The launcher's front page, drawn in place of the HUD at boot.
     launcher: bool,
+    /// When the launcher came up, so its opening animation can run once per open.
+    launcher_since: Option<Instant>,
     /// What to show, gathered by the platform from the engine each frame.
     launcher_model: LauncherModel,
     /// What the player asked for, drained by the platform each frame.
@@ -125,6 +127,7 @@ impl Overlay {
             path,
             panel: false,
             launcher: false,
+            launcher_since: None,
             launcher_model: LauncherModel::default(),
             launcher_events: Vec::new(),
             launcher_fonts: None,
@@ -336,6 +339,9 @@ impl Overlay {
         width: f32,
         height: f32,
     ) -> Result<(), Box<dyn Error>> {
+        // Read before the destructure below: the opening needs `&self`, and that borrow
+        // cannot be alive while every field is borrowed at once.
+        let opening = self.launcher_opening();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -407,7 +413,16 @@ impl Overlay {
             let ui = imgui.new_frame();
             if *launcher {
                 if let Some(fonts) = launcher_fonts.as_ref() {
-                    launcher::draw(ui, launcher_model, fonts, *dpi, width, height, launcher_events);
+                    launcher::draw(
+                        ui,
+                        launcher_model,
+                        fonts,
+                        *dpi,
+                        width,
+                        height,
+                        opening,
+                        launcher_events,
+                    );
                 }
             } else {
                 hud_buttons(
@@ -538,6 +553,13 @@ impl Overlay {
     /// Show or hide the launcher's front page. Showing it lets go of any held
     /// button, so a player never comes back to a character walking into a wall.
     pub fn show_launcher(&mut self, on: bool) {
+        // Idempotent on purpose. The platform reports the launcher as up on every
+        // frame it is up, and the reset below throws away the deferred lift imgui
+        // needs to turn a tap into a click — which made every page of the launcher
+        // draw but answer to nothing. The state is cleared once, on the way in.
+        if self.launcher == on {
+            return;
+        }
         if on {
             self.hud.release_all();
             // The panel and the arrange mode are for the game behind the HUD, and the
@@ -550,8 +572,28 @@ impl Overlay {
             self.panel_rect = None;
             self.pointer = Pointer::idle();
             self.pending_release = false;
+            self.launcher_since = Some(Instant::now());
         }
         self.launcher = on;
+    }
+
+    /// How far the launcher's opening animation has got, 0 to 1. It holds the wordmark
+    /// on the glass, then reveals the interface; `None` once the opening is spent, so
+    /// the ordinary draw path costs nothing after the first second.
+    ///
+    /// The hold is shorter than the theme's desktop `OPENING_HOLD`: a phone is opened
+    /// and closed far more often than a desktop app, and a second and a half of static
+    /// wordmark is a delay there rather than a brand moment. The reveal keeps the
+    /// shared length, so the two platforms still move alike once they move.
+    fn launcher_opening(&self) -> Option<f32> {
+        let since = self.launcher_since?;
+        let elapsed = since.elapsed();
+        let hold = Duration::from_millis(420);
+        let reveal = horizon_theme::OPENING_REVEAL;
+        if elapsed >= hold + reveal {
+            return None;
+        }
+        Some(((elapsed.saturating_sub(hold)).as_secs_f32() / reveal.as_secs_f32()).clamp(0.0, 1.0))
     }
 
     pub fn launcher_active(&self) -> bool {

@@ -109,9 +109,12 @@ fn play(app: &winit::platform::android::activity::AndroidApp) {
             );
             match engine::event_loop(app) {
                 Ok(event_loop) => {
-                    if let Err(error) =
-                        bring_up::run(app, event_loop, "no resource pack: put one in import/")
-                    {
+                    if let Err(error) = bring_up::run(
+                        app,
+                        event_loop,
+                        "no resource pack: put one in import/",
+                        false,
+                    ) {
                         log::error!("Horizon for Android: the bring-up card stopped: {error}");
                     }
                 }
@@ -119,24 +122,23 @@ fn play(app: &winit::platform::android::activity::AndroidApp) {
             }
             return;
         }
+        // The install runs on the card's own worker, after the loop exists and with the
+        // card already drawing. Doing it here blocked the activity's `onStart` for the
+        // whole 41 MB download, which Android reads as an ANR; the card is the surface
+        // that can say what is happening while it happens.
         log::info!(
             "Horizon for Android: no pack at {}, installing Minecraft Java from Mojang",
             resources.display()
         );
-        if let Err(error) = installer::install(app) {
-            log::error!("Horizon for Android: the Minecraft install failed: {error}");
-            installer::fail_dialog(&error);
-            match engine::event_loop(app) {
-                Ok(event_loop) => {
-                    let notice = format!("Minecraft install failed: {error}");
-                    if let Err(error) = bring_up::run(app, event_loop, &notice) {
-                        log::error!("Horizon for Android: the bring-up card stopped: {error}");
-                    }
+        match engine::event_loop(app) {
+            Ok(event_loop) => {
+                if let Err(error) = bring_up::run(app, event_loop, "", true) {
+                    log::error!("Horizon for Android: the bring-up card stopped: {error}");
                 }
-                Err(error) => log::error!("Horizon for Android: no event loop: {error}"),
             }
-            return;
+            Err(error) => log::error!("Horizon for Android: no event loop: {error}"),
         }
+        return;
     }
     // The pack is on disk and the engine can run without it, so the sounds —
     // which the client JAR does not carry — fill in on their own thread while the

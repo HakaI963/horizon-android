@@ -52,8 +52,8 @@ android {
     }
 
     lint {
-        // A shell with no Java code and no icon of its own has nothing for lint
-        // to judge; the engine is checked by clippy instead.
+        // A shell whose only Java is the keyboard host has little for lint to
+        // judge; the engine is checked by clippy instead.
         abortOnError = false
     }
 }

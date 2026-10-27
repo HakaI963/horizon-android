@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The themed-icon layer (API 33+). The system recolours it from a single alpha
+    mask, so every path is opaque white and the sun is left out: a second block
+    that close to the bar would merge into one silhouette at status-bar size.
+    Same geometry as the foreground so the two never drift apart.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,30 h14 v48 h-14 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64,30 h14 v48 h-14 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,48 h48 v12 h-48 z" />
+</vector>
