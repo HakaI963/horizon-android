@@ -13113,6 +13113,12 @@ struct Loading {
     /// over the game. Kept so the load behind the animation has time to draw a frame.
     #[cfg(target_os = "android")]
     zoom_until: Option<std::time::Instant>,
+    /// Where the Skins page's model is turned to, and when it last turned: the page
+    /// advances it so the player rotates rather than standing still.
+    #[cfg(target_os = "android")]
+    skin_yaw: f32,
+    #[cfg(target_os = "android")]
+    skin_turned: std::time::Instant,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13538,6 +13544,10 @@ fn run_loading(
         sign_in_rx: None,
         #[cfg(target_os = "android")]
         zoom_until: None,
+        #[cfg(target_os = "android")]
+        skin_yaw: 0.6,
+        #[cfg(target_os = "android")]
+        skin_turned: std::time::Instant::now(),
         vanilla_root,
         pack_error,
         started,

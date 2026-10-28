@@ -2002,17 +2002,6 @@ fn skin_figure(
         let scale = 1.0 / (1.0 + depth * 0.006);
         [cx + x * u * scale, top + (32.0 - y) * u * scale]
     };
-    // One box: the eight corners in model space, the six faces, and where each face's
-    // pixels are in the skin. `origin` is the box's centre-bottom in model units.
-    struct Face {
-        corners: [usize; 4],
-        uv: [f32; 4],
-    }
-    let box_faces = |ox: f32, oy: f32, oz: f32, sx: f32, sy: f32, sz: f32| -> ([f32; 3], [f32; 3]) {
-        let _ = (ox, oy, oz);
-        ([sx, sy, sz], [ox, oy, oz])
-    };
-    let _ = box_faces;
     // The parts, in Minecraft's own proportions: head 8x8x8, body 8x12x4, arms and
     // legs 4x12x4 and 4x12x4, and the limbs sit at the body's sides and below it.
     let parts: [([f32; 3], [f32; 3], [[f32; 4]; 6]); 6] = [

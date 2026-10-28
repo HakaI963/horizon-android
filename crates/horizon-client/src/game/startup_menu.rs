@@ -642,6 +642,15 @@ impl Loading {
         };
         let accounts = self.launcher_accounts();
         let controls_preset = self.launcher_controls_preset();
+        // Turn the Skins model before the model is built, so the frame drawn is the
+        // frame the angle belongs to. A still figure reads as a drawing, and the point
+        // of the page is that this is the player.
+        if page == LauncherPage::Skins {
+            let now = std::time::Instant::now();
+            let delta = now.duration_since(self.skin_turned).as_secs_f32();
+            self.skin_turned = now;
+            self.skin_yaw = (self.skin_yaw + delta * 0.45) % std::f32::consts::TAU;
+        }
         // A sign-in that is waiting on the browser says so above the account list; a
         // finished one has already moved the notice to "Signed in as ...".
         let sign_in_line = match &self.sign_in {
@@ -663,6 +672,7 @@ impl Loading {
             ],
             skins,
             chosen_skin: chosen_skin.clone(),
+            skin_yaw: self.skin_yaw,
             accounts,
             controls_preset,
             hosting: self.hosting_address(),
