@@ -190,29 +190,60 @@ pub fn install_opener(open: fn(&str) -> bool) -> bool {
     OPENER.set(open).is_ok()
 }
 
-/// Ask the platform for a file picker, so the player can add a skin.
+/// Ask the platform for a file picker, so the player can add a file the game reads.
 ///
 /// Same seam as the URL opener, and for the same reason: a `content://` URI is an
 /// Android object the engine may not touch, and the activity is what can turn one into
-/// a file the game can read.
+/// a file the game can read. `kind` names the folder: `skin`, `mod`, `resourcepack`,
+/// `settings`.
 #[cfg(target_os = "android")]
-static PICKER: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+static PICKER: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
 
 /// Register the platform's file picker.
 #[cfg(target_os = "android")]
-pub fn install_picker(pick: fn() -> bool) -> bool {
+pub fn install_picker(pick: fn(&str) -> bool) -> bool {
     PICKER.set(pick).is_ok()
 }
 
-/// Show the file picker for a PNG skin. `false` when the platform has none, which is
+/// Show the file picker for `kind`. `false` when the platform has none, which is
 /// every desktop.
-pub fn pick_skin() -> bool {
+pub fn pick_file(kind: &str) -> bool {
     #[cfg(target_os = "android")]
     {
-        PICKER.get().is_some_and(|pick| pick())
+        PICKER.get().is_some_and(|pick| pick(kind))
     }
     #[cfg(not(target_os = "android"))]
     {
+        let _ = kind;
+        false
+    }
+}
+
+/// Show the file picker for a PNG skin. Kept as its own name because that is what the
+/// Skins page asks for.
+pub fn pick_skin() -> bool {
+    pick_file("skin")
+}
+
+/// Write a folder of the game's own files out where a file manager can reach it.
+#[cfg(target_os = "android")]
+static EXPORTER: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
+
+/// Register the platform's folder exporter.
+#[cfg(target_os = "android")]
+pub fn install_exporter(export: fn(&str) -> bool) -> bool {
+    EXPORTER.set(export).is_ok()
+}
+
+/// Export `kind` (`skins`, `mods`, `resourcepacks`, or empty for all of `import/`).
+pub fn export_files(kind: &str) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        EXPORTER.get().is_some_and(|export| export(kind))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = kind;
         false
     }
 }

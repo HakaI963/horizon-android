@@ -78,8 +78,16 @@ pub struct Overlay {
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
     launcher_since: Option<Instant>,
+    /// When Play was pressed, for the zoom into the world.
+    launcher_zoom_since: Option<Instant>,
     /// What to show, gathered by the platform from the engine each frame.
     launcher_model: LauncherModel,
+    /// Which page the launcher is on. This is the authority, not the model: the sidebar
+    /// changes it by a tap, and the platform changes it when a button that is not in the
+    /// sidebar — FILES, MULTIPLAYER, Settings, Back — asks for a page. Keeping it here
+    /// is what stops `set_launcher_model` from undoing the platform's answer with the
+    /// page the model happened to have last frame.
+    launcher_page: LauncherPage,
     /// What the player asked for, drained by the platform each frame.
     launcher_events: Vec<LauncherEvent>,
     /// The Geist faces the launcher draws with, once the fonts are added.
@@ -142,7 +150,9 @@ impl Overlay {
             panel: false,
             launcher: false,
             launcher_since: None,
+            launcher_zoom_since: None,
             launcher_model: LauncherModel::default(),
+            launcher_page: LauncherPage::Play,
             launcher_events: Vec::new(),
             launcher_fonts: None,
             skin_texture: None,
@@ -359,6 +369,7 @@ impl Overlay {
         // Read before the destructure below: the opening needs `&self`, and that borrow
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
+        let zoom = self.launcher_zoom();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -368,6 +379,7 @@ impl Overlay {
             panel,
             launcher,
             launcher_model,
+            launcher_page,
             launcher_events,
             launcher_fonts,
             skin_texture,
@@ -440,10 +452,15 @@ impl Overlay {
                         width,
                         height,
                         opening,
+                        zoom,
                         *panorama,
                         *skin_texture,
                         launcher_events,
                     );
+                    // The sidebar applies a tab tap to the model inside `draw`, so the
+                    // page the glass is on is read back here: that is what makes the
+                    // tap stick rather than being undone by the next model report.
+                    *launcher_page = launcher_model.page;
                 }
             } else {
                 hud_buttons(
@@ -663,6 +680,22 @@ impl Overlay {
         self.panorama = on;
     }
 
+    /// Re-read the touch layout from disk.
+    ///
+    /// The layout is read once at start, which is right for a file the player edits
+    /// outside the game. A preset chosen in the launcher is the same file written by
+    /// this program, so the HUD has to pick it up: without this, switching to the
+    /// Bedrock layout changed a file and nothing else, which is exactly what "the
+    /// button does nothing" looked like.
+    pub fn reload_layout(&mut self) {
+        self.hud.layout = Layout::load(&self.path).unwrap_or_default();
+        log::info!(
+            "overlay: the touch layout is now {} ({} buttons)",
+            self.hud.layout.preset,
+            self.hud.layout.controls.len()
+        );
+    }
+
     /// Show or hide the launcher's front page. Showing it lets go of any held
     /// button, so a player never comes back to a character walking into a wall.
     pub fn show_launcher(&mut self, on: bool) {
@@ -713,16 +746,42 @@ impl Overlay {
         self.launcher
     }
 
+    /// How far a Play transition has got, 0 to 1, while the launcher is zooming into
+    /// the world it is about to open. The launcher draws it; the platform opens the
+    /// world underneath it, so the tap never lands on a frozen frame.
+    pub fn launcher_zoom(&self) -> Option<f32> {
+        let since = self.launcher_zoom_since?;
+        let span = Duration::from_millis(520);
+        let t = since.elapsed().as_secs_f32() / span.as_secs_f32();
+        (t < 1.0).then_some(t.clamp(0.0, 1.0))
+    }
+
+    /// Start the zoom into the world. Called when Play is pressed, before the world
+    /// begins to load, so the animation covers the load rather than following it.
+    pub fn begin_launcher_zoom(&mut self) {
+        self.launcher_zoom_since = Some(Instant::now());
+    }
+
     /// The page the launcher is on, so the platform can keep its model in sync.
     pub fn launcher_page(&self) -> LauncherPage {
-        self.launcher_model.page
+        self.launcher_page
+    }
+
+    /// Move the launcher to `page` from the platform: what a FILES, MULTIPLAYER,
+    /// Settings or Back button means. The platform calls this while it handles the
+    /// event, then builds the model for the page `launcher_page` reports.
+    pub fn set_launcher_page(&mut self, page: LauncherPage) {
+        self.launcher_page = page;
+        self.launcher_model.page = page;
     }
 
     /// What to draw on the launcher next frame. The page and whether the name field is
     /// open belong to the glass rather than the engine, so they survive the report that
     /// arrives a frame after the finger asked for them.
     pub fn set_launcher_model(&mut self, mut model: LauncherModel) {
-        model.page = self.launcher_model.page;
+        // The page and the name field belong to the glass: the platform's report is a
+        // frame behind the finger, and letting it overwrite either would undo the tap.
+        model.page = self.launcher_page;
         model.editing = self.launcher_model.editing;
         self.launcher_model = model;
     }

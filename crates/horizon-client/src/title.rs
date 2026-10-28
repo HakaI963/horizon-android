@@ -109,6 +109,9 @@ pub enum Mode {
 pub enum Action {
     None,
     Quit,
+    /// The game's own Mods screen: the mods that are installed, with the way back to
+    /// the launcher's registry. Only offered when at least one mod is installed.
+    Mods,
     Options,
     Accessibility,
     Language,
@@ -568,6 +571,29 @@ impl Title {
         }
         folder
     }
+    /// Whether any `.hmod` is installed in the folder the game reads.
+    ///
+    /// A directory listing, and only asked on the main menu, which is a screen the
+    /// player sits on rather than one that redraws while playing. The cost is one
+    /// `read_dir` per frame of the title, which is why it is a count and not a parse.
+    fn mods_installed(&self) -> bool {
+        let folder = std::env::current_dir()
+            .unwrap_or_default()
+            .join("mods");
+        // A phone keeps them in `import/mods`, the folder the launcher installs into.
+        let import = crate::gfx::import_dir().join("mods");
+        [folder, import].iter().any(|dir| {
+            std::fs::read_dir(dir).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "hmod")
+                })
+            })
+        })
+    }
+
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
         let (w, h) = (w.ceil(), h.ceil());
         let b = |x: f32, y: f32, w: f32, label: &str, enabled: bool, id: u8| Button {
@@ -590,6 +616,12 @@ impl Title {
                     b(cx - 100.0, y + 96.0, 98.0, "Options...", true, 3),
                     b(cx + 2.0, y + 96.0, 98.0, "Quit Game", true, 2),
                 ];
+                // Mods, but only when there is something to manage: a button that
+                // opens an empty list on a fresh install is a button that teaches the
+                // player the menu does nothing.
+                if self.mods_installed() {
+                    buttons.push(b(cx - 100.0, y + 72.0, 200.0, "Mods", true, 8));
+                }
                 for (i, (label, enabled, id, icon, size)) in [
                     // Horizon's Join a Friend (an invite code) behind
                     // vanilla's Friends button.
@@ -1230,6 +1262,7 @@ impl Title {
                 Action::None
             }
             (Mode::Main, Some(2)) => Action::Quit,
+            (Mode::Main, Some(8)) => Action::Mods,
             (Mode::Main, Some(4)) => {
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::list(&self.saves));
                 Action::None

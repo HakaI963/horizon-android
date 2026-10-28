@@ -1319,6 +1319,11 @@ struct Game<'a> {
     /// Duration of the last frame in ticks (GUI easing).
     frame_ticks: f32,
     title: Option<Title>,
+    /// Set when the player asked, from the game's own menu, to go back to the
+    /// launcher. The app loop sees it and hands the screen back: a phone boots into the
+    /// launcher, so "Quit Game" means leaving Minecraft, not leaving Horizon.
+    #[cfg(target_os = "android")]
+    pub(super) back_to_launcher: bool,
     /// Armor slots: head, chest, legs, feet.
     armor: [Option<ItemStack>; 4],
     /// The off hand (Inventory slot 40, saved as slot 150; menu slot 504 here).
@@ -5501,7 +5506,30 @@ impl Game<'_> {
     /// can also be submitted by a key.
     fn title_action(&mut self, event_loop: &ActiveEventLoop, action: Action) -> Result<()> {
         match action {
-            Action::Quit => event_loop.exit(),
+            Action::Quit => {
+                #[cfg(target_os = "android")]
+                {
+                    // The launcher is the home screen: leaving the game's menu goes
+                    // back to it, and the overlay plays its own zoom-out as it returns.
+                    self.back_to_launcher = true;
+                }
+                #[cfg(not(target_os = "android"))]
+                event_loop.exit()
+            }
+            // The game's own Mods screen is the launcher's Mods page: one list, one
+            // install button, no second copy of the registry in the game's UI.
+            Action::Mods => {
+                #[cfg(target_os = "android")]
+                {
+                    self.back_to_launcher = true;
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    // A desktop has no launcher page to switch to: the Mods screen is
+                    // the desktop launcher's own window, not this program's.
+                    log::info!("Horizon: the desktop launcher owns the mods browser");
+                }
+            }
             Action::Options => self.open_options(true),
             Action::Accessibility => {
                 self.open_options_at(true, horizon_client::options_ui::Page::Accessibility)
@@ -11490,6 +11518,17 @@ impl ApplicationHandler for Game<'_> {
                     self.mapped_key(key, event.state == ElementState::Pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
+                    // The game's own "Quit Game" goes back to the launcher rather than
+                    // ending the process: a phone boots into the launcher, so that is
+                    // what leaving Minecraft means here. The overlay's opening runs
+                    // again as it comes back, which is the zoom out.
+                    #[cfg(target_os = "android")]
+                    if self.back_to_launcher {
+                        self.back_to_launcher = false;
+                        self.menu.return_to_launcher();
+                        self.title = None;
+                        self.screen = Screen::Playing;
+                    }
                     self.observe_fullscreen();
                     let now = Instant::now();
                     let frame_cpu = self
@@ -11967,6 +12006,8 @@ impl<'a> Game<'a> {
             scope_scale: 0.5,
             frame_ticks: 0.0,
             title: None,
+            #[cfg(target_os = "android")]
+            back_to_launcher: false,
             armor: [None, None, None, None],
             offhand: None,
             hand: Hand::Main,
@@ -13068,6 +13109,10 @@ struct Loading {
     /// The worker polling Microsoft while a sign-in runs.
     #[cfg(target_os = "android")]
     sign_in_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+    /// While a Play transition is running: the instant the launcher stops being drawn
+    /// over the game. Kept so the load behind the animation has time to draw a frame.
+    #[cfg(target_os = "android")]
+    zoom_until: Option<std::time::Instant>,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13491,6 +13536,8 @@ fn run_loading(
         sign_in: None,
         #[cfg(target_os = "android")]
         sign_in_rx: None,
+        #[cfg(target_os = "android")]
+        zoom_until: None,
         vanilla_root,
         pack_error,
         started,

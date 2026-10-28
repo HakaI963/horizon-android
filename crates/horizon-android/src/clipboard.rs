@@ -13,11 +13,13 @@
 
 use jni::objects::{JObject, JString, Reference};
 use jni::vm::JavaVM;
+use jni::strings::JNIStr;
 use jni::{Env, JValue, jni_sig, jni_str, sys};
 
 use horizon_client::clipboard::{
-    install_opener as register_opener, install_picker as register_picker,
-    install_reveal as register_reveal, install_system, SystemHooks,
+    install_exporter as register_exporter, install_opener as register_opener,
+    install_picker as register_picker, install_reveal as register_reveal, install_system,
+    SystemHooks,
 };
 
 use crate::APP;
@@ -50,28 +52,35 @@ pub fn install_opener() {
     }
 }
 
-/// Hand the engine the activity's file picker and file manager, beside the browser.
+/// Hand the engine the activity's file picker, exporter and file manager, beside the
+/// browser.
 pub fn install_picker() {
     if !register_picker(pick) {
-        log::warn!("clipboard: the skin picker was installed twice");
+        log::warn!("clipboard: the file picker was installed twice");
+    }
+    if !register_exporter(export) {
+        log::warn!("clipboard: the folder exporter was installed twice");
     }
     if !register_reveal(reveal) {
         log::warn!("clipboard: the file manager was installed twice");
     }
 }
 
-fn pick() -> bool {
+/// Call a `(String) -> void` method on the activity. The three file seams are the same
+/// call with a different method name, so they share it.
+fn call_with_string(method: &'static JNIStr, value: &str) -> bool {
     let Some((vm, activity)) = context() else {
         return false;
     };
     vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
         // SAFETY: the pointer is the activity's global reference, held by `APP`.
         let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
+        let text: JString = env.new_string(value)?;
         env.call_method(
             &*activity,
-            jni_str!("horizonPickSkin"),
-            jni_sig!("()V"),
-            &[],
+            method,
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&text)],
         )?
         .v()?;
         Ok(true)
@@ -79,24 +88,16 @@ fn pick() -> bool {
     .unwrap_or(false)
 }
 
+fn pick(kind: &str) -> bool {
+    call_with_string(jni_str!("horizonPickFile"), kind)
+}
+
+fn export(kind: &str) -> bool {
+    call_with_string(jni_str!("horizonExportFiles"), kind)
+}
+
 fn reveal(relative: &str) -> bool {
-    let Some((vm, activity)) = context() else {
-        return false;
-    };
-    vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
-        // SAFETY: the pointer is the activity's global reference, held by `APP`.
-        let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
-        let path: JString = env.new_string(relative)?;
-        env.call_method(
-            &*activity,
-            jni_str!("horizonOpenFiles"),
-            jni_sig!("(Ljava/lang/String;)V"),
-            &[JValue::Object(&path)],
-        )?
-        .v()?;
-        Ok(true)
-    })
-    .unwrap_or(false)
+    call_with_string(jni_str!("horizonOpenFiles"), relative)
 }
 
 fn open(url: &str) -> bool {

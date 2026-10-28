@@ -34,8 +34,10 @@ import android.widget.Toast;
  * the keys that change no text, and says them as edits to the game's focused field.
  */
 public class HorizonActivity extends NativeActivity {
-    /** The one result this activity asks for: a PNG the player picked for a skin. */
-    private static final int REQUEST_SKIN = 0x5c1;
+    /** The one result this activity asks for: files the player picked to import. */
+    private static final int REQUEST_FILE = 0x5c1;
+    /** What the last pick was for: skins, mods, resource packs or settings. */
+    private String pendingKind = "mod";
 
     private KeyboardField keyboard;
 
@@ -242,81 +244,151 @@ public class HorizonActivity extends NativeActivity {
     }
 
     /**
-     * Show the app's own files in the system file manager.
+     * Let the player pick files and copy them where the game reads them.
      *
-     * A NativeActivity has no folder dialog of its own, and the launcher's Files page
-     * lists what is there — but a player who wants to drop a mod or a skin in needs the
-     * system picker, not a list. The external-storage documents provider is the one
-     * every Android 11+ device has; a device without it gets the path in a toast
-     * instead of a dead button.
+     * `kind` is what the launcher asked for: `skin`, `mod`, `resourcepack` or
+     * `settings`. The system picker is the only way to reach a file outside this app's
+     * own storage on Android 11+, and the copy is what makes the choice visible to the
+     * engine: the document the player picked lives behind a content URI the game's
+     * own file reads cannot open.
      */
-    public void horizonOpenFiles(String relative) {
+    public void horizonPickFile(String kind) {
         runOnUiThread(() -> {
-            String path = "primary:Android/data/" + getPackageName() + "/files/"
-                    + (relative == null ? "" : relative);
-            try {
-                Uri uri = DocumentsContract.buildDocumentUri(
-                        "com.android.externalstorage.documents", path);
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "vnd.android.document/directory");
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                        | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(intent);
-            } catch (Exception error) {
-                Toast.makeText(this,
-                        "Files: " + getExternalFilesDir(null) + "/" + (relative == null ? "" : relative),
-                        Toast.LENGTH_LONG).show();
+            String type = "*/*";
+            if ("skin".equals(kind)) {
+                type = "image/png";
+            } else if ("mod".equals(kind)) {
+                type = "*/*";
             }
-        });
-    }
-
-    /**
-     * Let the player pick a PNG skin, and copy it where the launcher reads skins from.
-     *
-     * The picker is the system's; the copy is what makes the choice visible to the
-     * engine, because the document the player picked lives behind a content URI that
-     * the game's own file reads cannot open. `REQUEST_SKIN` is the only result this
-     * activity asks for.
-     */
-    public void horizonPickSkin() {
-        runOnUiThread(() -> {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("image/png");
+            intent.setType(type);
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            pendingKind = kind == null ? "mod" : kind;
             try {
-                startActivityForResult(intent, REQUEST_SKIN);
+                startActivityForResult(intent, REQUEST_FILE);
             } catch (Exception error) {
                 Toast.makeText(this, "No file picker on this device", Toast.LENGTH_SHORT).show();
             }
         });
     }
 
+    /**
+     * Write the game's own files out where the player can reach them.
+     *
+     * Export is the mirror of import: `kind` names a folder inside `import/`, and every
+     * file in it is copied to a folder the file manager can browse. A phone has no
+     * "save as" for a folder, so this is a folder, not a dialog.
+     */
+    public void horizonExportFiles(String kind) {
+        runOnUiThread(() -> {
+            java.io.File source = new java.io.File(getExternalFilesDir(null),
+                    "import/" + (kind == null ? "" : kind));
+            if (!source.isDirectory()) {
+                Toast.makeText(this, "Nothing to export yet", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            java.io.File target = new java.io.File(getExternalFilesDir(null),
+                    "export/" + (kind == null ? "" : kind));
+            try {
+                copyTree(source, target);
+                Toast.makeText(this, "Exported to " + target, Toast.LENGTH_LONG).show();
+            } catch (Exception error) {
+                Toast.makeText(this, "Export failed: " + error, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private static void copyTree(java.io.File from, java.io.File to) throws java.io.IOException {
+        if (!to.isDirectory() && !to.mkdirs()) {
+            throw new java.io.IOException("cannot create " + to);
+        }
+        java.io.File[] entries = from.listFiles();
+        if (entries == null) {
+            return;
+        }
+        for (java.io.File entry : entries) {
+            java.io.File target = new java.io.File(to, entry.getName());
+            if (entry.isDirectory()) {
+                copyTree(entry, target);
+            } else {
+                try (java.io.InputStream in = new java.io.FileInputStream(entry);
+                     java.io.OutputStream out = new java.io.FileOutputStream(target)) {
+                    byte[] buffer = new byte[1 << 16];
+                    int count;
+                    while ((count = in.read(buffer)) > 0) {
+                        out.write(buffer, 0, count);
+                    }
+                }
+            }
+        }
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != REQUEST_SKIN || result != RESULT_OK || data == null || data.getData() == null) {
+        if (request != REQUEST_FILE || result != RESULT_OK || data == null) {
             return;
         }
-        Uri source = data.getData();
-        try (java.io.InputStream in = getContentResolver().openInputStream(source)) {
-            java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/skins");
-            if (!dir.isDirectory() && !dir.mkdirs()) {
-                Toast.makeText(this, "Could not create " + dir, Toast.LENGTH_LONG).show();
-                return;
+        java.util.List<Uri> picked = new java.util.ArrayList<>();
+        if (data.getClipData() != null) {
+            for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                picked.add(data.getClipData().getItemAt(i).getUri());
             }
-            String name = "skin-" + System.currentTimeMillis() + ".png";
-            java.io.File out = new java.io.File(dir, name);
-            try (java.io.OutputStream stream = new java.io.FileOutputStream(out)) {
-                byte[] buffer = new byte[1 << 16];
-                int count;
-                while ((count = in.read(buffer)) > 0) {
-                    stream.write(buffer, 0, count);
+        } else if (data.getData() != null) {
+            picked.add(data.getData());
+        }
+        String folder = "skins".equals(pendingKind) ? "skins"
+                : "resourcepack".equals(pendingKind) ? "resourcepacks"
+                : "settings".equals(pendingKind) ? ""
+                : "mods";
+        java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/" + folder);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            Toast.makeText(this, "Could not create " + dir, Toast.LENGTH_LONG).show();
+            return;
+        }
+        int copied = 0;
+        for (Uri source : picked) {
+            String name = displayName(source);
+            try (java.io.InputStream in = getContentResolver().openInputStream(source)) {
+                if (in == null) {
+                    continue;
+                }
+                java.io.File out = new java.io.File(dir, name);
+                try (java.io.OutputStream stream = new java.io.FileOutputStream(out)) {
+                    byte[] buffer = new byte[1 << 16];
+                    int count;
+                    while ((count = in.read(buffer)) > 0) {
+                        stream.write(buffer, 0, count);
+                    }
+                }
+                copied++;
+            } catch (Exception error) {
+                Toast.makeText(this, "Could not read " + name + ": " + error, Toast.LENGTH_LONG).show();
+            }
+        }
+        if (copied > 0) {
+            Toast.makeText(this, "Added " + copied + " file(s) to import/" + folder,
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** The file name a content URI carries, with the extension the picker reports. */
+    private String displayName(Uri uri) {
+        try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) {
+                    String name = cursor.getString(index);
+                    if (name != null && !name.isEmpty()) {
+                        return name.replace('/', '_');
+                    }
                 }
             }
-            Toast.makeText(this, "Added " + name, Toast.LENGTH_SHORT).show();
-        } catch (Exception error) {
-            Toast.makeText(this, "Could not read that file: " + error, Toast.LENGTH_LONG).show();
+        } catch (Exception ignored) {
         }
+        String fallback = uri.getLastPathSegment();
+        return fallback == null ? "file-" + System.currentTimeMillis() : fallback.replace('/', '_');
     }
 
     /**

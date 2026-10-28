@@ -161,6 +161,10 @@ pub struct LauncherModel {
     /// regions onto the model. The texture itself belongs to the overlay, which owns
     /// the device; this is only what the layout needs to know about it.
     pub skin_size: [u32; 2],
+    /// Where the model is turned to, in radians. The platform advances it so the
+    /// player turns on the page; a still figure is what made the old page look like a
+    /// drawing rather than a model.
+    pub skin_yaw: f32,
     /// Which built-in touch layout is in force: `"java"` or `"bedrock"`.
     pub controls_preset: String,
     /// While a world is hosted: the address friends join on.
@@ -223,6 +227,11 @@ pub enum LauncherEvent {
     ExportSettings,
     /// Read the newest settings archive from import/.
     ImportSettings,
+    /// Pick a file of this kind from the system picker and copy it where the game
+    /// reads it: "skin", "mod", "resourcepack", "settings".
+    ImportFiles(String),
+    /// Copy a folder of the game's own files out where a file manager can reach it.
+    ExportFiles(String),
     Quit,
     /// A slider moved: `options.txt` key and its new value.
     SetOption(String, f32),
@@ -580,14 +589,18 @@ pub fn draw(
     width: f32,
     height: f32,
     opening: Option<f32>,
+    /// A Play transition in progress, 0 to 1: the page zooms in, the wordmark fades,
+    /// and the last frame is the world's own loading screen.
+    zoom: Option<f32>,
     panorama: bool,
     skin: Option<TextureId>,
     out: &mut Vec<LauncherEvent>,
 ) {
     let c = &THEME;
     // The opening owns the glass until it is spent. Its last frame is the first one
-    // where a finger is allowed to land on anything.
-    let live = !matches!(opening, Some(t) if t < 1.0);
+    // where a finger is allowed to land on anything. A Play transition locks it out
+    // too: the world is opening behind the zoom, and a second tap has nowhere to go.
+    let live = !matches!(opening, Some(t) if t < 1.0) && zoom.is_none();
     let mut sink = Sink { events: out, live };
     let g = Grid::new(width, dpi);
     // The interface arrives by rising a little and fading in; the rise is one number
@@ -614,6 +627,13 @@ pub fn draw(
         .build(|| {
             if matches!(opening, Some(t) if t <= 0.0) {
                 splash(ui, fonts, c, dpi, width, height);
+                return;
+            }
+            // A Play transition: the page itself is drawn, then a zoom and a fade go
+            // over it. The last frame is opaque, so the world's loading screen arrives
+            // under a dark glass rather than with a cut.
+            if let Some(t) = zoom {
+                zoom_out(ui, fonts, c, dpi, width, height, t, model, panorama);
                 return;
             }
             // The page the *model* was built for. The column below applies a tab tap
@@ -709,6 +729,82 @@ pub fn draw(
     if model.editing && live {
         rename_dialog(ui, model, fonts, c, dpi, width, height, &mut sink);
     }
+}
+
+/// The Play transition, drawn in place of the page: the panorama pushes in towards
+/// the middle while the wordmark and the controls fade, and the last frame is a dark
+/// glass the world's own loading screen appears behind.
+///
+/// imgui has no transform for a whole page, so the zoom is the panorama's own frame:
+/// the art is already behind this window and cannot be scaled from here, so the effect
+/// is made of what can move — a vignette that closes in, the wordmark growing, and the
+/// scrim deepening. That reads as a push into the world without needing a second pass
+/// over the engine's cube map.
+fn zoom_out(
+    ui: &Ui,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    width: f32,
+    height: f32,
+    t: f32,
+    model: &LauncherModel,
+    panorama: bool,
+) {
+    let ease = horizon_theme::ease_out_cubic(t);
+    let draw = ui.get_window_draw_list();
+    // The glass the page was on: the panorama shows through at the start, and by the
+    // end this is the same near-black the loading screen sits on.
+    if !panorama {
+        fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+    }
+    // A closing vignette: four quads whose inner edges march inwards, which is what a
+    // camera pushing into a scene does to its edges.
+    let inset = (0.5 - 0.5 * ease) * height * 0.55;
+    let dark = 0.55 + 0.45 * ease;
+    draw.add_rect_filled_multicolor(
+        [0.0, 0.0],
+        [width, inset.max(1.0)],
+        rgba(c.page, dark),
+        rgba(c.page, dark),
+        rgba(c.page, 0.0),
+        rgba(c.page, 0.0),
+    );
+    draw.add_rect_filled_multicolor(
+        [0.0, height - inset.max(1.0)],
+        [width, height],
+        rgba(c.page, 0.0),
+        rgba(c.page, 0.0),
+        rgba(c.page, dark),
+        rgba(c.page, dark),
+    );
+    // The wordmark: it grows a little and fades, which is the part of the page that
+    // says what the player is leaving.
+    let scale = 1.0 + 0.35 * ease;
+    let alpha = (1.0 - ease).powf(1.6);
+    if alpha > 0.01 {
+        let _f = ui.push_font(fonts.title);
+        let [tw, th] = ui.calc_text_size("MINECRAFT");
+        let cx = width / 2.0 - tw * scale / 2.0;
+        let cy = height * 0.40 - th * scale / 2.0;
+        // The font cannot be scaled here, so the growth is the shadow behind it: two
+        // offset copies widen as the ease runs, which reads as the word coming at the
+        // viewer.
+        let spread = 1.0 + 6.0 * ease * dpi;
+        draw.add_text(
+            [cx - spread, cy + spread],
+            rgba(0x000000, 0.45 * alpha),
+            "MINECRAFT",
+        );
+        draw.add_text([cx, cy], rgba(0xffffff, alpha), "MINECRAFT");
+    }
+    // The last stretch is nearly opaque, so the loading screen behind it is a fade and
+    // not a cut.
+    if ease > 0.55 {
+        let veil = ((ease - 0.55) / 0.45).powf(1.4);
+        fill(&draw, [0.0, 0.0], [width, height], c.page, veil * 0.92, 0.0);
+    }
+    let _ = (dpi, model);
 }
 
 /// The hold before the interface arrives: the wordmark on the glass and nothing else.
@@ -1357,9 +1453,45 @@ fn files_page(
         let blurb = "The folder the game reads, where a file manager can reach it.";
         draw.add_text([g.x + g.pad, y - 20.0 * dpi], rgba(c.muted, 1.0), blurb);
     }
-    let btn_w = 220.0 * dpi;
+    // The four things a player does with files, each a real system dialog: import
+    // opens the picker and copies the result where the game reads it, export copies a
+    // folder out where a file manager can reach it. These used to be a toast naming a
+    // path, which is not a button a phone can act on.
     let btn_h = 42.0 * dpi;
-    if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, btn_w, btn_h, "OPEN IN FILE MANAGER", c.accent, c.accent_lip, c.on_accent) {
+    let btn_w = 176.0 * dpi;
+    let gap = 10.0 * dpi;
+    let mut bx = g.x + g.pad;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "IMPORT SKIN", c.accent, c.accent_lip, c.on_accent) {
+        sink.push(LauncherEvent::ImportFiles("skin".into()));
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "IMPORT MOD", c.accent, c.accent_lip, c.on_accent) {
+        sink.push(LauncherEvent::ImportFiles("mod".into()));
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "IMPORT PACK", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::ImportFiles("resourcepack".into()));
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "IMPORT SETTINGS", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::ImportFiles("settings".into()));
+    }
+    y += btn_h + gap;
+
+    let mut bx = g.x + g.pad;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "EXPORT SKINS", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::ExportFiles("skins".into()));
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "EXPORT MODS", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::ExportFiles("mods".into()));
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "EXPORT SETTINGS", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::ExportSettings);
+    }
+    bx += btn_w + gap;
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "OPEN FOLDER", c.button, c.bevel, c.ink) {
         sink.push(LauncherEvent::RevealFiles);
     }
     y += btn_h + 22.0 * dpi;
@@ -1663,6 +1795,7 @@ fn skins_page(
                 mx + model_w / 2.0,
                 y + 26.0 * dpi,
                 figure_h,
+                model.skin_yaw,
             ),
             None => player_figure(
                 &draw,
@@ -1712,6 +1845,31 @@ fn skins_page(
     } else {
         y + model_h + g.pad
     };
+
+    // The way in: the system picker, which copies the PNG into import/skins. This
+    // stays in the launcher — handing the player to the game's own skin screen is a
+    // different page in a different program, and the file would not land where this
+    // page lists it.
+    let seg_h = 44.0 * dpi;
+    if wy + seg_h <= height + rise
+        && raised_button(
+            ui,
+            fonts,
+            c,
+            dpi,
+            wx,
+            wy,
+            ww,
+            seg_h,
+            "+ BROWSE CUSTOM SKIN (PNG)",
+            c.accent,
+            c.accent_lip,
+            c.on_accent,
+        )
+    {
+        sink.push(LauncherEvent::OpenSkins);
+    }
+    wy += seg_h + 20.0 * dpi;
 
     // The library: every PNG in import/skins, drawn with the PNG itself, so the grid
     // shows the skins rather than their file names.
@@ -1800,12 +1958,15 @@ fn skins_page(
     }
 }
 
-/// The player, drawn from the skin's own pixels: head, body, arms and legs, each a
-/// quad sampling the region of the PNG the model uses for that face.
+/// The player, drawn as the real model: a head, a body, two arms and two legs, each
+/// a box with the skin's own pixels on every face the model shows.
 ///
-/// The layout is the standard 64x64 skin (and the 64x32 legacy one, whose front
-/// faces sit at the same coordinates); a face that is not there — a size this build
-/// does not know — leaves the figure as blocks rather than drawing garbage.
+/// This is a 3D projection rather than a stack of rectangles. Each part is a cube in
+/// model space, its eight corners are rotated by the page's own yaw and tilted by a
+/// fixed pitch, and each visible face is a textured quad with the UVs Minecraft's
+/// model uses for that face. A cube's faces are painted back to front, so the near
+/// ones cover the far ones the way a real model does.
+#[allow(clippy::too_many_arguments)]
 fn skin_figure(
     ui: &Ui,
     draw: &DrawListMut<'_>,
@@ -1814,51 +1975,206 @@ fn skin_figure(
     cx: f32,
     top: f32,
     height: f32,
+    yaw: f32,
 ) {
     let (w, h) = (size[0] as f32, size[1] as f32);
     if w < 64.0 || h < 32.0 {
         return;
     }
     let legacy = h < 64.0;
-    // The figure is eight units of body wide and thirteen tall, so the whole thing
-    // fits the height it was given without spilling out of the card.
-    let u = (height / 15.0).max(1.0);
-    let body_w = 4.0 * u;
-    let head = 4.0 * u;
-    let part = |x0: f32, y0: f32, x1: f32, y1: f32, min: [f32; 2], max: [f32; 2]| {
-        draw.add_image(texture, min, max)
-            .uv_min([x0 / w, y0 / h])
-            .uv_max([x1 / w, y1 / h])
-            .build();
-    };
-    let x0 = cx - head / 2.0;
-    // Head: the front face, then the hat layer over it when the skin has one.
-    part(8.0, 8.0, 16.0, 16.0, [x0, top], [x0 + head, top + head]);
-    part(40.0, 8.0, 48.0, 16.0, [x0, top], [x0 + head, top + head]);
-    let body_y = top + head;
-    let body_h = 3.0 * u;
-    part(20.0, 20.0, 28.0, 32.0, [cx - body_w / 2.0, body_y], [cx + body_w / 2.0, body_y + body_h]);
-    // Arms: the right one from its own face, the left from the mirrored copy on a
-    // legacy skin (which has no left-hand region of its own).
-    let arm_w = 1.0 * u;
-    let arm_h = 3.0 * u;
-    part(44.0, 20.0, 48.0, 32.0, [cx - body_w / 2.0 - arm_w, body_y], [cx - body_w / 2.0, body_y + arm_h]);
-    if legacy {
-        part(44.0, 20.0, 48.0, 32.0, [cx + body_w / 2.0, body_y], [cx + body_w / 2.0 + arm_w, body_y + arm_h]);
-    } else {
-        part(36.0, 52.0, 40.0, 64.0, [cx + body_w / 2.0, body_y], [cx + body_w / 2.0 + arm_w, body_y + arm_h]);
-    }
-    // Legs, likewise.
-    let leg_y = body_y + body_h;
-    let leg_h = 4.0 * u;
-    let leg_w = 1.0 * u;
-    part(4.0, 20.0, 8.0, 32.0, [cx - body_w / 2.0, leg_y], [cx - body_w / 2.0 + leg_w, leg_y + leg_h]);
-    if legacy {
-        part(4.0, 20.0, 8.0, 32.0, [cx + body_w / 2.0 - leg_w, leg_y], [cx + body_w / 2.0, leg_y + leg_h]);
-    } else {
-        part(20.0, 52.0, 24.0, 64.0, [cx + body_w / 2.0 - leg_w, leg_y], [cx + body_w / 2.0, leg_y + leg_h]);
-    }
+    // Model units: the player is 32 tall, and the figure's height on screen decides
+    // how many pixels one unit is.
+    let u = height / 34.0;
     let _ = ui;
+    // A slight downward look, which is how a skin viewer shows a standing player.
+    let pitch = 0.16f32;
+    let (sy, cy_) = (yaw.sin(), yaw.cos());
+    let (sp, cp) = (pitch.sin(), pitch.cos());
+    // Model space: x right, y up, z towards the viewer. The model's origin is between
+    // the feet; `top` is where the top of the head should land on screen.
+    let project = |p: [f32; 3]| -> [f32; 2] {
+        // Rotate about Y (the yaw), then about X (the fixed pitch).
+        let x = p[0] * cy_ + p[2] * sy;
+        let z = -p[0] * sy + p[2] * cy_;
+        let y = p[1] * cp - z * sp;
+        let depth = p[1] * sp + z * cp;
+        // A weak perspective: enough to read as a solid, not enough to distort.
+        let scale = 1.0 / (1.0 + depth * 0.006);
+        [cx + x * u * scale, top + (32.0 - y) * u * scale]
+    };
+    // One box: the eight corners in model space, the six faces, and where each face's
+    // pixels are in the skin. `origin` is the box's centre-bottom in model units.
+    struct Face {
+        corners: [usize; 4],
+        uv: [f32; 4],
+    }
+    let box_faces = |ox: f32, oy: f32, oz: f32, sx: f32, sy: f32, sz: f32| -> ([f32; 3], [f32; 3]) {
+        let _ = (ox, oy, oz);
+        ([sx, sy, sz], [ox, oy, oz])
+    };
+    let _ = box_faces;
+    // The parts, in Minecraft's own proportions: head 8x8x8, body 8x12x4, arms and
+    // legs 4x12x4 and 4x12x4, and the limbs sit at the body's sides and below it.
+    let parts: [([f32; 3], [f32; 3], [[f32; 4]; 6]); 6] = [
+        // Head: front, right, back, left, top, bottom.
+        (
+            [0.0, 24.0, 0.0],
+            [8.0, 8.0, 8.0],
+            [
+                [8.0, 8.0, 16.0, 16.0],
+                [0.0, 8.0, 8.0, 16.0],
+                [24.0, 8.0, 32.0, 16.0],
+                [16.0, 8.0, 24.0, 16.0],
+                [8.0, 0.0, 16.0, 8.0],
+                [16.0, 0.0, 24.0, 8.0],
+            ],
+        ),
+        // Body: front, right, back, left, top, bottom.
+        (
+            [0.0, 12.0, 0.0],
+            [8.0, 12.0, 4.0],
+            [
+                [20.0, 20.0, 28.0, 32.0],
+                [16.0, 20.0, 20.0, 32.0],
+                [32.0, 20.0, 40.0, 32.0],
+                [28.0, 20.0, 32.0, 32.0],
+                [20.0, 16.0, 28.0, 20.0],
+                [28.0, 16.0, 36.0, 20.0],
+            ],
+        ),
+        // Right arm (the model's left as it faces us), 4 wide: it hangs at x -6.
+        (
+            [-6.0, 12.0, 0.0],
+            [4.0, 12.0, 4.0],
+            [
+                [44.0, 20.0, 48.0, 32.0],
+                [40.0, 20.0, 44.0, 32.0],
+                [36.0, 20.0, 40.0, 32.0],
+                [32.0, 20.0, 36.0, 32.0],
+                [44.0, 16.0, 48.0, 20.0],
+                [48.0, 16.0, 52.0, 20.0],
+            ],
+        ),
+        // Left arm.
+        (
+            [6.0, 12.0, 0.0],
+            [4.0, 12.0, 4.0],
+            if legacy {
+                [
+                    [44.0, 20.0, 48.0, 32.0],
+                    [40.0, 20.0, 44.0, 32.0],
+                    [36.0, 20.0, 40.0, 32.0],
+                    [32.0, 20.0, 36.0, 32.0],
+                    [44.0, 16.0, 48.0, 20.0],
+                    [48.0, 16.0, 52.0, 20.0],
+                ]
+            } else {
+                [
+                    [36.0, 52.0, 40.0, 64.0],
+                    [32.0, 52.0, 36.0, 64.0],
+                    [44.0, 52.0, 48.0, 64.0],
+                    [40.0, 52.0, 44.0, 64.0],
+                    [36.0, 48.0, 40.0, 52.0],
+                    [40.0, 48.0, 44.0, 52.0],
+                ]
+            },
+        ),
+        // Right leg.
+        (
+            [-2.0, 0.0, 0.0],
+            [4.0, 12.0, 4.0],
+            [
+                [4.0, 20.0, 8.0, 32.0],
+                [0.0, 20.0, 4.0, 32.0],
+                [12.0, 20.0, 16.0, 32.0],
+                [8.0, 20.0, 12.0, 32.0],
+                [4.0, 16.0, 8.0, 20.0],
+                [8.0, 16.0, 12.0, 20.0],
+            ],
+        ),
+        // Left leg.
+        (
+            [2.0, 0.0, 0.0],
+            [4.0, 12.0, 4.0],
+            if legacy {
+                [
+                    [4.0, 20.0, 8.0, 32.0],
+                    [0.0, 20.0, 4.0, 32.0],
+                    [12.0, 20.0, 16.0, 32.0],
+                    [8.0, 20.0, 12.0, 32.0],
+                    [4.0, 16.0, 8.0, 20.0],
+                    [8.0, 16.0, 12.0, 20.0],
+                ]
+            } else {
+                [
+                    [20.0, 52.0, 24.0, 64.0],
+                    [16.0, 52.0, 20.0, 64.0],
+                    [28.0, 52.0, 32.0, 64.0],
+                    [24.0, 52.0, 28.0, 64.0],
+                    [20.0, 48.0, 24.0, 52.0],
+                    [24.0, 48.0, 28.0, 52.0],
+                ]
+            },
+        ),
+    ];
+    // Every quad, with the depth it should be painted at, so the near ones go last.
+    let mut quads: Vec<(f32, [[f32; 2]; 4], [f32; 4])> = Vec::new();
+    for (origin, size, faces) in parts {
+        let [ox, oy, oz] = origin;
+        let [sx, sy, sz] = size;
+        let (x0, x1) = (ox - sx / 2.0, ox + sx / 2.0);
+        let (y0, y1) = (oy, oy + sy);
+        let (z0, z1) = (oz - sz / 2.0, oz + sz / 2.0);
+        // The eight corners, in the order the faces below index them.
+        let corners = [
+            [x0, y1, z1],
+            [x1, y1, z1],
+            [x1, y0, z1],
+            [x0, y0, z1],
+            [x0, y1, z0],
+            [x1, y1, z0],
+            [x1, y0, z0],
+            [x0, y0, z0],
+        ];
+        // The six faces, each as four corner indices going round it.
+        let faces_at: [[usize; 4]; 6] = [
+            [0, 1, 2, 3],
+            [1, 5, 6, 2],
+            [5, 4, 7, 6],
+            [4, 0, 3, 7],
+            [4, 5, 1, 0],
+            [3, 2, 6, 7],
+        ];
+        for (face, uv) in faces_at.iter().zip(faces.iter()) {
+            let points = [
+                project(corners[face[0]]),
+                project(corners[face[1]]),
+                project(corners[face[2]]),
+                project(corners[face[3]]),
+            ];
+            // The depth is the average of the four corners after the same rotation the
+            // projection uses: a bigger value is nearer.
+            let depth: f32 = face
+                .iter()
+                .map(|&i| {
+                    let p = corners[i];
+                    let x = p[0] * cy_ + p[2] * sy;
+                    let z = -p[0] * sy + p[2] * cy_;
+                    p[1] * sp + z * cp
+                })
+                .sum::<f32>()
+                / 4.0;
+            let uv = [uv[0] / w, uv[1] / h, uv[2] / w, uv[3] / h];
+            quads.push((depth, points, uv));
+        }
+    }
+    // Far first: the projection's depth is towards the viewer, so paint ascending.
+    quads.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, p, uv) in quads {
+        draw.add_image_quad(texture, p[0], p[1], p[2], p[3])
+            .uv([uv[0], uv[1]], [uv[2], uv[1]], [uv[2], uv[3]], [uv[0], uv[3]])
+            .build();
+    }
 }
 
 /// A player as blocks: head, body, arms, legs. The fallback when no skin is
@@ -2306,10 +2622,14 @@ fn profile_page(
             sink.push(LauncherEvent::Goto(LauncherPage::Settings));
         }
         if raised_button(ui, fonts, c, dpi, g.x + g.pad + btn_w + 10.0 * dpi, y, btn_w, btn_h, "EXPORT", c.button, c.bevel, c.ink) {
-            sink.push(LauncherEvent::ExportSettings);
+            // A folder the file manager can reach, not a path in a toast: the settings
+            // archive goes to `export/settings` beside everything else.
+            sink.push(LauncherEvent::ExportFiles("".into()));
         }
         if raised_button(ui, fonts, c, dpi, g.x + g.pad + (btn_w + 10.0 * dpi) * 2.0, y, btn_w, btn_h, "IMPORT", c.button, c.bevel, c.ink) {
-            sink.push(LauncherEvent::ImportSettings);
+            // The system picker, so a settings archive from another device can be
+            // chosen rather than guessed at.
+            sink.push(LauncherEvent::ImportFiles("settings".into()));
         }
     }
 }

@@ -128,6 +128,24 @@ impl StartupMenu {
         // here walked the player back onto the launcher from wherever they had got to.
     }
 
+    /// Leave the game's own menus and go back to the launcher's front page.
+    ///
+    /// The phone boots into the launcher, so it is the home screen of this program:
+    /// the title's "Quit Game" means leaving Minecraft, not leaving Horizon. The zoom
+    /// back out is the launcher's own opening, played in reverse, which the overlay
+    /// runs when it is shown again.
+    #[cfg(target_os = "android")]
+    pub(super) fn return_to_launcher(&mut self) {
+        self.options_open = false;
+        if let Some(title) = &mut self.title {
+            title.mode = horizon_client::title::Mode::Launcher;
+        }
+        self.launcher_page = Some(LauncherPage::Play);
+        self.launcher_worlds = None;
+        self.launcher_notice = None;
+        log::info!("launcher: back to the front page from the game's own menu");
+    }
+
     /// Whether the launcher's front page is still on the screen. The engine may finish
     /// loading behind it — it just must not take the screen over until the player leaves.
     #[cfg(target_os = "android")]
@@ -510,7 +528,28 @@ impl Loading {
 
     fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
         match action {
-            Action::Quit => event_loop.exit(),
+            // On a phone the launcher is the home screen, so "Quit Game" from the
+            // game's own menu means "back to the launcher", not "end the process": the
+            // player asked to leave Minecraft, not to close Horizon. The desktop has no
+            // launcher behind the title, so there it still exits.
+            Action::Quit => {
+                #[cfg(target_os = "android")]
+                {
+                    self.menu.return_to_launcher();
+                }
+                #[cfg(not(target_os = "android"))]
+                event_loop.exit()
+            }
+            // The game's own Mods button is the launcher's Mods page, which is where
+            // installing one lives. The title is the launcher's own front page here, so
+            // this is a page change, not a screen of its own.
+            Action::Mods => {
+                #[cfg(target_os = "android")]
+                {
+                    self.menu.launcher_page = Some(LauncherPage::Mods);
+                    horizon_overlay::with(|o| o.set_launcher_page(LauncherPage::Mods));
+                }
+            }
             Action::Options => self.open_menu_options(Page::Main),
             Action::Accessibility => self.open_menu_options(Page::Accessibility),
             Action::Language => self.open_menu_options(Page::Language),
@@ -536,6 +575,18 @@ impl Loading {
         // A Microsoft sign-in runs on a worker; its answer arrives here.
         self.poll_sign_in();
         if self.menu.launcher_page.is_none() {
+            // A Play transition keeps the launcher on the glass until the zoom has
+            // played out: the world is loading behind it, and clearing the page at the
+            // tap would leave a frozen frame where the animation is.
+            if let Some(until) = self.zoom_until {
+                if std::time::Instant::now() < until {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                self.zoom_until = None;
+            }
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
         }
@@ -756,14 +807,34 @@ impl Loading {
             log::info!("launcher: {event:?}");
             match event {
                 LauncherEvent::Goto(page) => {
+                    // The overlay owns which page is on the glass, and it is the only
+                    // place both the sidebar and these buttons can agree. Setting it
+                    // here as well as on the model is what makes FILES, MULTIPLAYER,
+                    // Settings and Back actually move: before, the sidebar was the only
+                    // writer, and every other navigation was overwritten by the next
+                    // model report.
                     self.menu.launcher_page = Some(page);
+                    horizon_overlay::with(|o| o.set_launcher_page(page));
                     // A page that lists worlds re-reads them: a world may have been
                     // made, renamed or deleted since the list was last built.
-                    if matches!(page, LauncherPage::Play | LauncherPage::Installations) {
+                    if matches!(
+                        page,
+                        LauncherPage::Play | LauncherPage::Installations | LauncherPage::Multiplayer
+                    ) {
                         self.menu.launcher_worlds = None;
                     }
                 }
                 LauncherEvent::Play => {
+                    // The zoom runs on the glass while the game's own title screen
+                    // loads behind it, so the one-to-three seconds a first frame costs
+                    // are covered by an animation instead of a still frame. The page is
+                    // not cleared until the zoom is spent; `sync_launcher` holds the
+                    // launcher up until `launcher_zoom` reports it is done.
+                    horizon_overlay::with(|o| o.begin_launcher_zoom());
+                    self.zoom_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(560));
+                    // The page closes now so the game takes over, but the launcher keeps
+                    // drawing for the length of the zoom (see `sync_launcher`).
                     self.menu.launcher_page = None;
                     if let Some(title) = &mut self.menu.title {
                         title.mode = horizon_client::title::Mode::Main;
@@ -914,12 +985,30 @@ impl Loading {
                 LauncherEvent::Install | LauncherEvent::Restart => {}
                 // Settings travel as one archive in the folder a file manager can
                 // reach: the export writes it there, the import takes the newest one.
+                LauncherEvent::ImportFiles(kind) => {
+                    if !horizon_client::clipboard::pick_file(&kind) {
+                        self.menu.launcher_notice = Some(
+                            "No file picker on this device: drop the file in import/.".to_string(),
+                        );
+                    }
+                }
+                LauncherEvent::ExportFiles(kind) => {
+                    if !horizon_client::clipboard::export_files(&kind) {
+                        let import = horizon_client::gfx::import_dir().join(&kind);
+                        self.menu.launcher_notice = Some(format!("Files live in {}", import.display()));
+                    }
+                }
                 LauncherEvent::ExportSettings => {
                     let import = horizon_client::gfx::import_dir();
                     let home = std::env::current_dir().unwrap_or_default();
                     self.menu.launcher_notice =
                         Some(match horizon_client::settings_archive::export(&home, &import) {
-                            Ok(path) => format!("Saved to {}", path.display()),
+                            // A phone cannot hand the player a path, so the archive is
+                            // also written where the system file manager shows it.
+                            Ok(path) => {
+                                horizon_client::clipboard::export_files("settings");
+                                format!("Saved to {}", path.display())
+                            }
                             Err(error) => format!("Export failed: {error}"),
                         });
                 }
@@ -1175,6 +1264,10 @@ impl Loading {
             self.menu.launcher_notice = Some(format!("Could not save the layout: {error}"));
             return;
         }
+        // The HUD reads the layout once at start, so a preset saved here would only
+        // appear after a restart. Re-reading it is what makes the button do what it
+        // says.
+        horizon_overlay::with(|o| o.reload_layout());
         self.menu.launcher_notice = Some(format!(
             "Touch controls: {}",
             if preset == "bedrock" { "Bedrock PE" } else { "Java Classic" }
