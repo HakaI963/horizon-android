@@ -644,14 +644,24 @@ impl Overlay {
             return;
         }
         self.skin_source = key;
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
+        // Everything the renderer is needed for happens in this block; the slot is
+        // written after it, because `renderer` borrows `self`.
+        let old = self.skin_texture.take();
+        let id = {
+            let Some(renderer) = self.renderer.as_mut() else {
+                return;
+            };
+            if let Some(old) = old {
+                renderer.textures.remove(old);
+            }
+            if let Some((width, height, pixels)) = fallback {
+                Some(skin_texture(device, queue, renderer, width, height, &pixels))
+            } else {
+                None
+            }
         };
-        if let Some(old) = self.skin_texture.take() {
-            renderer.textures.remove(old);
-        }
-        if let Some((width, height, pixels)) = fallback {
-            self.upload_skin(device, queue, renderer, width, height, pixels);
+        if let Some(id) = id {
+            self.skin_texture = Some(id);
             return;
         }
         let Some(path) = path else {
@@ -692,42 +702,11 @@ impl Overlay {
                 .collect(),
             png::ColorType::Indexed => return,
         };
-        self.upload_skin(device, queue, renderer, info.width, info.height, pixels);
-    }
-
-    /// Put RGBA pixels in the skin texture slot, replacing whatever was there.
-    fn upload_skin(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        renderer: &mut horizon_imgui::Renderer,
-        width: u32,
-        height: u32,
-        pixels: Vec<u8>,
-    ) {
-        if let Some(old) = self.skin_texture.take() {
-            renderer.textures.remove(old);
-        }
-        let texture = horizon_imgui::Texture::new(
-            device,
-            renderer,
-            horizon_imgui::TextureConfig {
-                label: Some("launcher skin"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                // The same format the font atlas uses: the renderer samples every
-                // imgui texture through one shader, and an sRGB texture there would be
-                // corrected twice.
-                format: Some(wgpu::TextureFormat::Rgba8Unorm),
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                ..Default::default()
-            },
-        );
-        texture.write(queue, &pixels, width, height);
-        self.skin_texture = Some(renderer.textures.insert(texture));
+        // The renderer is borrowed again here, and dropped before the slot is written.
+        let id = self.renderer.as_mut().map(|renderer| {
+            skin_texture(device, queue, renderer, info.width, info.height, &pixels)
+        });
+        self.skin_texture = id;
     }
 
     /// Tell the overlay whether the engine's title panorama is behind it. The
@@ -936,6 +915,40 @@ impl Overlay {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Put RGBA pixels in a texture the launcher can draw with, and return its id.
+///
+/// A free function rather than a method: the caller already holds the renderer out of
+/// `self`, and a method would need `self` again for the slot it writes back.
+fn skin_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut horizon_imgui::Renderer,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> imgui::TextureId {
+    let texture = horizon_imgui::Texture::new(
+        device,
+        renderer,
+        horizon_imgui::TextureConfig {
+            label: Some("launcher skin"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            // The same format the font atlas uses: the renderer samples every imgui
+            // texture through one shader, and an sRGB texture there would be corrected
+            // twice.
+            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            ..Default::default()
+        },
+    );
+    texture.write(queue, pixels, width, height);
+    renderer.textures.insert(texture)
 }
 
 /// One button: its body, its edge and its legend. The body exists to aim at and the
