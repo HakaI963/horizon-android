@@ -710,11 +710,23 @@ impl Loading {
             model.skin_size = path
                 .as_ref()
                 .and_then(|path| png_size(path))
+                .or_else(|| {
+                    // The fallback is the atlas sprite, whose size is known here.
+                    let gui = self.gui.as_ref()?;
+                    let rect = gui.atlas.sprites.get("entity/player/wide/steve")?;
+                    Some([rect.w, rect.h])
+                })
                 .unwrap_or([0, 0]);
             if path != self.uploaded_skin
                 && let Some(r) = &self.renderer
             {
-                horizon_overlay::with(|o| o.set_launcher_skin(&r.device, &r.queue, path.as_deref()));
+                // Nothing picked yet: the page still shows a player, out of the pack's
+                // own default skin, rather than the flat figure that made it look like
+                // a drawing.
+                let fallback = path.is_none().then(|| self.default_skin_pixels()).flatten();
+                horizon_overlay::with(|o| {
+                    o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
+                });
                 self.uploaded_skin = path;
             }
         }
@@ -1829,6 +1841,33 @@ impl Loading {
             _ => String::new(),
         };
         self.menu.launcher_notice = Some(format!("{label}: {shown}"));
+    }
+
+    /// The pack's default player skin as 64x64 RGBA, cut out of the menu atlas.
+    ///
+    /// A skin is a sprite like any other in this build: `entity/player/wide/steve` is
+    /// a rect in the atlas the game already uploaded, so the Skins page can show the
+    /// real default player before the player has picked anything.
+    #[cfg(target_os = "android")]
+    fn default_skin_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let gui = self.gui.as_ref()?;
+        let rect = gui.atlas.sprites.get("entity/player/wide/steve").copied()?;
+        let (w, h) = (gui.atlas.width, gui.atlas.height);
+        let (x0, y0) = (
+            (rect.u0 * w as f32).round() as u32,
+            (rect.v0 * h as f32).round() as u32,
+        );
+        let (sw, sh) = (rect.w, rect.h);
+        let mut out = Vec::with_capacity((sw * sh * 4) as usize);
+        for y in 0..sh {
+            let row = ((y0 + y) * w + x0) * 4;
+            let end = row + sw as usize * 4;
+            if end as usize > gui.atlas.pixels.len() {
+                return None;
+            }
+            out.extend_from_slice(&gui.atlas.pixels[row as usize..end as usize]);
+        }
+        Some((sw, sh, out))
     }
 
     /// Re-read `options.txt` into the live settings.

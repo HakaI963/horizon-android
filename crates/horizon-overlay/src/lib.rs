@@ -622,7 +622,24 @@ impl Overlay {
         queue: &wgpu::Queue,
         path: Option<&Path>,
     ) {
-        let key = path.map(|p| p.display().to_string());
+        self.set_launcher_skin_bytes(device, queue, path, None)
+    }
+
+    /// The same, from pixels the platform already has: the game's own default skin
+    /// lives in the pack's atlas, not in a file, and the page still has to show a
+    /// player rather than a stand-in when nothing has been picked.
+    ///
+    /// `fallback` is `(width, height, rgba)`, used only when `path` is `None`.
+    pub fn set_launcher_skin_bytes(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: Option<&Path>,
+        fallback: Option<(u32, u32, Vec<u8>)>,
+    ) {
+        let key = path
+            .map(|p| p.display().to_string())
+            .or_else(|| fallback.as_ref().map(|_| "fallback".to_string()));
         if key == self.skin_source {
             return;
         }
@@ -632,6 +649,10 @@ impl Overlay {
         };
         if let Some(old) = self.skin_texture.take() {
             renderer.textures.remove(old);
+        }
+        if let Some((width, height, pixels)) = fallback {
+            self.upload_skin(device, queue, renderer, width, height, pixels);
+            return;
         }
         let Some(path) = path else {
             return;
@@ -671,14 +692,30 @@ impl Overlay {
                 .collect(),
             png::ColorType::Indexed => return,
         };
+        self.upload_skin(device, queue, renderer, info.width, info.height, pixels);
+    }
+
+    /// Put RGBA pixels in the skin texture slot, replacing whatever was there.
+    fn upload_skin(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        renderer: &mut horizon_imgui::Renderer,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) {
+        if let Some(old) = self.skin_texture.take() {
+            renderer.textures.remove(old);
+        }
         let texture = horizon_imgui::Texture::new(
             device,
             renderer,
             horizon_imgui::TextureConfig {
                 label: Some("launcher skin"),
                 size: wgpu::Extent3d {
-                    width: info.width,
-                    height: info.height,
+                    width,
+                    height,
                     depth_or_array_layers: 1,
                 },
                 // The same format the font atlas uses: the renderer samples every
@@ -689,7 +726,7 @@ impl Overlay {
                 ..Default::default()
             },
         );
-        texture.write(queue, &pixels, info.width, info.height);
+        texture.write(queue, &pixels, width, height);
         self.skin_texture = Some(renderer.textures.insert(texture));
     }
 
