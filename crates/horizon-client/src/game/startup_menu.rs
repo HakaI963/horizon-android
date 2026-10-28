@@ -17,7 +17,7 @@ use horizon_overlay::{
 /// only what the launcher needs to draw while it runs.
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug)]
-enum SignInState {
+pub(crate) enum SignInState {
     /// Waiting for the player to enter the code at the Microsoft page.
     Waiting(String),
     /// Signed in as this name.
@@ -51,19 +51,6 @@ pub(super) struct StartupMenu {
     /// What the last export or import said, shown under the settings page.
     #[cfg(target_os = "android")]
     launcher_notice: Option<String>,
-    /// The skin PNG last uploaded to the overlay, so a re-upload only happens when
-    /// the choice actually changed.
-    #[cfg(target_os = "android")]
-    uploaded_skin: Option<PathBuf>,
-    /// The address this device is hosting on, when it is.
-    #[cfg(target_os = "android")]
-    hosting: Option<String>,
-    /// A Microsoft sign-in in progress, and the message it is showing.
-    #[cfg(target_os = "android")]
-    sign_in: Option<SignInState>,
-    /// The worker polling Microsoft while a sign-in runs.
-    #[cfg(target_os = "android")]
-    sign_in_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,

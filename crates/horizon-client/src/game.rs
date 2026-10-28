@@ -13055,6 +13055,19 @@ struct Loading {
     /// per choice rather than every frame.
     #[cfg(target_os = "android")]
     launcher_skin: Option<std::path::PathBuf>,
+    /// The skin PNG last uploaded to the overlay, so a re-upload only happens when the
+    /// choice actually changed.
+    #[cfg(target_os = "android")]
+    uploaded_skin: Option<std::path::PathBuf>,
+    /// The address this device is hosting on, when it is.
+    #[cfg(target_os = "android")]
+    hosting: Option<String>,
+    /// A Microsoft sign-in in progress, and the message it is showing.
+    #[cfg(target_os = "android")]
+    sign_in: Option<startup_menu::SignInState>,
+    /// The worker polling Microsoft while a sign-in runs.
+    #[cfg(target_os = "android")]
+    sign_in_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13470,6 +13483,14 @@ fn run_loading(
         mod_registry_rx: None,
         #[cfg(target_os = "android")]
         launcher_skin: None,
+        #[cfg(target_os = "android")]
+        uploaded_skin: None,
+        #[cfg(target_os = "android")]
+        hosting: None,
+        #[cfg(target_os = "android")]
+        sign_in: None,
+        #[cfg(target_os = "android")]
+        sign_in_rx: None,
         vanilla_root,
         pack_error,
         started,
