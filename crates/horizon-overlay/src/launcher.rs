@@ -49,10 +49,22 @@ thread_local! {
     /// page. `None` when no drag is in progress.
     static SETTINGS_DRAG: Cell<Option<f32>> = const { Cell::new(None) };
 
+    /// Whether the press in progress began on a slider's track. The page's scroll drag
+    /// and the slider's own drag both start with a finger on the row, and only the
+    /// track's owner may move the value; this is what tells them apart, because imgui
+    /// says only that *some* item is active.
+    static SETTINGS_ON_TRACK: Cell<bool> = const { Cell::new(false) };
+
     /// Where the finger landed on the Settings page. A tap and a drag both begin with
     /// a press, and the only thing that tells them apart afterwards is how far the
     /// finger travelled, so the press point has to outlive the frame it happened on.
     static SETTINGS_PRESS: Cell<Option<[f32; 2]>> = const { Cell::new(None) };
+
+    /// Whether the gesture in progress became a scroll. A drag that scrolled the page
+    /// must not also be a tap on the row it started on, and imgui reports the click on
+    /// the frame the finger lifts — after the drag has already been read.
+    static SETTINGS_SWALLOW: Cell<bool> = const { Cell::new(false) };
+
 }
 
 /// The destinations in the left column, in the order they are drawn.
@@ -480,8 +492,10 @@ const DROP_H: f32 = 59.0;
 /// settle rather than as a transition.
 const PAGE_SLIDE: f32 = 8.0;
 const PAGE_VEIL: f32 = 0.4;
+
 /// How far a raised button's face drops under a finger, in logical pixels.
 const PRESS_DROP: f32 = 2.0;
+
 /// The hover glow of a column row: the weight of the fill at full strength, and the
 /// time constant of its approach. The glow is a settle rather than a fade — a tenth of
 /// a second is about the shortest that still reads as movement.
@@ -678,10 +692,12 @@ impl<'a> Sink<'a> {
 /// `opening` is `Some(t)` while the opening animation runs, with `t` in 0..1; it is
 /// `None` once spent. `fade` is how far a page change has got, 0 to 1: the page's
 /// content slides and fades in with it while the column stays put, because the column
-/// is the thing the finger is still on. `panorama` says the engine has already drawn
-/// the title's cube map behind this window, so the front page must leave that half of
-/// the glass alone. Navigation is applied to `model` in place, so the destination that
-/// was pressed and the page it switched to are drawn in the same pass.
+/// is the thing the finger is still on. `reduce_motion` is the system's "remove
+/// animations" setting, and turns the slide, the veil, the button press and the column
+/// glow off together. `panorama` says the engine has already drawn the title's cube map
+/// behind this window, so the front page must leave that half of the glass alone.
+/// Navigation is applied to `model` in place, so the destination that was pressed and
+/// the page it switched to are drawn in the same pass.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &Ui,
@@ -3075,7 +3091,7 @@ fn settings_page(
         }
         content += row_h + gap;
     }
-    let max_scroll = (content - view).max(0.0);
+    let max_scroll = (content - gap - view).max(0.0);
 
     // Input first, so this frame draws where the finger already is.
     let mouse = ui.io().mouse_pos;
@@ -3090,26 +3106,38 @@ fn settings_page(
         // finger uses.
         scroll -= wheel * 48.0 * dpi;
     }
+    // Read before the gesture can end below: on the frame the finger lifts, imgui
+    // reports the row's click, and a drag that scrolled must not also be a tap.
+    let swallow = SETTINGS_SWALLOW.get();
     if !ui.io().mouse_down[0] {
         SETTINGS_PRESS.set(None);
         SETTINGS_DRAG.set(None);
+        SETTINGS_SWALLOW.set(false);
     } else if let Some(origin) = SETTINGS_PRESS.get() {
-        // A widget that took the press owns the finger: a switch being held must not
-        // drag the page out from under itself.
-        if ui.is_any_item_active() {
-            SETTINGS_DRAG.set(None);
-        } else if (mouse[1] - origin[1]).abs() > 12.0 * dpi
-            || SETTINGS_DRAG.get().is_some()
-        {
-            // A press that no widget took is a press on the page, and dragging it
-            // moves the column. The threshold is what tells a drag from a tap that
-            // landed between two rows.
-            let last = SETTINGS_DRAG.get().unwrap_or(origin[1]);
+        let dy = mouse[1] - origin[1];
+        if let Some(last) = SETTINGS_DRAG.get() {
+            // Already scrolling: the column follows the finger one pixel for one, even
+            // past the page's edge, so coming back does not make it jump.
             scroll -= mouse[1] - last;
             SETTINGS_DRAG.set(Some(mouse[1]));
+        } else if !SETTINGS_ON_TRACK.get()
+            && dy.abs() > 12.0 * dpi
+            && dy.abs() > (mouse[0] - origin[0]).abs()
+        {
+            // A mostly-vertical drag is the page's, even when it began on a row: the
+            // rows fill the column, so requiring bare glass would leave almost nowhere
+            // to scroll from. A mostly-horizontal one is the slider's, which is the
+            // only control that reads the x axis. The threshold is what tells the two
+            // apart from a tap, and the first step only covers what is past it.
+            scroll -= dy - 12.0 * dpi * dy.signum();
+            SETTINGS_DRAG.set(Some(mouse[1]));
+            SETTINGS_SWALLOW.set(true);
         }
-    } else if over_page && !ui.is_any_item_active() {
+    } else if over_page {
         SETTINGS_PRESS.set(Some(mouse));
+        // A press on the page is not on a track until a row says otherwise, and the
+        // rows are drawn after this. Last frame's answer is cleared with the press.
+        SETTINGS_ON_TRACK.set(false);
     }
     let scroll = scroll.clamp(0.0, max_scroll);
     SETTINGS_SCROLL.set(scroll);
@@ -3150,9 +3178,10 @@ fn settings_page(
                     continue;
                 }
                 // A row that starts above the column is drawn for the sliver that
-                // shows, but takes no press: its hit target would sit under the
-                // heading, where a tap belongs to Back.
-                let takes_input = y >= top;
+                // shows, and its hit target is cut to that sliver: a button that
+                // reached up under the heading would take a tap meant for Back.
+                let hit_y = y.max(top);
+                let hit_h = ((y + row_h).min(bottom) - hit_y).max(0.0);
                 panel(&draw, c, [left, y], [right, y + row_h], c.panel, 3.0 * dpi);
                 {
                     // A switch has one line and centres it; a slider has the value on
@@ -3196,10 +3225,10 @@ fn settings_page(
                     // The whole row is the switch. A 56x28 pill is a target a thumb
                     // misses; the label beside it says the same thing as the pill, so
                     // tapping either is the same intent.
-                    if takes_input {
-                        ui.set_cursor_screen_pos([left, y]);
+                    if hit_h > 0.0 {
+                        ui.set_cursor_screen_pos([left, hit_y]);
                         let id = format!("##set{}", setting.key);
-                        let hit = ui.invisible_button(id.as_str(), [row_w, row_h]);
+                        let hit = ui.invisible_button(id.as_str(), [row_w, hit_h]);
                         // The row is drawn before the button, so its hover and press
                         // ring goes on after it, in the same list: a second
                         // `DrawListMut` for the same window cannot exist at once.
@@ -3214,7 +3243,7 @@ fn settings_page(
                                 1.0,
                             );
                         }
-                        if hit {
+                        if hit && !swallow {
                             sink.push(LauncherEvent::ToggleOption(
                                 setting.key.clone(),
                                 !setting.on,
@@ -3284,11 +3313,19 @@ fn settings_page(
                     // finger slides, so a thumb that lands on 12 and drags to 30 sees
                     // the number move with it. Only a change of a step or more is
                     // sent, or a drag would write `options.txt` sixty times a second.
-                    if takes_input {
-                        ui.set_cursor_screen_pos([track_x, y]);
+                    if hit_h > 0.0 {
+                        ui.set_cursor_screen_pos([track_x, hit_y]);
                         let id = format!("##set{}", setting.key);
-                        let pressed = ui.invisible_button(id.as_str(), [track_w, row_h]);
-                        if pressed || ui.is_item_active() {
+                        let pressed = ui.invisible_button(id.as_str(), [track_w, hit_h]);
+                        if ui.is_item_active() || pressed {
+                            SETTINGS_ON_TRACK.set(true);
+                        }
+                        // A drag that became a scroll owns the finger: the slider must
+                        // not also jump to wherever the scroll happened to end.
+                        if (pressed || ui.is_item_active())
+                            && !swallow
+                            && SETTINGS_DRAG.get().is_none()
+                        {
                             let at = ui.io().mouse_pos[0];
                             let frac = ((at - track_x) / track_w).clamp(0.0, 1.0);
                             let value = snap_setting(setting, setting.min + span * frac);

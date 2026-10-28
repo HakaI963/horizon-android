@@ -1599,9 +1599,6 @@ impl Loading {
             max: f32,
             step: f32,
         ) -> Row {
-            // `unit == "%"` is a `str` comparison, which a nested `fn` cannot do in a
-            // constant expression; compare the bytes, which it can.
-            let percent = unit.as_bytes() == b"%";
             Row {
                 key,
                 label,
@@ -1610,7 +1607,8 @@ impl Loading {
                 min,
                 max,
                 step,
-                percent,
+                // A slider whose stored value is 0..1 and whose label is a percentage.
+                percent: unit == "%",
                 toggle: false,
             }
         }
@@ -1668,13 +1666,21 @@ impl Loading {
         let f = &self.settings.file;
         rows.iter()
             .map(|row| {
-                let value = match f.get(row.key) {
-                    Some(horizon_client::options_file::V::Int(i)) => *i as f32,
-                    Some(horizon_client::options_file::V::Double(d)) => *d as f32,
-                    Some(horizon_client::options_file::V::Bool(b)) => {
-                        if *b { 1.0 } else { 0.0 }
+                // The file is the stored value, which is what a slider writes. The one
+                // exception is GUI scale: the file may say 4 on a screen that can only
+                // fit 2, and `clamp_gui_scale` is what the game actually uses, so the
+                // page shows the number in force rather than one the window refused.
+                let value = if row.key == "guiScale" {
+                    self.settings.gui_scale as f32
+                } else {
+                    match f.get(row.key) {
+                        Some(horizon_client::options_file::V::Int(i)) => *i as f32,
+                        Some(horizon_client::options_file::V::Double(d)) => *d as f32,
+                        Some(horizon_client::options_file::V::Bool(b)) => {
+                            if *b { 1.0 } else { 0.0 }
+                        }
+                        _ => 0.0,
                     }
-                    _ => 0.0,
                 };
                 LauncherSetting {
                     key: row.key.to_string(),
