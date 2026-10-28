@@ -20,9 +20,6 @@
 
 use std::cell::Cell;
 
-use std::cell::RefCell;
-use std::time::Instant;
-
 use imgui::{
     Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, TextureId, Ui, WindowFlags,
 };
@@ -482,7 +479,7 @@ const DROP_H: f32 = 59.0;
 /// over it starts. Both are spent by the time `MOVE` is, so a page change is felt as a
 /// settle rather than as a transition.
 const PAGE_SLIDE: f32 = 8.0;
-const PAGE_VEIL: f32 = 0.55;
+const PAGE_VEIL: f32 = 0.4;
 /// How far a raised button's face drops under a finger, in logical pixels.
 const PRESS_DROP: f32 = 2.0;
 /// The hover glow of a column row: the weight of the fill at full strength, and the
@@ -715,6 +712,7 @@ pub fn draw(
         // Nothing is arriving and nothing is held: clear the eased values so the first
         // animated frame after the setting goes back to off starts from rest.
         NAV_GLOW.with(|g| g.set([0.0; NAV_ROWS]));
+        NAV_HOVER.with(|h| h.set(None));
     }
     // The opening owns the glass until it is spent. Its last frame is the first one
     // where a finger is allowed to land on anything. A Play transition locks it out
@@ -767,6 +765,10 @@ pub fn draw(
         .size([width, height], Condition::Always)
         .build(|| {
             if matches!(opening, Some(t) if t <= 0.0) {
+                // The first frame of a launcher open: whatever glow the column had
+                // when it was last on screen belongs to a finger that is long gone.
+                NAV_GLOW.with(|g| g.set([0.0; NAV_ROWS]));
+                NAV_HOVER.with(|h| h.set(None));
                 splash(ui, fonts, c, dpi, width, height);
                 return;
             }
@@ -1096,9 +1098,13 @@ fn sidebar(
     // The glow eases by time rather than by frame, so it takes the same tenth of a
     // second whether the phone is at 60 Hz or 120.
     let dt = ui.io().delta_time;
+    // Where the pointer was on the last frame. A row's hover starts from this rather
+    // than from the row beside it, so the highlight fades in under the finger instead
+    // of sliding across the column.
+    let before = NAV_HOVER.with(|h| h.get());
     // Which row the pointer lands on this frame, learned below from the button that
-    // owns it. The glow is drawn from last frame's answer and eased towards this one,
-    // which is the one frame of lag that makes a hover fade rather than snap.
+    // owns it. The glow is drawn from the eased value and stepped at the end of the
+    // loop, which is the one frame of lag that makes a hover fade rather than snap.
     let mut hovered: Option<LauncherPage> = None;
     for (i, page) in PAGES.iter().enumerate() {
         let page = *page;
@@ -1165,15 +1171,14 @@ fn sidebar(
     // One eased step for the whole column, after the finger has been read: the row it
     // is on climbs, every other row falls back. With animations off `hovered` is
     // always `None`, so the glow drains and stays there.
-    let before = NAV_HOVER.with(|h| h.replace(hovered));
     NAV_GLOW.with(|g| {
         let mut all = g.get();
         for (i, page) in PAGES.iter().enumerate() {
-            let target = if hovered == Some(*page) { 1.0 } else { 0.0 };
-            // A row the finger has just moved onto starts from rest. A hover is not a
-            // continuation of the row beside it, and easing from that row's value
-            // would make the highlight slide across the column.
-            let from = if hovered != before && hovered == Some(*page) {
+            let on = hovered == Some(*page);
+            let target = if on { 1.0 } else { 0.0 };
+            // A row the finger has just moved onto starts from rest: a hover is not a
+            // continuation of the row beside it.
+            let from = if on && before != Some(*page) {
                 0.0
             } else {
                 all[i]
@@ -1182,6 +1187,7 @@ fn sidebar(
         }
         g.set(all);
     });
+    NAV_HOVER.with(|h| h.set(hovered));
 
     // The footer: the build and the way out, on one line at the very bottom, which is
     // where the reference puts them and where a thumb in landscape cannot reach by
@@ -2993,10 +2999,20 @@ fn setting_decimals(step: f32) -> usize {
 fn setting_text(setting: &LauncherSetting, value: f32) -> String {
     let scale = if setting.percent { 100.0 } else { 1.0 };
     let decimals = setting_decimals(setting_step(setting) * scale);
-    let number = format!("{:.*}", decimals, value * scale);
+    let mut number = format!("{:.*}", decimals, value * scale);
+    // A trailing zero says nothing a player needs: "1.25" keeps both decimals
+    // because the value has them, "1.00" becomes "1".
+    if number.contains('.') {
+        while number.ends_with('0') {
+            number.pop();
+        }
+        if number.ends_with('.') {
+            number.pop();
+        }
+    }
     if setting.unit.is_empty() {
         number
-    } else if setting.unit == "%" || setting.unit == "°" {
+    } else if setting.unit == "%" || setting.unit == "°" || setting.unit == "x" {
         // A unit that is a symbol is set against the digits; a word gets a space.
         format!("{number}{}", setting.unit)
     } else {
@@ -3040,7 +3056,7 @@ fn settings_page(
     let top = y;
     let bottom = (height + rise - 14.0 * dpi).max(top);
     let view = bottom - top;
-    let row_h = 56.0 * dpi;
+    let row_h = 60.0 * dpi;
     let gap = 8.0 * dpi;
     let group_h = 30.0 * dpi;
     let left = g.x + g.pad;
@@ -3053,9 +3069,9 @@ fn settings_page(
     let mut content = 0.0;
     let mut last_group = "";
     for setting in &model.settings {
-        if !setting.group.is_empty() && setting.group != last_group {
+        if !setting.group.is_empty() && setting.group.as_str() != last_group {
             content += group_h;
-            last_group = &setting.group;
+            last_group = setting.group.as_str();
         }
         content += row_h + gap;
     }
@@ -3102,28 +3118,29 @@ fn settings_page(
     // top would paint over the heading and the Back button.
     {
         let draw = ui.get_window_draw_list();
-        draw.with_clip_rect([g.x, top], [g.x + g.w, bottom], || {
+        draw.with_clip_rect_intersect([g.x, top], [g.x + g.w, bottom], || {
             let mut y = top - scroll;
             let mut last_group = "";
             for setting in &model.settings {
-                if !setting.group.is_empty() && setting.group != last_group {
+                if !setting.group.is_empty() && setting.group.as_str() != last_group {
                     if y + group_h > top && y < bottom {
                         {
                             let _f = ui.push_font(fonts.small);
                             draw.add_text([left, y + 6.0 * dpi], rgba(c.muted, 1.0), setting.group.as_str());
                         }
-                        stroke(
+                        // A hairline under the heading: `stroke` needs a box with a
+                        // height, so the rule is a filled one-pixel band.
+                        fill(
                             &draw,
                             [left, y + group_h - 8.0 * dpi],
-                            [right, y + group_h - 8.0 * dpi],
+                            [right, y + group_h - 7.0 * dpi],
                             c.rule,
                             1.0,
                             0.0,
-                            1.0,
                         );
                     }
                     y += group_h;
-                    last_group = &setting.group;
+                    last_group = setting.group.as_str();
                 }
                 // A row entirely outside the column is neither drawn nor given a hit
                 // target: a button scrolled off the top must not take a tap meant for
@@ -3132,11 +3149,23 @@ fn settings_page(
                     y += row_h + gap;
                     continue;
                 }
+                // A row that starts above the column is drawn for the sliver that
+                // shows, but takes no press: its hit target would sit under the
+                // heading, where a tap belongs to Back.
+                let takes_input = y >= top;
                 panel(&draw, c, [left, y], [right, y + row_h], c.panel, 3.0 * dpi);
                 {
+                    // A switch has one line and centres it; a slider has the value on
+                    // the top line and the track below it, so its label shares that top
+                    // line rather than floating in the middle.
+                    let label_y = if setting.toggle {
+                        y + row_h / 2.0 - 8.0 * dpi
+                    } else {
+                        y + 9.0 * dpi
+                    };
                     let _f = ui.push_font(fonts.body);
                     draw.add_text(
-                        [left + 16.0 * dpi, y + 9.0 * dpi],
+                        [left + 16.0 * dpi, label_y],
                         rgba(c.ink_soft, 1.0),
                         fit(ui, &setting.label, row_w * 0.62),
                     );
@@ -3167,32 +3196,46 @@ fn settings_page(
                     // The whole row is the switch. A 56x28 pill is a target a thumb
                     // misses; the label beside it says the same thing as the pill, so
                     // tapping either is the same intent.
-                    ui.set_cursor_screen_pos([left, y]);
-                    let id = format!("##set{}", setting.key);
-                    let hit = ui.invisible_button(id.as_str(), [row_w, row_h]);
-                    // The row is drawn before the button, so its hover and press ring
-                    // goes on after it, in the same list: a second `DrawListMut` for
-                    // the same window cannot exist at the same time.
-                    if hit || ui.is_item_hovered() {
-                        stroke(
-                            &draw,
-                            [left, y],
-                            [right, y + row_h],
-                            if hit { c.accent } else { c.bevel },
-                            1.0,
-                            3.0 * dpi,
-                            1.0,
-                        );
-                    }
-                    if hit {
-                        sink.push(LauncherEvent::ToggleOption(setting.key.clone(), !setting.on));
+                    if takes_input {
+                        ui.set_cursor_screen_pos([left, y]);
+                        let id = format!("##set{}", setting.key);
+                        let hit = ui.invisible_button(id.as_str(), [row_w, row_h]);
+                        // The row is drawn before the button, so its hover and press
+                        // ring goes on after it, in the same list: a second
+                        // `DrawListMut` for the same window cannot exist at once.
+                        if hit || ui.is_item_hovered() {
+                            stroke(
+                                &draw,
+                                [left, y],
+                                [right, y + row_h],
+                                if hit { c.accent } else { c.bevel },
+                                1.0,
+                                3.0 * dpi,
+                                1.0,
+                            );
+                        }
+                        if hit {
+                            sink.push(LauncherEvent::ToggleOption(
+                                setting.key.clone(),
+                                !setting.on,
+                            ));
+                        }
                     }
                 } else {
+                    // The two ends of the range, measured first: they sit beside the
+                    // track, not under it, so a handle at either end never covers the
+                    // number that says where the end is.
+                    let low = setting_text(setting, setting.min);
+                    let high = setting_text(setting, setting.max);
+                    let (low_w, high_w) = {
+                        let _f = ui.push_font(fonts.small);
+                        (ui.calc_text_size(low.as_str())[0], ui.calc_text_size(high.as_str())[0])
+                    };
+                    let track_x = left + 16.0 * dpi + low_w + 10.0 * dpi;
+                    let track_w = (right - 16.0 * dpi - high_w - 10.0 * dpi - track_x).max(60.0 * dpi);
                     // The track is the well and the fill is the value; the handle is a
                     // block, because everything else on this screen is a block.
-                    let track_x = left + 16.0 * dpi;
-                    let track_w = (right - 16.0 * dpi - track_x).max(80.0 * dpi);
-                    let ty = y + 32.0 * dpi;
+                    let ty = y + 34.0 * dpi;
                     let span = (setting.max - setting.min).max(f32::EPSILON);
                     let t = ((setting.value - setting.min) / span).clamp(0.0, 1.0);
                     fill(&draw, [track_x, ty], [track_x + track_w, ty + 6.0 * dpi], c.well, 1.0, 3.0 * dpi);
@@ -3225,12 +3268,13 @@ fn settings_page(
                             rgba(c.ink, 1.0),
                             text.as_str(),
                         );
-                        let low = setting_text(setting, setting.min);
-                        draw.add_text([track_x, ty + 9.0 * dpi], rgba(c.muted, 1.0), low.as_str());
-                        let high = setting_text(setting, setting.max);
-                        let [hw, _] = ui.calc_text_size(high.as_str());
                         draw.add_text(
-                            [track_x + track_w - hw, ty + 9.0 * dpi],
+                            [left + 16.0 * dpi, ty - 4.0 * dpi],
+                            rgba(c.muted, 1.0),
+                            low.as_str(),
+                        );
+                        draw.add_text(
+                            [right - 16.0 * dpi - high_w, ty - 4.0 * dpi],
                             rgba(c.muted, 1.0),
                             high.as_str(),
                         );
@@ -3240,16 +3284,18 @@ fn settings_page(
                     // finger slides, so a thumb that lands on 12 and drags to 30 sees
                     // the number move with it. Only a change of a step or more is
                     // sent, or a drag would write `options.txt` sixty times a second.
-                    ui.set_cursor_screen_pos([track_x, y]);
-                    let id = format!("##set{}", setting.key);
-                    let pressed = ui.invisible_button(id.as_str(), [track_w, row_h]);
-                    if pressed || ui.is_item_active() {
-                        let at = ui.io().mouse_pos[0];
-                        let frac = ((at - track_x) / track_w).clamp(0.0, 1.0);
-                        let value = snap_setting(setting, setting.min + span * frac);
-                        let step = setting_step(setting);
-                        if (value - setting.value).abs() > step * 0.5 {
-                            sink.push(LauncherEvent::SetOption(setting.key.clone(), value));
+                    if takes_input {
+                        ui.set_cursor_screen_pos([track_x, y]);
+                        let id = format!("##set{}", setting.key);
+                        let pressed = ui.invisible_button(id.as_str(), [track_w, row_h]);
+                        if pressed || ui.is_item_active() {
+                            let at = ui.io().mouse_pos[0];
+                            let frac = ((at - track_x) / track_w).clamp(0.0, 1.0);
+                            let value = snap_setting(setting, setting.min + span * frac);
+                            let step = setting_step(setting);
+                            if (value - setting.value).abs() > step * 0.5 {
+                                sink.push(LauncherEvent::SetOption(setting.key.clone(), value));
+                            }
                         }
                     }
                 }

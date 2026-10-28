@@ -407,6 +407,12 @@ impl Loading {
             renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
+        // The mixer reads its per-source volumes from the shared table, and the title
+        // screen has music playing, so a volume changed on the launcher's Settings page
+        // has to land there and not only in the file the next world reads.
+        let mut volumes = self.settings.volumes;
+        volumes[0] = 1.0;
+        horizon_client::settings::set_source_volumes(volumes);
         if let Some(gui) = &mut self.gui {
             gui.atlas.font.uniform = self.settings.force_unicode;
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
@@ -1570,7 +1576,6 @@ impl Loading {
     #[cfg(target_os = "android")]
     fn launcher_settings(&self) -> Vec<horizon_overlay::LauncherSetting> {
         use horizon_overlay::LauncherSetting;
-        let f = &self.settings.file;
         /// One row of the page, before its value is read from the file.
         struct Row {
             key: &'static str,
@@ -1585,7 +1590,7 @@ impl Loading {
             toggle: bool,
         }
         // A slider: `options.txt` key, label, group, unit, min, max, step.
-        const fn s(
+        fn s(
             key: &'static str,
             label: &'static str,
             group: &'static str,
@@ -1594,6 +1599,9 @@ impl Loading {
             max: f32,
             step: f32,
         ) -> Row {
+            // `unit == "%"` is a `str` comparison, which a nested `fn` cannot do in a
+            // constant expression; compare the bytes, which it can.
+            let percent = unit.as_bytes() == b"%";
             Row {
                 key,
                 label,
@@ -1602,12 +1610,12 @@ impl Loading {
                 min,
                 max,
                 step,
-                percent: unit == "%",
+                percent,
                 toggle: false,
             }
         }
         // A switch: the same, with no range of its own.
-        const fn t(key: &'static str, label: &'static str, group: &'static str) -> Row {
+        fn t(key: &'static str, label: &'static str, group: &'static str) -> Row {
             Row {
                 key,
                 label,
@@ -1657,6 +1665,7 @@ impl Loading {
             t("autoSuggestions", "Command suggestions", "INTERFACE"),
             t("chatLinks", "Clickable chat links", "INTERFACE"),
         ];
+        let f = &self.settings.file;
         rows.iter()
             .map(|row| {
                 let value = match f.get(row.key) {
@@ -1719,17 +1728,22 @@ impl Loading {
         // `set` validates and snaps exactly as the game's own options screen does:
         // 137 fps becomes 130, 1.3 entity distance becomes 1.25.
         file.set(key, candidate);
-        let Some((_, encoded)) = file
-            .serialize()
+        // The encoded line, taken from the file's own save: the one place that knows
+        // `fov` is `(fov - 70) / 40` and a double is written the way Java writes one.
+        let serialized = file.serialize();
+        // `encoded` borrows `serialized`, so it is read and copied before the buffer
+        // can go out of scope: the value is a line of a temporary String.
+        let encoded = serialized
             .lines()
-            .find_map(|line| line.split_once(':'))
-            .filter(|(name, _)| *name == key)
-        else {
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value.to_string());
+        let Some(encoded) = encoded else {
             log::warn!("launcher: {key} refused {value}");
             self.menu.launcher_notice = Some(format!("{key} does not accept that value"));
             return;
         };
-        let encoded = encoded.to_string();
+        let had_file = !text.trim().is_empty();
         let mut replaced = false;
         let mut lines: Vec<String> = Vec::new();
         for line in text.lines() {
@@ -1744,7 +1758,15 @@ impl Loading {
         if !replaced {
             lines.push(format!("{key}:{encoded}"));
         }
-        let mut text = lines.join("\n");
+        let mut text = if had_file {
+            lines.join("\n")
+        } else {
+            // There is no options.txt yet. Writing the one line would make a file with
+            // no `version:`, which the loader then reads as the oldest one and runs
+            // every fixer over; the whole file, version line included, is the honest
+            // thing to create.
+            serialized
+        };
         text.push('\n');
         if let Err(error) = std::fs::write(&path, &text) {
             log::warn!("launcher: could not write {key}: {error}");
@@ -1759,14 +1781,22 @@ impl Loading {
         // the font atlas are not in `Settings`, they are in the renderer, the mixer
         // and the atlas.
         self.apply_menu_settings();
-        self.menu.launcher_notice = Some(format!(
-            "{} set to {value}",
-            // The key is the file's name; the label is what the page showed.
-            self.launcher_settings()
-                .iter()
-                .find(|setting| setting.key == key)
-                .map_or(key, |setting| setting.label.as_str())
-        ));
+        // The key is the file's name; the label is what the page showed, and the
+        // notice is read by a player who has never seen a key. The value is read back
+        // from the file rather than echoed: the codec may have snapped it (137 fps is
+        // stored as 130), and the notice must not claim a number the file does not hold.
+        let label = self
+            .launcher_settings()
+            .iter()
+            .find(|setting| setting.key == key)
+            .map_or_else(|| key.to_string(), |setting| setting.label.clone());
+        let shown = match self.settings.file.get(key) {
+            Some(V::Int(i)) => i.to_string(),
+            Some(V::Double(d)) => format!("{d}"),
+            Some(V::Bool(b)) => (if *b { "on" } else { "off" }).to_string(),
+            _ => String::new(),
+        };
+        self.menu.launcher_notice = Some(format!("{label}: {shown}"));
     }
 
     /// Re-read `options.txt` into the live settings.
