@@ -1858,14 +1858,15 @@ impl Loading {
             (rect.v0 * h as f32).round() as u32,
         );
         let (sw, sh) = (rect.w, rect.h);
-        let mut out = Vec::with_capacity((sw * sh * 4) as usize);
+        let mut out = Vec::with_capacity((sw as usize) * (sh as usize) * 4);
         for y in 0..sh {
-            let row = ((y0 + y) * w + x0) * 4;
+            // The atlas is indexed in `u32` coordinates; the pixel buffer is `usize`.
+            let row = (((y0 + y) * w + x0) * 4) as usize;
             let end = row + sw as usize * 4;
-            if end as usize > gui.atlas.pixels.len() {
+            if end > gui.atlas.pixels.len() {
                 return None;
             }
-            out.extend_from_slice(&gui.atlas.pixels[row as usize..end as usize]);
+            out.extend_from_slice(&gui.atlas.pixels[row..end]);
         }
         Some((sw, sh, out))
     }
