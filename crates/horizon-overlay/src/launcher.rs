@@ -1664,7 +1664,14 @@ fn skins_page(
                 y + 26.0 * dpi,
                 figure_h,
             ),
-            None => player_figure(draw, c, dpi, mx + model_w / 2.0, y + model_h * 0.46, (model_h * 0.34).min(model_w * 0.5)),
+            None => player_figure(
+                &draw,
+                c,
+                dpi,
+                mx + model_w / 2.0,
+                y + model_h * 0.46,
+                (model_h * 0.34).min(model_w * 0.5),
+            ),
         }
         {
             let _f = ui.push_font(fonts.pixel);
