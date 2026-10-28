@@ -717,6 +717,22 @@ impl Overlay {
         );
     }
 
+    /// Bring the launcher's front page back, as if the app had just opened.
+    ///
+    /// The game's own "Quit Game" means this on a phone: the launcher is the home
+    /// screen, so leaving Minecraft returns here rather than ending the process. The
+    /// opening animation runs again, which is the zoom out the player sees.
+    pub fn return_to_launcher(&mut self) {
+        self.launcher_page = LauncherPage::Play;
+        self.launcher_model.page = LauncherPage::Play;
+        self.page_since = None;
+        self.launcher_since = Some(Instant::now());
+        self.launcher_zoom_since = None;
+        self.pointer = Pointer::idle();
+        self.pending_release = false;
+        log::info!("overlay: back to the launcher's front page");
+    }
+
     /// Show or hide the launcher's front page. Showing it lets go of any held
     /// button, so a player never comes back to a character walking into a wall.
     pub fn show_launcher(&mut self, on: bool) {

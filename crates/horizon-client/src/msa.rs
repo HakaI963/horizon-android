@@ -272,14 +272,32 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
     let expires_in = value.get("expires_in").and_then(Value::as_u64).unwrap_or(86_400);
 
     // Ownership, then the profile: an account without the game is not one to play on.
-    let (status, _) = get(
+    let (status, owned) = get(
         "https://api.minecraftservices.com/entitlements/mcstore",
         Some(&access),
     )?;
     if status != 200 {
+        return Err("Could not check which games this account owns. Try again.".into());
+    }
+    // mcstore answers 200 with an `items` list; an empty list means no game.
+    let owns = owned
+        .get("items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(
+                    item.get("name").and_then(Value::as_str),
+                    Some("game_minecraft" | "product_minecraft")
+                )
+            })
+        });
+    if !owns {
         return Err("This account doesn't own Minecraft Java Edition.".into());
     }
-    let (status, profile) = get("https://api.minecraftservices.com/minecraft/profile", Some(&access))?;
+    let (status, profile) = get(
+        "https://api.minecraftservices.com/minecraft/profile",
+        Some(&access),
+    )?;
     if status == 404 {
         return Err("This account has no Minecraft profile yet: make one at minecraft.net.".into());
     }
@@ -320,16 +338,15 @@ pub fn refresh(account: &Account) -> Result<Account, String> {
 // ----- Storage -----------------------------------------------------------------------
 
 /// Where the tokens live: this app's private storage, never the folder a file manager
-/// can read. `<internal>/horizon/accounts/`.
+/// can read. `<internal>/horizon/accounts/` on a phone (the activity sets
+/// `HORIZON_HOME` there) and `~/.local/share/horizon/accounts/` on a desktop.
 fn token_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("accounts")
+    crate::logging::game_home().join("accounts")
 }
 
-/// Keep an account's tokens for the next launch. The file is created fresh with mode
-/// 0600 on Unix, so no other app on the phone can read it.
+/// Keep an account's tokens for the next launch. The file is mode 0600 on Unix, so no
+/// other app on the phone can read it, and an existing file's mode is corrected too:
+/// `mode()` alone only applies when the file is created.
 pub fn store(account: &Account) -> Result<(), String> {
     let dir = token_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
@@ -353,13 +370,19 @@ pub fn store(account: &Account) -> Result<(), String> {
     let mut file = options
         .open(&path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     file.write_all(text.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(())
 }
 
-/// Every stored account, newest file first. A file that does not parse is skipped
-/// rather than failing the list: one corrupt entry must not hide the rest.
+/// Every stored account, by name so the list keeps its order between frames. A file
+/// that does not parse is skipped rather than failing the list: one corrupt entry
+/// must not hide the rest.
 pub fn stored() -> Vec<Account> {
     let dir = token_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -382,6 +405,11 @@ pub fn stored() -> Vec<Account> {
         .collect();
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
     accounts
+}
+
+/// The stored account with this player name, if this device has signed it in.
+pub fn stored_named(name: &str) -> Option<Account> {
+    stored().into_iter().find(|account| account.name == name)
 }
 
 /// Forget an account's tokens.
@@ -503,12 +531,15 @@ fn xsts_error(value: &Value, status: u16) -> String {
 /// The file a signed-in account's public half goes in, beside the skins.
 pub const ACCOUNTS: &str = "accounts.txt";
 
-/// Read the public account list: `kind:name` lines, the selected one first.
+/// Read the public account list: `kind:name` lines, the selected one first. The kind
+/// comes back as the page's own words ("Microsoft"/"Offline"), because that is what it
+/// is drawn as; `write_public` takes them back.
 pub fn read_public(import: &Path) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(import.join(ACCOUNTS)) else {
         return Vec::new();
     };
-    text.lines()
+    let mut accounts: Vec<(String, String)> = text
+        .lines()
         .filter_map(|line| line.trim_end_matches('\r').split_once(':'))
         .filter(|(kind, name)| !name.trim().is_empty() && (*kind == "msa" || *kind == "offline"))
         .map(|(kind, name)| {
@@ -517,14 +548,32 @@ pub fn read_public(import: &Path) -> Vec<(String, String)> {
                 name.trim().to_string(),
             )
         })
-        .collect()
+        .collect();
+    // A hand-edited file may repeat a name; the first line is the selected one.
+    let mut seen: Vec<String> = Vec::new();
+    accounts.retain(|(_, name)| {
+        let fresh = !seen.contains(name);
+        if fresh {
+            seen.push(name.clone());
+        }
+        fresh
+    });
+    accounts
 }
 
-/// Write the public account list. Never a token.
+/// Write the public account list. Never a token. Kinds are the page's words
+/// ("Microsoft"/"Offline") or the file's own (`msa`/`offline`); both are accepted so a
+/// caller may pass back what `read_public` gave it.
 pub fn write_public(import: &Path, accounts: &[(&str, &str)]) {
     let text: String = accounts
         .iter()
-        .map(|(kind, name)| format!("{kind}:{name}\n"))
+        .map(|(kind, name)| {
+            let kind = match *kind {
+                "Microsoft" | "msa" => "msa",
+                _ => "offline",
+            };
+            format!("{kind}:{name}\n")
+        })
         .collect();
     let _ = std::fs::create_dir_all(import);
     let _ = std::fs::write(import.join(ACCOUNTS), text);

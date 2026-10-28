@@ -11524,10 +11524,14 @@ impl ApplicationHandler for Game<'_> {
                     // again as it comes back, which is the zoom out.
                     #[cfg(target_os = "android")]
                     if self.back_to_launcher {
+                        // `Game` has no `StartupMenu`: that belongs to the loading
+                        // surface. What the running game can do is stop owning the
+                        // title screen, and the launcher's own host picks the front page
+                        // up from `return_to_launcher` on the way back.
                         self.back_to_launcher = false;
-                        self.menu.return_to_launcher();
                         self.title = None;
                         self.screen = Screen::Playing;
+                        horizon_overlay::with(|o| o.return_to_launcher());
                     }
                     self.observe_fullscreen();
                     let now = Instant::now();
@@ -13119,6 +13123,9 @@ struct Loading {
     /// over the game. Kept so the load behind the animation has time to draw a frame.
     #[cfg(target_os = "android")]
     zoom_until: Option<std::time::Instant>,
+    /// The flag a running Microsoft sign-in checks so the player can stop waiting.
+    #[cfg(target_os = "android")]
+    sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Where the Skins page's model is turned to, and when it last turned: the page
     /// advances it so the player rotates rather than standing still.
     #[cfg(target_os = "android")]
@@ -13554,6 +13561,8 @@ fn run_loading(
         sign_in_rx: None,
         #[cfg(target_os = "android")]
         zoom_until: None,
+        #[cfg(target_os = "android")]
+        sign_in_cancel: None,
         #[cfg(target_os = "android")]
         skin_yaw: 0.6,
         #[cfg(target_os = "android")]

@@ -687,6 +687,7 @@ impl Loading {
             accounts,
             controls_preset,
             hosting: self.hosting_address(),
+            sign_in_waiting: matches!(self.sign_in, Some(SignInState::Waiting(_))),
             news: news_stories(),
             patches: patch_stories(),
             ..Default::default()
@@ -1093,6 +1094,15 @@ impl Loading {
                 LauncherEvent::SwitchAccount(id) => self.switch_account(id),
                 LauncherEvent::RemoveAccount(id) => self.remove_account(id),
                 LauncherEvent::SignInMicrosoft => self.sign_in_microsoft(),
+                LauncherEvent::CancelSignIn => {
+                    if let Some(cancel) = self.sign_in_cancel.take() {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    self.sign_in_rx = None;
+                    self.sign_in = Some(SignInState::Failed(
+                        horizon_client::msa::CANCELLED.to_string(),
+                    ));
+                }
                 LauncherEvent::SetControls(preset) => self.set_controls_preset(&preset),
                 // Only reachable on the bring-up card, which has its own handler.
                 LauncherEvent::Install | LauncherEvent::Restart => {}
@@ -1308,10 +1318,14 @@ impl Loading {
         let (tx, rx) = std::sync::mpsc::channel();
         self.sign_in = Some(SignInState::Waiting(code.user_code.clone()));
         self.sign_in_rx = Some(rx);
+        // A sign-in can take minutes; the page has to be able to stop waiting.
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.sign_in_cancel = Some(cancelled.clone());
         std::thread::Builder::new()
             .name("horizon-msa".into())
             .spawn(move || {
-                let result = horizon_client::msa::wait_for_sign_in(&client_id, &code, &|| false)
+                let watch = cancelled.clone();
+                let result = horizon_client::msa::wait_for_sign_in(&client_id, &code, &watch)
                     .and_then(|tokens| horizon_client::msa::finish_sign_in(&tokens));
                 if let Ok(account) = &result {
                     if let Err(error) = horizon_client::msa::store(account) {
@@ -1547,138 +1561,127 @@ impl Loading {
     /// The settings the launcher's own page offers, read from the live options so a
     /// slider shows the value the game is actually using rather than a copy that can
     /// drift. Keys are `options.txt` names; see `apply_launcher_option`.
+    ///
+    /// Every row is checked against `options_file.rs`: the range is the one that
+    /// file's `Spec` accepts, the step is the grid the codec stores on (the frame
+    /// limit is kept in tens, entity distance in quarters), and `unit` is what the
+    /// player reads the number in. A key that is not in the table is a slider that
+    /// writes a line nothing reads, so the table below is the whole set that exists.
     #[cfg(target_os = "android")]
     fn launcher_settings(&self) -> Vec<horizon_overlay::LauncherSetting> {
         use horizon_overlay::LauncherSetting;
         let f = &self.settings.file;
-        let slider = |key: &str, label: &str, min: f32, max: f32, value: f32| LauncherSetting {
-            key: key.to_string(),
-            label: label.to_string(),
-            value,
-            min,
-            max,
-            toggle: false,
-            on: false,
-        };
-        let toggle = |key: &str, label: &str, on: bool| LauncherSetting {
-            key: key.to_string(),
-            label: label.to_string(),
-            value: if on { 1.0 } else { 0.0 },
-            min: 0.0,
-            max: 1.0,
-            toggle: true,
-            on,
-        };
-        vec![
-            // Graphics.
-            slider(
-                "renderDistance",
-                "Render distance (chunks)",
-                2.0,
-                32.0,
-                f.int("renderDistance") as f32,
-            ),
-            slider(
-                "simulationDistance",
-                "Simulation distance",
-                5.0,
-                32.0,
-                f.int("simulationDistance") as f32,
-            ),
-            slider(
-                "guiScale",
-                "GUI scale (0 = automatic)",
-                0.0,
-                4.0,
-                f.int("guiScale") as f32,
-            ),
-            slider("fov", "Field of view", 30.0, 110.0, f.int("fov") as f32),
-            slider("maxFps", "Frame limit", 10.0, 260.0, f.int("maxFps") as f32),
-            slider(
-                "gamma",
-                "Brightness",
-                0.0,
-                1.0,
-                f.double("gamma") as f32,
-            ),
-            slider(
-                "entityDistanceScaling",
-                "Entity distance",
-                0.5,
-                5.0,
-                f.double("entityDistanceScaling") as f32,
-            ),
-            toggle("enableVsync", "V-Sync", f.bool("enableVsync")),
-            toggle("bobView", "View bobbing", f.bool("bobView")),
-            toggle("ao", "Smooth lighting", f.bool("ao")),
-            toggle("vignette", "Vignette", f.bool("vignette")),
-            // Controls.
-            slider(
-                "mouseSensitivity",
-                "Look sensitivity",
-                0.0,
-                1.0,
-                f.double("mouseSensitivity") as f32,
-            ),
-            toggle("autoJump", "Auto-jump", f.bool("autoJump")),
-            toggle("toggleCrouch", "Toggle crouch", f.bool("toggleCrouch")),
-            toggle("toggleSprint", "Toggle sprint", f.bool("toggleSprint")),
-            toggle("invertYMouse", "Invert mouse Y", f.bool("invertYMouse")),
-            // Sound.
-            slider(
-                "soundCategory_master",
-                "Master volume",
-                0.0,
-                1.0,
-                f.double("soundCategory_master") as f32,
-            ),
-            slider(
-                "soundCategory_music",
-                "Music",
-                0.0,
-                1.0,
-                f.double("soundCategory_music") as f32,
-            ),
-            slider(
-                "soundCategory_blocks",
-                "Blocks",
-                0.0,
-                1.0,
-                f.double("soundCategory_blocks") as f32,
-            ),
-            slider(
-                "soundCategory_hostile",
-                "Hostile mobs",
-                0.0,
-                1.0,
-                f.double("soundCategory_hostile") as f32,
-            ),
-            // Interface.
-            slider(
-                "chatOpacity",
-                "Chat opacity",
-                0.0,
-                1.0,
-                f.double("chatOpacity") as f32,
-            ),
-            slider(
-                "chatScale",
-                "Chat scale",
-                0.0,
-                1.0,
-                f.double("chatScale") as f32,
-            ),
-            slider(
-                "menuBackgroundBlurriness",
-                "Menu blur",
-                0.0,
-                10.0,
-                f.int("menuBackgroundBlurriness") as f32,
-            ),
-            toggle("showSubtitles", "Subtitles", f.bool("showSubtitles")),
-            toggle("autoSuggestions", "Command suggestions", f.bool("autoSuggestions")),
-            toggle("chatLinks", "Clickable chat links", f.bool("chatLinks")),
-        ]
+        /// One row of the page, before its value is read from the file.
+        struct Row {
+            key: &'static str,
+            label: &'static str,
+            group: &'static str,
+            unit: &'static str,
+            min: f32,
+            max: f32,
+            step: f32,
+            /// Stored 0..1, read as a percentage.
+            percent: bool,
+            toggle: bool,
+        }
+        // A slider: `options.txt` key, label, group, unit, min, max, step.
+        const fn s(
+            key: &'static str,
+            label: &'static str,
+            group: &'static str,
+            unit: &'static str,
+            min: f32,
+            max: f32,
+            step: f32,
+        ) -> Row {
+            Row {
+                key,
+                label,
+                group,
+                unit,
+                min,
+                max,
+                step,
+                percent: unit == "%",
+                toggle: false,
+            }
+        }
+        // A switch: the same, with no range of its own.
+        const fn t(key: &'static str, label: &'static str, group: &'static str) -> Row {
+            Row {
+                key,
+                label,
+                group,
+                unit: "",
+                min: 0.0,
+                max: 1.0,
+                step: 1.0,
+                percent: false,
+                toggle: true,
+            }
+        }
+        let rows = [
+            // GRAPHICS. renderDistance is 2..=64 in the file; the old 32 was half the
+            // range the game actually reads.
+            s("renderDistance", "Render distance", "GRAPHICS", "chunks", 2.0, 64.0, 1.0),
+            s("simulationDistance", "Simulation distance", "GRAPHICS", "chunks", 5.0, 32.0, 1.0),
+            s("guiScale", "GUI scale (0 = automatic)", "GRAPHICS", "", 0.0, 4.0, 1.0),
+            s("fov", "Field of view", "GRAPHICS", "°", 30.0, 110.0, 1.0),
+            // FrameLimit: multiples of ten, 10..=260.
+            s("maxFps", "Frame limit", "GRAPHICS", "fps", 10.0, 260.0, 10.0),
+            s("gamma", "Brightness", "GRAPHICS", "%", 0.0, 1.0, 0.01),
+            // Scaled(2, 20, 4.0, 0.5, 5.0): quarters between 0.5 and 5.
+            s("entityDistanceScaling", "Entity distance", "GRAPHICS", "x", 0.5, 5.0, 0.25),
+            t("enableVsync", "V-Sync", "GRAPHICS"),
+            t("bobView", "View bobbing", "GRAPHICS"),
+            t("ao", "Smooth lighting", "GRAPHICS"),
+            t("vignette", "Vignette", "GRAPHICS"),
+            // CONTROLS.
+            s("mouseSensitivity", "Look sensitivity", "CONTROLS", "%", 0.0, 1.0, 0.01),
+            t("autoJump", "Auto-jump", "CONTROLS"),
+            t("toggleCrouch", "Toggle crouch", "CONTROLS"),
+            t("toggleSprint", "Toggle sprint", "CONTROLS"),
+            t("invertYMouse", "Invert mouse Y", "CONTROLS"),
+            // SOUND. The keys are `soundCategory_<SoundSource>`: the source is
+            // `block`, not `blocks`, and a key one letter off is a slider that writes
+            // a line the game never reads.
+            s("soundCategory_master", "Master volume", "SOUND", "%", 0.0, 1.0, 0.01),
+            s("soundCategory_music", "Music", "SOUND", "%", 0.0, 1.0, 0.01),
+            s("soundCategory_block", "Blocks", "SOUND", "%", 0.0, 1.0, 0.01),
+            s("soundCategory_hostile", "Hostile mobs", "SOUND", "%", 0.0, 1.0, 0.01),
+            // INTERFACE.
+            s("chatOpacity", "Chat opacity", "INTERFACE", "%", 0.0, 1.0, 0.01),
+            s("chatScale", "Chat scale", "INTERFACE", "%", 0.0, 1.0, 0.01),
+            s("menuBackgroundBlurriness", "Menu blur", "INTERFACE", "", 0.0, 10.0, 1.0),
+            t("showSubtitles", "Subtitles", "INTERFACE"),
+            t("autoSuggestions", "Command suggestions", "INTERFACE"),
+            t("chatLinks", "Clickable chat links", "INTERFACE"),
+        ];
+        rows.iter()
+            .map(|row| {
+                let value = match f.get(row.key) {
+                    Some(horizon_client::options_file::V::Int(i)) => *i as f32,
+                    Some(horizon_client::options_file::V::Double(d)) => *d as f32,
+                    Some(horizon_client::options_file::V::Bool(b)) => {
+                        if *b { 1.0 } else { 0.0 }
+                    }
+                    _ => 0.0,
+                };
+                LauncherSetting {
+                    key: row.key.to_string(),
+                    label: row.label.to_string(),
+                    value,
+                    min: row.min,
+                    max: row.max,
+                    toggle: row.toggle,
+                    on: value >= 0.5,
+                    unit: row.unit.to_string(),
+                    group: row.group.to_string(),
+                    step: row.step,
+                    percent: row.percent,
+                }
+            })
+            .collect()
     }
 
     /// Write one setting the launcher's own Settings page changed.
@@ -1688,32 +1691,60 @@ impl Loading {
     /// through the same parse it uses for every other option. The keys are the ones
     /// `options_file.rs` names, so a slider here and the game's own options screen
     /// cannot disagree about what "render distance" is called.
+    ///
+    /// The text comes from the file's own codec, not from a number typed out here.
+    /// The stored value is not always the value on the slider: `fov` is kept as
+    /// `(fov - 70) / 40`, the frame limit as tens, and entity distance as quarters.
+    /// Writing `fov:90` would be read back as `90 * 40 + 70 = 3670`, rejected by the
+    /// range, and reset to the default — a slider that visibly does nothing.
     #[cfg(target_os = "android")]
     fn apply_launcher_option(&mut self, key: &str, value: f32) {
+        use horizon_client::options_file::{OptionsFile, V};
         let path = Game::options_path();
-        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
-        // A float is written the way Java writes one: no trailing `.0` for a whole
-        // number, because that is what the parser on both sides expects.
-        let rendered = if (value - value.round()).abs() < 0.001 {
-            format!("{}", value.round() as i64)
-        } else {
-            format!("{value:.3}")
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // The file as the game reads it, so the candidate is the same type the key
+        // stores and the encoder is the same one `Options.save` uses.
+        let mut file = OptionsFile::parse(&text);
+        let candidate = match file.get(key) {
+            Some(V::Bool(_)) => V::Bool(value >= 0.5),
+            Some(V::Int(_)) => V::Int(value.round() as i32),
+            Some(V::Double(_)) => V::Double(f64::from(value)),
+            _ => {
+                // A key the table does not have is a control with nothing behind it.
+                log::warn!("launcher: {key} is not an options.txt key");
+                self.menu.launcher_notice = Some(format!("{key} is not an option"));
+                return;
+            }
         };
+        // `set` validates and snaps exactly as the game's own options screen does:
+        // 137 fps becomes 130, 1.3 entity distance becomes 1.25.
+        file.set(key, candidate);
+        let Some((_, encoded)) = file
+            .serialize()
+            .lines()
+            .find_map(|line| line.split_once(':'))
+            .filter(|(name, _)| *name == key)
+        else {
+            log::warn!("launcher: {key} refused {value}");
+            self.menu.launcher_notice = Some(format!("{key} does not accept that value"));
+            return;
+        };
+        let encoded = encoded.to_string();
         let mut replaced = false;
         let mut lines: Vec<String> = Vec::new();
         for line in text.lines() {
             match line.split_once(':') {
                 Some((name, _)) if name == key => {
-                    lines.push(format!("{key}:{rendered}"));
+                    lines.push(format!("{key}:{encoded}"));
                     replaced = true;
                 }
                 _ => lines.push(line.to_string()),
             }
         }
         if !replaced {
-            lines.push(format!("{key}:{rendered}"));
+            lines.push(format!("{key}:{encoded}"));
         }
-        text = lines.join("\n");
+        let mut text = lines.join("\n");
         text.push('\n');
         if let Err(error) = std::fs::write(&path, &text) {
             log::warn!("launcher: could not write {key}: {error}");
@@ -1721,31 +1752,21 @@ impl Loading {
             return;
         }
         // The live copy has to follow, or the next save from the game's own options
-        // screen would write its stale value back over this one.
-        let file = &mut self.settings.file;
-        let parsed = match file.get(key) {
-            Some(horizon_client::options_file::V::Bool(_)) => {
-                Some(horizon_client::options_file::V::Bool(value >= 0.5))
-            }
-            Some(horizon_client::options_file::V::Int(_)) => {
-                Some(horizon_client::options_file::V::Int(value.round() as i32))
-            }
-            Some(horizon_client::options_file::V::Double(_)) => {
-                Some(horizon_client::options_file::V::Double(f64::from(value)))
-            }
-            _ => None,
-        };
-        if let Some(parsed) = parsed {
-            self.settings.file.set(key, parsed);
-        }
-        // The live `Settings` is what the menu draws with, so it has to follow the
-        // file: otherwise a slider moved in the launcher would not show until the game
-        // restarted, which is a control that looks broken.
+        // screen would write its stale value back over this one. `reload_settings`
+        // re-reads the file this just wrote, so it is the one source of truth.
         self.reload_settings();
-        // And what the window owns: gamma, present mode, GUI scale and the font atlas
-        // are not in `Settings`, they are in the renderer and the atlas.
+        // And what the window owns: gamma, present mode, GUI scale, the volumes and
+        // the font atlas are not in `Settings`, they are in the renderer, the mixer
+        // and the atlas.
         self.apply_menu_settings();
-        self.menu.launcher_notice = Some(format!("{key} set to {rendered}"));
+        self.menu.launcher_notice = Some(format!(
+            "{} set to {value}",
+            // The key is the file's name; the label is what the page showed.
+            self.launcher_settings()
+                .iter()
+                .find(|setting| setting.key == key)
+                .map_or(key, |setting| setting.label.as_str())
+        ));
     }
 
     /// Re-read `options.txt` into the live settings.
@@ -1758,12 +1779,21 @@ impl Loading {
     fn reload_settings(&mut self) {
         let path = Game::options_path();
         let mut fresh = horizon_client::settings::Settings::load(&path);
-        // The launcher's own sidecars are not in options.txt, so they survive the read.
+        // `Settings::load` reads the sidecars beside options.txt, so the read above
+        // already brought them in; these assignments keep the ones this process owns
+        // (a change saved since the file was last written) rather than taking a copy
+        // of the disk. Both are the same value in practice, and the in-memory one is
+        // the one a page just changed.
         fresh.horizon = self.settings.horizon.clone();
         fresh.controller = self.settings.controller.clone();
         fresh.extras = self.settings.extras.clone();
         fresh.mods = self.settings.mods.clone();
-        fresh.skins = self.settings.skins.clone();
+        // The skins list is a folder scan rather than a sidecar: the fresh one sees a
+        // PNG dropped in while the launcher was open, and the old one is the fallback
+        // for a device where the folder cannot be reached at all.
+        if fresh.skins.is_empty() {
+            fresh.skins = self.settings.skins.clone();
+        }
         fresh.skin = self.settings.skin.clone();
         self.settings = fresh;
         if let Some(window) = &self.window {
