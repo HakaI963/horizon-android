@@ -592,17 +592,22 @@ impl Loading {
         // So does a mod install: the download must not hold a frame.
         self.poll_install();
         if self.menu.launcher_page.is_none() {
-            // A Play transition keeps the launcher on the glass until the zoom has
-            // played out: the world is loading behind it, and clearing the page at the
-            // tap would leave a frozen frame where the animation is.
-            if let Some(until) = self.zoom_until {
-                if std::time::Instant::now() < until {
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                    return;
+            // The page is closed and the game is what is on the glass. The loading
+            // surface stays over it until the thing behind it can draw, and it asks for
+            // frames of its own while it is up: an animation that only redraws when
+            // something else changes is a still picture.
+            let clear = match self.loading_since {
+                Some(at) => at.elapsed() >= std::time::Duration::from_millis(650),
+                None => false,
+            };
+            if clear {
+                self.loading_since = None;
+                horizon_overlay::with(|o| o.set_loading(None));
+            } else {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
-                self.zoom_until = None;
+                return;
             }
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
@@ -612,9 +617,10 @@ impl Loading {
         // can never disagree even if the event reaches here a frame later.
         let page = horizon_overlay::with(|o| {
             o.show_launcher(true);
-            // The engine has the title panorama behind this window, and the front page
-            // is drawn over it rather than painting it out.
-            o.set_panorama(true);
+            // The front page paints the pack's own artwork, so nothing of the engine's
+            // title panorama is wanted behind it: the launcher is a launcher, not a
+            // window onto the game's menu.
+            o.set_panorama(false);
             o.launcher_page()
         })
         .unwrap_or(LauncherPage::Play);
@@ -662,7 +668,7 @@ impl Loading {
         // Turn the Skins model before the model is built, so the frame drawn is the
         // frame the angle belongs to. A still figure reads as a drawing, and the point
         // of the page is that this is the player.
-        if page == LauncherPage::Skins {
+        if page == LauncherPage::Skins && self.skin_turns {
             let now = std::time::Instant::now();
             let delta = now.duration_since(self.skin_turned).as_secs_f32();
             self.skin_turned = now;
@@ -698,6 +704,12 @@ impl Loading {
             patches: patch_stories(),
             ..Default::default()
         };
+        // The artwork behind the front page, uploaded once. It is an atlas of the
+        // pack's own frames, so this is one texture for the whole animation rather
+        // than one per frame.
+        if let Some(r) = &self.renderer {
+            horizon_overlay::with(|o| o.set_launcher_background(&r.device, &r.queue));
+        }
         // The Skins page needs the chosen PNG on the GPU to draw the player out of its
         // own pixels. This uploads only when the file changed, so it costs nothing on
         // the frames that follow.
@@ -892,23 +904,37 @@ impl Loading {
                     }
                 }
                 LauncherEvent::Play => {
-                    // The zoom runs on the glass while the game's own title screen
-                    // loads behind it, so the one-to-three seconds a first frame costs
-                    // are covered by an animation instead of a still frame. The page is
-                    // not cleared until the zoom is spent; `sync_launcher` holds the
-                    // launcher up until `launcher_zoom` reports it is done.
-                    horizon_overlay::with(|o| o.begin_launcher_zoom());
-                    self.zoom_until =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(560));
-                    // The page closes now so the game takes over, but the launcher keeps
-                    // drawing for the length of the zoom (see `sync_launcher`).
+                    // Play does not animate the launcher away: the game is what opens,
+                    // and the two or three seconds its first frame costs are covered by
+                    // a loading surface that keeps drawing. The page closes at once so
+                    // the title can build behind it, and the surface stays up until the
+                    // title reports that it is ready.
+                    horizon_overlay::with(|o| {
+                        o.show_launcher(false);
+                        o.set_loading(Some(horizon_overlay::LoadingScreen {
+                            title: "Starting Minecraft".into(),
+                            detail: "Building the title screen.".into(),
+                            progress: None,
+                        }));
+                    });
                     self.menu.launcher_page = None;
+                    self.loading_since = Some(std::time::Instant::now());
                     if let Some(title) = &mut self.menu.title {
                         title.mode = horizon_client::title::Mode::Main;
                     }
                 }
                 LauncherEvent::PlayRow(id) => {
                     self.menu.launcher_page = None;
+                    // The world takes longer than the title does, and it is the one the
+                    // player is waiting for: name it, and let the surface keep drawing.
+                    horizon_overlay::with(|o| {
+                        o.set_loading(Some(horizon_overlay::LoadingScreen {
+                            title: "Opening world".into(),
+                            detail: "Reading the world and building its chunks.".into(),
+                            progress: None,
+                        }));
+                    });
+                    self.loading_since = Some(std::time::Instant::now());
                     let saves = self
                         .menu
                         .title
@@ -1066,10 +1092,18 @@ impl Loading {
                     }
                 }
                 LauncherEvent::SetOption(key, value) => {
-                    self.apply_launcher_option(&key, value);
+                    if key.starts_with("launcher") {
+                        self.apply_launcher_switch(&key, value >= 0.5);
+                    } else {
+                        self.apply_launcher_option(&key, value);
+                    }
                 }
                 LauncherEvent::ToggleOption(key, on) => {
-                    self.apply_launcher_option(&key, if on { 1.0 } else { 0.0 });
+                    if key.starts_with("launcher") {
+                        self.apply_launcher_switch(&key, on);
+                    } else {
+                        self.apply_launcher_option(&key, if on { 1.0 } else { 0.0 });
+                    }
                 }
                 LauncherEvent::NewInstance => {
                     // There is one pack per build and the engine's protocol is pinned to
@@ -1318,12 +1352,17 @@ impl Loading {
     #[cfg(target_os = "android")]
     fn sign_in_microsoft(&mut self) {
         let Some(client_id) = horizon_client::msa::client_id() else {
+            // Say exactly where the ID goes, because the answer is a file the player
+            // can create from the phone rather than something they have to find in a
+            // build script.
             self.menu.launcher_notice = Some(
-                "Microsoft sign-in is not configured on this build: set HORIZON_MSA_CLIENT_ID."
+                "Microsoft sign-in needs an Azure app: put its client ID in \
+                 import/msa-client-id.txt and reopen this page."
                     .to_string(),
             );
             return;
         };
+        log::info!("launcher: starting Microsoft sign-in with client {}", &client_id[..client_id.len().min(8)]);
         let code = match horizon_client::msa::device_code(&client_id) {
             Ok(code) => code,
             Err(error) => {
@@ -1349,7 +1388,11 @@ impl Loading {
             .spawn(move || {
                 let watch = cancelled.clone();
                 let result = horizon_client::msa::wait_for_sign_in(&client_id, &code, &watch)
-                    .and_then(|tokens| horizon_client::msa::finish_sign_in(&tokens));
+                    .and_then(|tokens| {
+                        log::info!("launcher: Microsoft approved; asking Xbox Live for a token");
+                        horizon_client::msa::finish_sign_in(&tokens)
+                    })
+                    .inspect_err(|error| log::warn!("launcher: sign-in failed: {error}"));
                 if let Ok(account) = &result {
                     if let Err(error) = horizon_client::msa::store(account) {
                         log::warn!("launcher: could not keep the account's tokens: {error}");
@@ -1605,6 +1648,8 @@ impl Loading {
             /// Stored 0..1, read as a percentage.
             percent: bool,
             toggle: bool,
+            /// The key is the launcher's own, not an `options.txt` name.
+            launcher: bool,
         }
         // A slider: `options.txt` key, label, group, unit, min, max, step.
         fn s(
@@ -1627,6 +1672,7 @@ impl Loading {
                 // A slider whose stored value is 0..1 and whose label is a percentage.
                 percent: unit == "%",
                 toggle: false,
+                launcher: false,
             }
         }
         // A switch: the same, with no range of its own.
@@ -1641,9 +1687,30 @@ impl Loading {
                 step: 1.0,
                 percent: false,
                 toggle: true,
+                launcher: false,
+            }
+        }
+        /// A switch the launcher itself owns: the key is not in `options.txt`, and
+        /// `apply_launcher_option` hands it to `apply_launcher_switch` instead.
+        fn l(key: &'static str, label: &'static str) -> Row {
+            Row {
+                key,
+                label,
+                group: "LAUNCHER",
+                unit: "",
+                min: 0.0,
+                max: 1.0,
+                step: 1.0,
+                percent: false,
+                toggle: true,
+                launcher: true,
             }
         }
         let rows = [
+            // LAUNCHER. These are this program's, not the game's: the launcher owns how
+            // it looks, and the game's own options screen never sees them.
+            l("launcherBackground", "Animated background"),
+            l("launcherSkinTurn", "Turn the player on the Skins page"),
             // GRAPHICS. renderDistance is 2..=64 in the file; the old 32 was half the
             // range the game actually reads.
             s("renderDistance", "Render distance", "GRAPHICS", "chunks", 2.0, 64.0, 1.0),
@@ -1687,7 +1754,9 @@ impl Loading {
                 // exception is GUI scale: the file may say 4 on a screen that can only
                 // fit 2, and `clamp_gui_scale` is what the game actually uses, so the
                 // page shows the number in force rather than one the window refused.
-                let value = if row.key == "guiScale" {
+                let value = if row.launcher {
+                    self.launcher_switch(row.key)
+                } else if row.key == "guiScale" {
                     self.settings.gui_scale as f32
                 } else {
                     match f.get(row.key) {
@@ -1711,9 +1780,46 @@ impl Loading {
                     group: row.group.to_string(),
                     step: row.step,
                     percent: row.percent,
+                    launcher: row.launcher,
                 }
             })
             .collect()
+    }
+
+    /// A switch the launcher owns, as 1 or 0.
+    ///
+    /// These are not `options.txt` keys: they change how the launcher behaves, which
+    /// the game has no opinion about. They live beside the touch layout, in the
+    /// launcher's own file, so they survive a restart the same way it does.
+    #[cfg(target_os = "android")]
+    fn launcher_switch(&self, key: &str) -> f32 {
+        let on = match key {
+            "launcherBackground" => !horizon_overlay::with(|o| o.reduce_motion()).unwrap_or(false),
+            "launcherSkinTurn" => true,
+            _ => true,
+        };
+        if on { 1.0 } else { 0.0 }
+    }
+
+    /// Flip one of the launcher's own switches.
+    #[cfg(target_os = "android")]
+    fn apply_launcher_switch(&mut self, key: &str, on: bool) {
+        match key {
+            // The background's animation is the system's "remove animations" setting
+            // plus this one. Turning it off here parks the artwork on its first frame,
+            // which is the still picture the pack also ships.
+            "launcherBackground" => {
+                horizon_overlay::with(|o| o.set_reduce_motion(!on));
+                self.menu.launcher_notice =
+                    Some(if on { "Background: animated" } else { "Background: still" }.to_string());
+            }
+            "launcherSkinTurn" => {
+                self.skin_turns = on;
+                self.menu.launcher_notice =
+                    Some(if on { "The player turns." } else { "The player stands still." }.to_string());
+            }
+            _ => {}
+        }
     }
 
     /// Write one setting the launcher's own Settings page changed.
@@ -2415,7 +2521,7 @@ mod tests {
             #[cfg(target_os = "android")]
             sign_in_rx: None,
             #[cfg(target_os = "android")]
-            zoom_until: None,
+            loading_since: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,
             started: Instant::now(),
@@ -2703,7 +2809,6 @@ fn news_stories() -> Vec<horizon_overlay::LauncherStory> {
 /// The launcher's Patch Notes page: what changed in the build the player is holding.
 /// Newest first, and written for someone who wants to know whether their problem was
 /// fixed rather than what was refactored.
-#[cfg(target_os = "android")]
 #[cfg(target_os = "android")]
 fn patch_stories() -> Vec<horizon_overlay::LauncherStory> {
     use horizon_overlay::LauncherStory;

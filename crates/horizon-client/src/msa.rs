@@ -28,14 +28,30 @@ use std::{
 const SCOPE: &str = "XboxLive.signin offline_access";
 const CONSUMERS: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 
-/// The Azure application's client ID, from the environment or baked in at build time.
-/// Empty or unset means sign-in is not configured on this build.
+/// The Azure application's client ID.
+///
+/// Three places, in order: the environment, the value baked in at build time, and a
+/// file in the game's `import/` folder. The last one is what makes sign-in usable on a
+/// phone without a rebuild: the build server has no Azure application, and a player
+/// who has registered one can drop its ID in `import/msa-client-id.txt` and sign in.
+///
+/// Empty or unset everywhere means sign-in is not configured, and the launcher says so
+/// rather than starting a flow that cannot finish.
 pub fn client_id() -> Option<String> {
-    let value = std::env::var("HORIZON_MSA_CLIENT_ID")
-        .ok()
-        .or_else(|| option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned))?;
-    let value = value.trim().to_owned();
-    (!value.is_empty()).then_some(value)
+    let from_env = std::env::var("HORIZON_MSA_CLIENT_ID").ok();
+    let from_build = option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned);
+    let from_file = std::fs::read_to_string(
+        crate::gfx::import_dir().join("msa-client-id.txt"),
+    )
+    .ok();
+    // The first one that is not empty wins: a file the player wrote is not allowed to
+    // be silently overridden by a build that happens to carry a different one, so the
+    // environment stays first and the file only fills a gap.
+    [from_env, from_build, from_file]
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .find(|value| !value.is_empty())
 }
 
 fn now() -> u64 {
@@ -235,6 +251,7 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
         "Xbox Live",
     )?;
     let xbl = text(&value, "Token").ok_or_else(|| format!("Xbox Live refused ({status})"))?;
+    log::info!("msa: Xbox Live token acquired");
     let uhs = value
         .get("DisplayClaims")
         .and_then(|d| d.get("xui"))
@@ -257,6 +274,7 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
         "Xbox Live",
     )?;
     let xsts = text(&value, "Token").ok_or_else(|| xsts_error(&value, status))?;
+    log::info!("msa: XSTS token acquired");
 
     // Minecraft.
     let (status, value) = post(
@@ -270,6 +288,7 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
         _ => format!("Minecraft refused the sign-in ({status})"),
     })?;
     let expires_in = value.get("expires_in").and_then(Value::as_u64).unwrap_or(86_400);
+    log::info!("msa: Minecraft access token acquired");
 
     // Ownership, then the profile: an account without the game is not one to play on.
     let (status, owned) = get(
@@ -294,6 +313,7 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
     if !owns {
         return Err("This account doesn't own Minecraft Java Edition.".into());
     }
+    log::info!("msa: the account owns Minecraft Java Edition");
     let (status, profile) = get(
         "https://api.minecraftservices.com/minecraft/profile",
         Some(&access),
@@ -303,6 +323,7 @@ pub fn finish_sign_in(ms: &MsTokens) -> Result<Account, String> {
     }
     let name = text(&profile, "name").ok_or_else(|| format!("Minecraft gave no profile ({status})"))?;
     let uuid = text(&profile, "id").ok_or("Minecraft gave no profile UUID")?;
+    log::info!("msa: signed in as {name}");
     Ok(Account {
         name,
         uuid,

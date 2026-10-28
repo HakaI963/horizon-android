@@ -11530,7 +11530,12 @@ impl ApplicationHandler for Game<'_> {
                         self.back_to_launcher = false;
                         self.title = None;
                         self.screen = Screen::Playing;
-                        horizon_overlay::with(|o| o.return_to_launcher());
+                        horizon_overlay::with(|o| {
+                            // The loading surface belongs to the way in, not the way
+                            // out: leaving a world must not show "Opening world".
+                            o.set_loading(None);
+                            o.return_to_launcher();
+                        });
                         // The launcher is the screen now. A world left drawing under it
                         // shows through every gap in the page — which is what "the game
                         // is still there behind the launcher" looked like.
@@ -13127,13 +13132,18 @@ struct Loading {
     /// The worker polling Microsoft while a sign-in runs.
     #[cfg(target_os = "android")]
     sign_in_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
-    /// While a Play transition is running: the instant the launcher stops being drawn
-    /// over the game. Kept so the load behind the animation has time to draw a frame.
+    /// When the loading surface came up, so it can be taken down once the game behind
+    /// it has had a frame to draw. Without a floor the surface would be cleared in the
+    /// same frame it was raised, which is a flash rather than a screen.
     #[cfg(target_os = "android")]
-    zoom_until: Option<std::time::Instant>,
+    loading_since: Option<std::time::Instant>,
     /// The flag a running Microsoft sign-in checks so the player can stop waiting.
     #[cfg(target_os = "android")]
     sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether the Skins page turns its model. The page is a preview of a player, and
+    /// a player standing still is a picture of one.
+    #[cfg(target_os = "android")]
+    skin_turns: bool,
     /// Where the Skins page's model is turned to, and when it last turned: the page
     /// advances it so the player rotates rather than standing still.
     #[cfg(target_os = "android")]
@@ -13568,9 +13578,11 @@ fn run_loading(
         #[cfg(target_os = "android")]
         sign_in_rx: None,
         #[cfg(target_os = "android")]
-        zoom_until: None,
+        loading_since: None,
         #[cfg(target_os = "android")]
         sign_in_cancel: None,
+        #[cfg(target_os = "android")]
+        skin_turns: true,
         #[cfg(target_os = "android")]
         skin_yaw: 0.6,
         #[cfg(target_os = "android")]

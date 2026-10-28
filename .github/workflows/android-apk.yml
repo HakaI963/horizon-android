@@ -68,6 +68,10 @@ env:
   RUST_TOOLCHAIN: "1.90.0"
   ANDROID_PLATFORM: "35"
   CARGO_TARGET: aarch64-linux-android
+  # The Azure application Microsoft sign-in uses. A client ID is public, so it is a
+  # repository variable rather than a secret; unset leaves sign-in saying it is not
+  # configured, which is the honest answer for a fork that has not registered one.
+  HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
 
 jobs:
   # The engine's own tests are the ones that would have caught the last two

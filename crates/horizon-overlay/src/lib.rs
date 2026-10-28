@@ -29,7 +29,7 @@ use imgui::{
 mod launcher;
 pub use launcher::{
     LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
-    LauncherSetting, LauncherStory,
+    LauncherSetting, LauncherStory, LoadingScreen,
 };
 
 /// The button at rest: dark enough to see through, bright enough to find.
@@ -78,8 +78,17 @@ pub struct Overlay {
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
     launcher_since: Option<Instant>,
-    /// When Play was pressed, for the zoom into the world.
-    launcher_zoom_since: Option<Instant>,
+    /// The pack's animated artwork, uploaded once: an atlas of frames, its size,
+    /// and the clock the frame is read from.
+    background: Option<imgui::TextureId>,
+    background_size: [u32; 2],
+    background_since: Option<Instant>,
+    /// The loading surface, drawn over everything between Play and the world. Its
+    /// progress is the platform's, because only the platform knows how far the
+    /// engine has got.
+    loading: Option<LoadingScreen>,
+    /// When the loading surface came up, so its spinner turns.
+    loading_since: Option<Instant>,
     /// When the launcher's page last changed, and which page it changed to. A tab tap
     /// is a page arriving rather than a page being swapped, so the content slides in
     /// over a fifth of a second; `None` means the page on the glass has already
@@ -160,7 +169,11 @@ impl Overlay {
             panel: false,
             launcher: false,
             launcher_since: None,
-            launcher_zoom_since: None,
+            background: None,
+            background_size: [0, 0],
+            background_since: None,
+            loading: None,
+            loading_since: None,
             page_since: None,
             reduce_motion: false,
             launcher_model: LauncherModel::default(),
@@ -381,8 +394,12 @@ impl Overlay {
         // Read before the destructure below: the opening needs `&self`, and that borrow
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
-        let zoom = self.launcher_zoom();
         let fade = self.page_fade();
+        let background = self
+            .background
+            .map(|id| (id, self.background_size, self.background_frame()));
+        let loading = self.loading.clone();
+        let loading_since = self.loading_since;
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -399,7 +416,7 @@ impl Overlay {
             launcher_fonts,
             skin_texture,
             panel_rect,
-            panorama,
+            panorama: _panorama,
             dpi,
             show_status,
             status,
@@ -467,10 +484,9 @@ impl Overlay {
                         width,
                         height,
                         opening,
-                        zoom,
                         fade,
                         *reduce_motion,
-                        *panorama,
+                        background,
                         *skin_texture,
                         launcher_events,
                     );
@@ -518,6 +534,26 @@ impl Overlay {
                         *dpi,
                     ));
                 }
+            }
+            // The loading surface is drawn last, over whichever of the two is up. Play
+            // closes the launcher before the surface is cleared, so drawing it only
+            // while the launcher is up would leave exactly the gap it exists to fill.
+            if let Some(screen) = &loading
+                && let Some(fonts) = launcher_fonts.as_ref()
+            {
+                let elapsed = loading_since
+                    .map(|at| at.elapsed().as_secs_f32())
+                    .unwrap_or(0.0);
+                launcher::draw_loading(
+                    ui,
+                    screen,
+                    fonts,
+                    *dpi,
+                    width,
+                    height,
+                    background,
+                    elapsed,
+                );
             }
         }
 
@@ -655,7 +691,7 @@ impl Overlay {
                 renderer.textures.remove(old);
             }
             if let Some((width, height, pixels)) = fallback {
-                Some(skin_texture(device, queue, renderer, width, height, &pixels))
+                Some(launcher_texture(device, queue, renderer, "launcher skin", width, height, &pixels))
             } else {
                 None
             }
@@ -704,7 +740,7 @@ impl Overlay {
         };
         // The renderer is borrowed again here, and dropped before the slot is written.
         let id = self.renderer.as_mut().map(|renderer| {
-            skin_texture(device, queue, renderer, info.width, info.height, &pixels)
+            launcher_texture(device, queue, renderer, "launcher skin", info.width, info.height, &pixels)
         });
         self.skin_texture = id;
     }
@@ -743,7 +779,7 @@ impl Overlay {
         self.launcher_model.page = LauncherPage::Play;
         self.page_since = None;
         self.launcher_since = Some(Instant::now());
-        self.launcher_zoom_since = None;
+        self.loading = None;
         self.pointer = Pointer::idle();
         self.pending_release = false;
         log::info!("overlay: back to the launcher's front page");
@@ -840,23 +876,102 @@ impl Overlay {
         self.launcher
     }
 
-    /// How far a Play transition has got, 0 to 1, while the launcher is zooming into
-    /// the world it is about to open. The launcher draws it; the platform opens the
-    /// world underneath it, so the tap never lands on a frozen frame.
-    pub fn launcher_zoom(&self) -> Option<f32> {
+    /// Where the artwork is in its own sequence, in frames. The pack's frames are
+    /// thinned to keyframes and cross-faded, so this is fractional: the whole part is
+    /// the frame and the fraction is how far the next one has come in.
+    ///
+    /// A phone's launcher is looked at for seconds at a time, so the sequence loops on
+    /// its own clock rather than on the page's. `reduce_motion` freezes it on the
+    /// first frame, which is the still artwork the pack also ships.
+    fn background_frame(&self) -> f32 {
         if self.reduce_motion {
-            return None;
+            return 0.0;
         }
-        let since = self.launcher_zoom_since?;
-        let span = Duration::from_millis(520);
-        let t = since.elapsed().as_secs_f32() / span.as_secs_f32();
-        (t < 1.0).then_some(t.clamp(0.0, 1.0))
+        let Some(since) = self.background_since else {
+            return 0.0;
+        };
+        let frames = (launcher::BG_COLS * launcher::BG_ROWS) as f32;
+        let at = since.elapsed().as_secs_f32() / launcher::BG_PERIOD;
+        (at * frames).rem_euclid(frames)
     }
 
-    /// Start the zoom into the world. Called when Play is pressed, before the world
-    /// begins to load, so the animation covers the load rather than following it.
-    pub fn begin_launcher_zoom(&mut self) {
-        self.launcher_zoom_since = Some(Instant::now());
+    /// Upload the launcher's background: the pack's own artwork, as an atlas of
+    /// frames. Called once, when the device exists.
+    pub fn set_launcher_background(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.background.is_some() {
+            return;
+        }
+        let bytes: &[u8] = include_bytes!("../art/background.png");
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let Ok(mut reader) = decoder.read_info() else {
+            log::warn!("overlay: the launcher background is not a readable PNG");
+            return;
+        };
+        let Some(size) = reader.output_buffer_size() else {
+            return;
+        };
+        let mut buffer = vec![0; size];
+        let Ok(info) = reader.next_frame(&mut buffer) else {
+            log::warn!("overlay: the launcher background has no frame");
+            return;
+        };
+        // The renderer samples every imgui texture through one shader, so the
+        // background goes in the same unorm format the font atlas and the skin do.
+        let pixels = match info.color_type {
+            png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => buffer[..info.buffer_size()]
+                .chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+            _ => {
+                log::warn!("overlay: the launcher background must be RGB or RGBA");
+                return;
+            }
+        };
+        let id = self.renderer.as_mut().map(|renderer| {
+            launcher_texture(
+                device,
+                queue,
+                renderer,
+                "launcher background",
+                info.width,
+                info.height,
+                &pixels,
+            )
+        });
+        self.background = id;
+        self.background_size = [info.width, info.height];
+        self.background_since = Some(Instant::now());
+        log::info!(
+            "overlay: launcher background {}x{}, {} frames",
+            info.width,
+            info.height,
+            launcher::BG_COLS * launcher::BG_ROWS
+        );
+    }
+
+    /// Show the loading surface over the launcher: what Play is doing, while it does
+    /// it. `progress` is 0..1, or `None` for a surface that only says what it is
+    /// waiting for.
+    ///
+    /// The whole point of this is that the two or three seconds between a tap on Play
+    /// and the first world frame are not a frozen picture. The launcher draws this
+    /// instead, on its own clock, until the platform clears it.
+    pub fn set_loading(&mut self, screen: Option<LoadingScreen>) {
+        if screen.is_some() && self.loading.is_none() {
+            self.loading_since = Some(Instant::now());
+        }
+        if screen.is_none() {
+            self.loading_since = None;
+        }
+        self.loading = screen;
+    }
+
+    /// Whether the loading surface is up, so the platform can keep asking for frames
+    /// while it is: an animation needs a redraw even when nothing else has changed.
+    pub fn loading_active(&self) -> bool {
+        self.loading.is_some()
     }
 
     /// The page the launcher is on, so the platform can keep its model in sync.
@@ -874,6 +989,11 @@ impl Overlay {
     pub fn set_launcher_page(&mut self, page: LauncherPage) {
         self.note_page(page);
         self.launcher_model.page = page;
+    }
+
+    /// Whether animations are off, so a page can show the setting it is in force.
+    pub fn reduce_motion(&self) -> bool {
+        self.reduce_motion
     }
 
     /// Tell the overlay whether the system wants animations. `true` short-circuits the
@@ -921,10 +1041,11 @@ impl Overlay {
 ///
 /// A free function rather than a method: the caller already holds the renderer out of
 /// `self`, and a method would need `self` again for the slot it writes back.
-fn skin_texture(
+fn launcher_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     renderer: &mut horizon_imgui::Renderer,
+    label: &str,
     width: u32,
     height: u32,
     pixels: &[u8],
@@ -933,7 +1054,7 @@ fn skin_texture(
         device,
         renderer,
         horizon_imgui::TextureConfig {
-            label: Some("launcher skin"),
+            label: Some(label),
             size: wgpu::Extent3d {
                 width,
                 height,
