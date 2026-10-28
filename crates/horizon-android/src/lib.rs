@@ -50,6 +50,8 @@ pub unsafe extern "Rust" fn android_main(app: winit::platform::android::activity
     clipboard::install();
     // The launcher's links open in the phone's browser, over the same seam.
     clipboard::install_opener();
+    // And the two file seams: the skin picker and the system file manager.
+    clipboard::install_picker();
     // The soft keyboard's JNI too: the editable view lives on the activity.
     ime::install();
     paths::enter_app_storage(&app);

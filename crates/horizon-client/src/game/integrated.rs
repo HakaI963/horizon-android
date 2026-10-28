@@ -270,23 +270,53 @@ impl Game<'_> {
                     let _ = ready_tx.send(Err(e.to_string()));
                 }
             })?;
-        let mut handle = Integrated {
+        let handle = Integrated {
             flags,
             thread: Some(thread),
             tasks,
             world_name: String::new(),
         };
-        let pipe = match ready.recv() {
-            Ok(Ok((pipe, world_name))) => {
-                handle.world_name = world_name;
-                pipe
-            }
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Err("the integrated server stopped".into()),
-        };
-        self.connect_local(pipe, &player)?;
+        // The world is opened on the server thread and takes however long it takes —
+        // a second or three for a world with a lot of chunks. Waiting for it here would
+        // be a freeze of exactly that long on the only thread that can draw, which is
+        // what a player felt as "the world takes a second to appear". So the handle and
+        // the receiver are parked, and `resume_world_entry` joins the world the moment
+        // the server says it is ready, with the loop drawing in between.
         self.integrated = Some(handle);
+        self.integrated_ready = Some((ready, player));
         Ok(())
+    }
+
+    /// Take the integrated server's answer once it has one, and join the world.
+    ///
+    /// Returns `Ok(true)` when the world is joined, `Ok(false)` while the server is
+    /// still opening it. This is the other half of `open_integrated`: the same two
+    /// steps, split so neither of them holds a frame.
+    pub(super) fn poll_integrated(&mut self) -> Result<bool> {
+        let Some((ready, player)) = &self.integrated_ready else {
+            return Ok(false);
+        };
+        match ready.try_recv() {
+            Ok(Ok((pipe, world_name))) => {
+                let pipe = pipe;
+                let player = player.clone();
+                if let Some(handle) = self.integrated.as_mut() {
+                    handle.world_name = world_name;
+                }
+                self.integrated_ready = None;
+                self.connect_local(pipe, &player)?;
+                Ok(true)
+            }
+            Ok(Err(error)) => {
+                self.integrated_ready = None;
+                Err(error.into())
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(false),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.integrated_ready = None;
+                Err("the integrated server stopped".into())
+            }
+        }
     }
 
     /// The server thread's loop (`MinecraftServer.runServer`): 20 ticks a

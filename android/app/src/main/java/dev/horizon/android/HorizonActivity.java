@@ -5,6 +5,7 @@ import android.app.NativeActivity;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.provider.DocumentsContract;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputType;
@@ -33,6 +34,9 @@ import android.widget.Toast;
  * the keys that change no text, and says them as edits to the game's focused field.
  */
 public class HorizonActivity extends NativeActivity {
+    /** The one result this activity asks for: a PNG the player picked for a skin. */
+    private static final int REQUEST_SKIN = 0x5c1;
+
     private KeyboardField keyboard;
 
     /** The launcher's Minecraft install, shown while the engine has no window yet. */
@@ -235,6 +239,84 @@ public class HorizonActivity extends NativeActivity {
             dismissInstallDialog();
             Toast.makeText(this, "Minecraft install failed: " + message, Toast.LENGTH_LONG).show();
         });
+    }
+
+    /**
+     * Show the app's own files in the system file manager.
+     *
+     * A NativeActivity has no folder dialog of its own, and the launcher's Files page
+     * lists what is there — but a player who wants to drop a mod or a skin in needs the
+     * system picker, not a list. The external-storage documents provider is the one
+     * every Android 11+ device has; a device without it gets the path in a toast
+     * instead of a dead button.
+     */
+    public void horizonOpenFiles(String relative) {
+        runOnUiThread(() -> {
+            String path = "primary:Android/data/" + getPackageName() + "/files/"
+                    + (relative == null ? "" : relative);
+            try {
+                Uri uri = DocumentsContract.buildDocumentUri(
+                        "com.android.externalstorage.documents", path);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, "vnd.android.document/directory");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(intent);
+            } catch (Exception error) {
+                Toast.makeText(this,
+                        "Files: " + getExternalFilesDir(null) + "/" + (relative == null ? "" : relative),
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * Let the player pick a PNG skin, and copy it where the launcher reads skins from.
+     *
+     * The picker is the system's; the copy is what makes the choice visible to the
+     * engine, because the document the player picked lives behind a content URI that
+     * the game's own file reads cannot open. `REQUEST_SKIN` is the only result this
+     * activity asks for.
+     */
+    public void horizonPickSkin() {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("image/png");
+            try {
+                startActivityForResult(intent, REQUEST_SKIN);
+            } catch (Exception error) {
+                Toast.makeText(this, "No file picker on this device", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != REQUEST_SKIN || result != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri source = data.getData();
+        try (java.io.InputStream in = getContentResolver().openInputStream(source)) {
+            java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/skins");
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                Toast.makeText(this, "Could not create " + dir, Toast.LENGTH_LONG).show();
+                return;
+            }
+            String name = "skin-" + System.currentTimeMillis() + ".png";
+            java.io.File out = new java.io.File(dir, name);
+            try (java.io.OutputStream stream = new java.io.FileOutputStream(out)) {
+                byte[] buffer = new byte[1 << 16];
+                int count;
+                while ((count = in.read(buffer)) > 0) {
+                    stream.write(buffer, 0, count);
+                }
+            }
+            Toast.makeText(this, "Added " + name, Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "Could not read that file: " + error, Toast.LENGTH_LONG).show();
+        }
     }
 
     /**

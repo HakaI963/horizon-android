@@ -199,7 +199,16 @@ pub struct Layout {
     /// Whether a drag on empty glass turns the camera at all. Off, a button is the
     /// only way to look, which is what a Bluetooth mouse user wants.
     pub drag_to_look: bool,
+    /// Which built-in arrangement this is: `"java"` or `"bedrock"`. Kept in the file
+    /// so the launcher's own page can light the preset in force, and so a save from
+    /// the arrange panel does not forget which one the player picked.
+    #[serde(default = "default_preset")]
+    pub preset: String,
     pub controls: Vec<Control>,
+}
+
+fn default_preset() -> String {
+    "java".to_string()
 }
 
 /// A button at a fraction of the screen and a fraction of its short edge.
@@ -267,6 +276,7 @@ impl Default for Layout {
             opacity: 0.42,
             look_sensitivity: 6.0,
             drag_to_look: true,
+            preset: default_preset(),
             controls,
         }
     }

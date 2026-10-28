@@ -194,7 +194,13 @@ fn parse_entry(text: &str) -> Result<Option<Entry>, String> {
     if version.game != horizon_core::VANILLA_VERSION {
         return Ok(None);
     }
-    let url = format!("{FILE_HOST}{}/{}/{}", entry.id, version.version, version.file);
+    // The registry tags each release `<id>-<version>` and puts the file in it, which
+    // is what the README's submission form produces. A URL built any other way is a
+    // 404, which is what "install not working" was.
+    let url = format!(
+        "{FILE_HOST}{}-{}/{}",
+        entry.id, version.version, version.file
+    );
     Ok(Some(Entry {
         id: entry.id.clone(),
         name: entry.name,

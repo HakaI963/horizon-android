@@ -630,6 +630,37 @@ impl Game<'_> {
     }
 }
 
+/// A PNG skin as the 64x64 RGBA the atlas slot holds.
+///
+/// The game's own downloader decodes skins with the same rules, but it works from a
+/// URL; this is a file the player dropped on the phone. The legacy 64x32 layout is
+/// converted the way vanilla converts it, so an old skin still wears correctly.
+pub(crate) fn decode_skin(path: &std::path::Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => buffer[..info.buffer_size()]
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buffer[..info.buffer_size()]
+            .chunks_exact(2)
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Grayscale => buffer[..info.buffer_size()]
+            .iter()
+            .flat_map(|g| [*g, *g, *g, 255])
+            .collect(),
+        png::ColorType::Indexed => return None,
+    };
+    horizon_client::skins::process_legacy_skin(info.width, info.height, &rgba)
+}
+
 impl Game<'_> {
     /// `Hud.extractTabList`: the player list while the player-list key is
     /// held. A local world shows it with a joined LAN guest or a `list`

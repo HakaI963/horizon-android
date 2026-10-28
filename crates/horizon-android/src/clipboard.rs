@@ -15,7 +15,10 @@ use jni::objects::{JObject, JString, Reference};
 use jni::vm::JavaVM;
 use jni::{Env, JValue, jni_sig, jni_str, sys};
 
-use horizon_client::clipboard::{install_opener as register_opener, install_system, SystemHooks};
+use horizon_client::clipboard::{
+    install_opener as register_opener, install_picker as register_picker,
+    install_reveal as register_reveal, install_system, SystemHooks,
+};
 
 use crate::APP;
 
@@ -45,6 +48,55 @@ pub fn install_opener() {
     if !register_opener(open) {
         log::warn!("clipboard: the URL opener was installed twice");
     }
+}
+
+/// Hand the engine the activity's file picker and file manager, beside the browser.
+pub fn install_picker() {
+    if !register_picker(pick) {
+        log::warn!("clipboard: the skin picker was installed twice");
+    }
+    if !register_reveal(reveal) {
+        log::warn!("clipboard: the file manager was installed twice");
+    }
+}
+
+fn pick() -> bool {
+    let Some((vm, activity)) = context() else {
+        return false;
+    };
+    vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+        // SAFETY: the pointer is the activity's global reference, held by `APP`.
+        let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
+        env.call_method(
+            &*activity,
+            jni_str!("horizonPickSkin"),
+            jni_sig!("()V"),
+            &[],
+        )?
+        .v()?;
+        Ok(true)
+    })
+    .unwrap_or(false)
+}
+
+fn reveal(relative: &str) -> bool {
+    let Some((vm, activity)) = context() else {
+        return false;
+    };
+    vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+        // SAFETY: the pointer is the activity's global reference, held by `APP`.
+        let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
+        let path: JString = env.new_string(relative)?;
+        env.call_method(
+            &*activity,
+            jni_str!("horizonOpenFiles"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&path)],
+        )?
+        .v()?;
+        Ok(true)
+    })
+    .unwrap_or(false)
 }
 
 fn open(url: &str) -> bool {

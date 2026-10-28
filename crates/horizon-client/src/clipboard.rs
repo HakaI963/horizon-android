@@ -190,6 +190,56 @@ pub fn install_opener(open: fn(&str) -> bool) -> bool {
     OPENER.set(open).is_ok()
 }
 
+/// Ask the platform for a file picker, so the player can add a skin.
+///
+/// Same seam as the URL opener, and for the same reason: a `content://` URI is an
+/// Android object the engine may not touch, and the activity is what can turn one into
+/// a file the game can read.
+#[cfg(target_os = "android")]
+static PICKER: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
+
+/// Register the platform's file picker.
+#[cfg(target_os = "android")]
+pub fn install_picker(pick: fn() -> bool) -> bool {
+    PICKER.set(pick).is_ok()
+}
+
+/// Show the file picker for a PNG skin. `false` when the platform has none, which is
+/// every desktop.
+pub fn pick_skin() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        PICKER.get().is_some_and(|pick| pick())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
+}
+
+/// Ask the platform to show the game's files in its file manager.
+#[cfg(target_os = "android")]
+static REVEAL: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
+
+/// Register the platform's file manager.
+#[cfg(target_os = "android")]
+pub fn install_reveal(reveal: fn(&str) -> bool) -> bool {
+    REVEAL.set(reveal).is_ok()
+}
+
+/// Show `relative` (inside the app's external files) in the system file manager.
+pub fn reveal_files(relative: &str) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        REVEAL.get().is_some_and(|reveal| reveal(relative))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = relative;
+        false
+    }
+}
+
 /// Open `url` in the platform's browser. `https` only, and an error when there is no
 /// opener: a desktop has no activity to hand an intent to.
 pub fn open_url(url: &str) -> Result<(), String> {

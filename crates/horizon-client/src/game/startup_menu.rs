@@ -5,12 +5,26 @@ use horizon_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
     options_ui::{Event, OptionsUi, Page},
 };
+use std::path::PathBuf;
 use winit::{event::KeyEvent, keyboard::ModifiersState};
 
 #[cfg(target_os = "android")]
 use horizon_overlay::{
-    LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
+    LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
 };
+
+/// Where a Microsoft sign-in has got to. The flow itself is `auth`/`account`; this is
+/// only what the launcher needs to draw while it runs.
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug)]
+enum SignInState {
+    /// Waiting for the player to enter the code at the Microsoft page.
+    Waiting(String),
+    /// Signed in as this name.
+    Done(String),
+    /// Stopped, with the reason.
+    Failed(String),
+}
 
 /// Horizon's own mod registry, where a mod's page lives. The launcher shows the same
 /// registry in its Mods page; this is the link out to the site for everything else.
@@ -37,6 +51,19 @@ pub(super) struct StartupMenu {
     /// What the last export or import said, shown under the settings page.
     #[cfg(target_os = "android")]
     launcher_notice: Option<String>,
+    /// The skin PNG last uploaded to the overlay, so a re-upload only happens when
+    /// the choice actually changed.
+    #[cfg(target_os = "android")]
+    uploaded_skin: Option<PathBuf>,
+    /// The address this device is hosting on, when it is.
+    #[cfg(target_os = "android")]
+    hosting: Option<String>,
+    /// A Microsoft sign-in in progress, and the message it is showing.
+    #[cfg(target_os = "android")]
+    sign_in: Option<SignInState>,
+    /// The worker polling Microsoft while a sign-in runs.
+    #[cfg(target_os = "android")]
+    sign_in_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -519,6 +546,8 @@ impl Loading {
         // Take last frame's clicks before reading the page, so this frame's model
         // already reflects them.
         self.handle_launcher_events(event_loop);
+        // A Microsoft sign-in runs on a worker; its answer arrives here.
+        self.poll_sign_in();
         if self.menu.launcher_page.is_none() {
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
@@ -544,10 +573,11 @@ impl Loading {
             .map(|t| t.saves.clone())
             .unwrap_or_default();
         // Listing a world reads and NBT-parses its `level.dat`, and this runs on every
-        // frame the launcher is up — sixty times a second for a list that only changes
-        // when a world is made or opened. The cache is rebuilt on the pages that show
-        // it, not on every page.
-        let needs_worlds = matches!(page, LauncherPage::Play | LauncherPage::Installations);
+        // frame the launcher is up. The cache is rebuilt on the pages that show it.
+        let needs_worlds = matches!(
+            page,
+            LauncherPage::Play | LauncherPage::Installations | LauncherPage::Multiplayer
+        );
         if needs_worlds && self.menu.launcher_worlds.is_none() {
             self.menu.launcher_worlds = Some(horizon_client::title::list_worlds(&saves));
         }
@@ -572,6 +602,17 @@ impl Loading {
         } else {
             (Vec::new(), None)
         };
+        let accounts = self.launcher_accounts();
+        let controls_preset = self.launcher_controls_preset();
+        // A sign-in that is waiting on the browser says so above the account list; a
+        // finished one has already moved the notice to "Signed in as ...".
+        let sign_in_line = match &self.sign_in {
+            Some(SignInState::Waiting(code)) => Some(format!(
+                "Waiting for Microsoft: type {code} at microsoft.com/link"
+            )),
+            Some(SignInState::Failed(error)) => Some(error.clone()),
+            Some(SignInState::Done(_)) | None => None,
+        };
         let mut model = LauncherModel {
             page,
             version: version.clone(),
@@ -583,11 +624,34 @@ impl Loading {
                 ("Platform".into(), "Android · native".into()),
             ],
             skins,
-            chosen_skin,
+            chosen_skin: chosen_skin.clone(),
+            accounts,
+            controls_preset,
+            hosting: self.hosting_address(),
             news: news_stories(),
             patches: patch_stories(),
             ..Default::default()
         };
+        // The Skins page needs the chosen PNG on the GPU to draw the player out of its
+        // own pixels. This uploads only when the file changed, so it costs nothing on
+        // the frames that follow.
+        if page == LauncherPage::Skins {
+            let path = chosen_skin
+                .as_ref()
+                .map(|name| horizon_client::gfx::import_dir().join("skins").join(name))
+                .filter(|path| path.is_file());
+            self.launcher_skin = path.clone();
+            model.skin_size = path
+                .as_ref()
+                .and_then(|path| png_size(path))
+                .unwrap_or([0, 0]);
+            if path != self.uploaded_skin
+                && let Some(r) = &self.renderer
+            {
+                horizon_overlay::with(|o| o.set_launcher_skin(&r.device, &r.queue, path.as_deref()));
+                self.uploaded_skin = path;
+            }
+        }
         if page == LauncherPage::Mods {
             let import = horizon_client::gfx::import_dir();
             // The notice is read before the registry is borrowed: `mod_registry` takes
@@ -598,37 +662,39 @@ impl Loading {
             // something that already worked, and a registry that could not be reached
             // is why the list is empty. So the error wins, then the notice, then the
             // count.
-            model.status = if registry.failed {
-                registry.status.clone()
-            } else {
-                notice.unwrap_or_else(|| registry.status.clone())
+            model.mods_loading = registry.is_none();
+            model.status = match registry {
+                None => String::new(),
+                Some(registry) if registry.failed => registry.status.clone(),
+                Some(registry) => notice.unwrap_or_else(|| registry.status.clone()),
             };
-            model.mods_failed = registry.failed;
+            model.mods_failed = registry.is_some_and(|registry| registry.failed);
             model.installed_mods = horizon_client::mod_registry::installed(&import);
             model.mods_site = MODS_SITE.to_string();
             model.mods = registry
-                .entries
-                .iter()
-                .map(|entry| LauncherMod {
-                    id: entry.id.clone(),
-                    name: entry.name.clone(),
-                    summary: entry.summary.clone(),
-                    version: entry.version.clone(),
-                    file: entry
-                        .url
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or_default()
-                        .to_string(),
+                .map(|registry| {
+                    registry
+                        .entries
+                        .iter()
+                        .map(|entry| LauncherMod {
+                            id: entry.id.clone(),
+                            name: entry.name.clone(),
+                            summary: entry.summary.clone(),
+                            version: entry.version.clone(),
+                            file: entry
+                                .url
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string(),
+                        })
+                        .collect()
                 })
-                .collect();
+                .unwrap_or_default();
         }
         match page {
             LauncherPage::Play => {
                 model.playable = true;
-                // The front page launches the instance, and there is one: naming it
-                // after a world would promise the button starts that world, and Play
-                // opens the game's own menu.
                 model.instance = "Default".into();
                 if let Some((line, fraction)) = sounds {
                     model.status = line;
@@ -636,35 +702,51 @@ impl Loading {
                 }
             }
             LauncherPage::Installations => {
+                // Versions, and only versions. The worlds under them used to be listed
+                // here as well, which made a page called Installations into a second
+                // world list; a world belongs on Play, not beside the thing that
+                // installed the game.
                 model.playable = true;
                 model.instance = "Default".into();
-                // One installation exists, and it is the pinned version; the worlds
-                // beneath it are the ones that version can open.
-                let mut rows = vec![LauncherRow {
+                model.rows = vec![LauncherRow {
                     id: 0,
                     title: format!("Minecraft {version}"),
-                    subtitle: "The pack this build was made for".into(),
+                    subtitle: "Horizon · the pack this build was made for".into(),
                     badge: "installed".into(),
                     selected: true,
                     enabled: true,
                 }];
-                for (i, w) in worlds.iter().enumerate() {
-                    rows.push(LauncherRow {
-                        id: (i + 1) as u32,
+            }
+            LauncherPage::Multiplayer => {
+                model.instance = "Default".into();
+                model.rows = worlds
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| LauncherRow {
+                        id: i as u32,
                         title: w.name.clone(),
                         subtitle: w.version.clone(),
                         badge: if w.creative { "Creative".into() } else { String::new() },
                         selected: false,
                         enabled: true,
-                    });
-                }
-                model.rows = rows;
+                    })
+                    .collect();
+            }
+            LauncherPage::Files => {
+                model.rows = files_rows();
             }
             LauncherPage::Settings => {
                 model.settings = self.launcher_settings();
                 if let Some(notice) = self.menu.launcher_notice.clone() {
                     model.status = notice;
                 }
+            }
+            LauncherPage::Profile => {
+                // The sign-in's own state first: it is the one line that changes while
+                // the player is looking at the page.
+                model.status = sign_in_line
+                    .or_else(|| self.menu.launcher_notice.clone())
+                    .unwrap_or_default();
             }
             _ => {}
         }
@@ -728,43 +810,47 @@ impl Loading {
                     // glass instead of handing over to the game's options screen.
                     self.menu.launcher_page = Some(LauncherPage::Settings);
                 }
-                LauncherEvent::OpenMultiplayer => {
-                    // Servers live in the engine's own list, and the launcher is the
-                    // front page of the same `Title`: switching its mode is the whole
-                    // handover, no separate screen to build.
-                    self.menu.launcher_page = None;
-                    if let Some(title) = &mut self.menu.title {
-                        title.mode =
-                            horizon_client::title::Mode::Multiplayer(
-                                horizon_client::multiplayer::Screen::list(&title.saves),
-                            );
-                    }
-                }
-                // The Skins page's button promises a skin picker, so it opens one. It
-                // used to fall into the Options arm and land on the main options page,
-                // which is not a picker and never mentions skins.
+                // The Skins page stays in the launcher. Its button used to hand over to
+                // the game's own skin screen, which is a different page in a different
+                // program; what the player asked for is a file picker, and the copy
+                // lands in import/skins where the page already lists it.
                 LauncherEvent::OpenSkins => {
-                    self.menu.launcher_page = None;
-                    self.open_menu_options(Page::Skins);
+                    if horizon_client::clipboard::pick_skin() {
+                        self.menu.launcher_notice =
+                            Some("Pick a 64x64 PNG. It appears in the library when you come back."
+                                .to_string());
+                    } else {
+                        self.menu.launcher_notice = Some(
+                            "No file picker on this device: drop the PNG in import/skins."
+                                .to_string(),
+                        );
+                    }
                 }
                 LauncherEvent::PickSkin(name) => {
                     let import = horizon_client::gfx::import_dir();
                     let dir = import.join("skins");
                     horizon_client::skin_choice::save(&dir, Some(&name));
+                    // The next frame uploads the new PNG: the cache is the file that
+                    // was last shown, and it has to be forgotten or the page would keep
+                    // drawing the old one.
+                    self.uploaded_skin = None;
                     self.menu.launcher_notice = Some(format!("Skin set to {name}"));
                 }
                 LauncherEvent::RefreshMods => {
                     self.mod_registry = None;
+                    self.mod_registry_rx = None;
                     self.menu.launcher_notice = None;
                 }
                 LauncherEvent::InstallMod(id) => {
                     let import = horizon_client::gfx::import_dir();
                     // Cloned out before the install: `mod_registry` borrows `self`, and
                     // the entry has to outlive that borrow to reach the download.
-                    let registry = self.mod_registry().clone();
+                    let entry = self
+                        .mod_registry()
+                        .and_then(|registry| registry.entries.iter().find(|e| e.id == id).cloned());
                     // A miss means the list was refreshed between the tap and here, which
                     // is not an error worth dropping the rest of this frame's events for.
-                    if let Some(entry) = registry.entries.iter().find(|e| e.id == id).cloned() {
+                    if let Some(entry) = entry {
                         let notice = match horizon_client::mod_registry::install(&import, &entry) {
                             // The game reads `import/mods/` when a world opens, so a mod
                             // installed from here is live on the next world, not this one.
@@ -781,6 +867,7 @@ impl Loading {
                         // already there. Dropping it re-fetches on the next frame, and the
                         // notice above it survives because only the registry is cleared.
                         self.mod_registry = None;
+                        self.mod_registry_rx = None;
                     }
                 }
                 LauncherEvent::OpenModsSite => {
@@ -794,12 +881,48 @@ impl Loading {
                 LauncherEvent::ToggleOption(key, on) => {
                     self.apply_launcher_option(&key, if on { 1.0 } else { 0.0 });
                 }
-                // The Instances page lists what exists and offers a new one. Until
-                // instances are real (M1b) the honest answer is to say so, not to
-                // swallow the tap: the page's only two controls used to do nothing.
-                LauncherEvent::SelectRow(_) | LauncherEvent::NewInstance => {
-                    log::info!("launcher: instances are not separate yet; staying on Default");
+                LauncherEvent::NewInstance => {
+                    // There is one pack per build and the engine's protocol is pinned to
+                    // it, so a second installation would be a second copy of the same
+                    // version with no way to play anything else. Say that rather than
+                    // drawing a button that does nothing.
+                    self.menu.launcher_notice = Some(
+                        "One installation per build: the engine is compiled for one version."
+                            .to_string(),
+                    );
                 }
+                LauncherEvent::SelectRow(id) => {
+                    // On Installations there is exactly one row and it is already the
+                    // selected one; on Multiplayer a row is a world, which the Host
+                    // button handles. Nothing to do, and nothing to say.
+                    log::info!("launcher: row {id} selected");
+                }
+                LauncherEvent::RevealFiles => {
+                    // The activity owns intents, so it is what shows the folder. The
+                    // launcher's own page lists it either way, so a device with no file
+                    // manager still tells the player where the files are.
+                    let import = horizon_client::gfx::import_dir();
+                    if !horizon_client::clipboard::reveal_files("import") {
+                        self.menu.launcher_notice =
+                            Some(format!("Files live in {}", import.display()));
+                    }
+                }
+                LauncherEvent::HostWorld(id) => self.host_world(id),
+                LauncherEvent::StopHosting => {
+                    self.hosting = None;
+                    self.menu.launcher_notice = Some("Stopped hosting.".to_string());
+                }
+                LauncherEvent::AddAccount => {
+                    // A new offline name is a rename away: the account card is the
+                    // field, and this clears it so the next name is a new account.
+                    self.menu.launcher_draft.clear();
+                    self.menu.launcher_notice =
+                        Some("Type a name for the new offline account.".to_string());
+                }
+                LauncherEvent::SwitchAccount(id) => self.switch_account(id),
+                LauncherEvent::RemoveAccount(id) => self.remove_account(id),
+                LauncherEvent::SignInMicrosoft => self.sign_in_microsoft(),
+                LauncherEvent::SetControls(preset) => self.set_controls_preset(&preset),
                 // Only reachable on the bring-up card, which has its own handler.
                 LauncherEvent::Install | LauncherEvent::Restart => {}
                 // Settings travel as one archive in the folder a file manager can
@@ -866,17 +989,323 @@ impl Loading {
         self.save_menu_settings();
     }
 
+    /// Switch to an account by its place in the list the page drew.
+    #[cfg(target_os = "android")]
+    fn switch_account(&mut self, id: u32) {
+        let Some(account) = self.launcher_accounts().into_iter().nth(id as usize) else {
+            return;
+        };
+        self.apply_account(&account.name);
+        let import = horizon_client::gfx::import_dir();
+        let mut public: Vec<(String, String)> = self
+            .launcher_accounts()
+            .into_iter()
+            .map(|a| (if a.kind == "Microsoft" { "msa" } else { "offline" }.to_string(), a.name))
+            .collect();
+        public.retain(|(_, name)| name != &account.name);
+        public.insert(
+            0,
+            (if account.kind == "Microsoft" { "msa" } else { "offline" }.to_string(), account.name.clone()),
+        );
+        let pairs: Vec<(&str, &str)> = public
+            .iter()
+            .map(|(kind, name)| (kind.as_str(), name.as_str()))
+            .collect();
+        horizon_client::msa::write_public(&import, &pairs);
+        self.menu.launcher_notice = Some(format!("Playing as {}", account.name));
+    }
+
+    /// Forget an account. The Microsoft tokens go with it; an offline name is only
+    /// ever a line in the list.
+    #[cfg(target_os = "android")]
+    fn remove_account(&mut self, id: u32) {
+        let Some(account) = self.launcher_accounts().into_iter().nth(id as usize) else {
+            return;
+        };
+        if account.kind == "Microsoft" {
+            if let Some(stored) = horizon_client::msa::stored()
+                .into_iter()
+                .find(|a| a.name == account.name)
+            {
+                horizon_client::msa::forget(&stored.uuid);
+            }
+        }
+        let import = horizon_client::gfx::import_dir();
+        let remaining: Vec<(String, String)> = self
+            .launcher_accounts()
+            .into_iter()
+            .filter(|a| a.name != account.name)
+            .map(|a| (if a.kind == "Microsoft" { "msa" } else { "offline" }.to_string(), a.name))
+            .collect();
+        let pairs: Vec<(&str, &str)> = remaining
+            .iter()
+            .map(|(kind, name)| (kind.as_str(), name.as_str()))
+            .collect();
+        horizon_client::msa::write_public(&import, &pairs);
+        self.menu.launcher_notice = Some(format!("Removed {}", account.name));
+    }
+
+    /// Start a Microsoft sign-in on a worker, and show the code to type.
+    ///
+    /// The flow is the device-code one: the phone asks Microsoft for a code, the
+    /// player types it in any browser, and the worker polls until it is approved.
+    /// Nothing here blocks a frame.
+    #[cfg(target_os = "android")]
+    fn sign_in_microsoft(&mut self) {
+        let Some(client_id) = horizon_client::msa::client_id() else {
+            self.menu.launcher_notice = Some(
+                "Microsoft sign-in is not configured on this build: set HORIZON_MSA_CLIENT_ID."
+                    .to_string(),
+            );
+            return;
+        };
+        let code = match horizon_client::msa::device_code(&client_id) {
+            Ok(code) => code,
+            Err(error) => {
+                self.menu.launcher_notice = Some(format!("Sign-in failed: {error}"));
+                return;
+            }
+        };
+        self.menu.launcher_notice = Some(format!(
+            "Go to {} and type {}",
+            code.verification_uri, code.user_code
+        ));
+        // The browser is where the code is typed, so open it: a phone has no way to
+        // copy a code out of a game surface.
+        let _ = horizon_client::clipboard::open_url(&code.verification_uri);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.sign_in = Some(SignInState::Waiting(code.user_code.clone()));
+        self.sign_in_rx = Some(rx);
+        std::thread::Builder::new()
+            .name("horizon-msa".into())
+            .spawn(move || {
+                let result = horizon_client::msa::wait_for_sign_in(&client_id, &code, &|| false)
+                    .and_then(|tokens| horizon_client::msa::finish_sign_in(&tokens));
+                if let Ok(account) = &result {
+                    if let Err(error) = horizon_client::msa::store(account) {
+                        log::warn!("launcher: could not keep the account's tokens: {error}");
+                    }
+                }
+                let _ = tx.send(result.map(|account| account.name));
+            })
+            .ok();
+    }
+
+    /// Take a sign-in's result, once its worker has one.
+    #[cfg(target_os = "android")]
+    fn poll_sign_in(&mut self) {
+        let Some(rx) = &self.sign_in_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The sign-in worker stopped.".to_string())
+            }
+        };
+        self.sign_in_rx = None;
+        match result {
+            Ok(name) => {
+                self.sign_in = Some(SignInState::Done(name.clone()));
+                let import = horizon_client::gfx::import_dir();
+                let mut public: Vec<(String, String)> = horizon_client::msa::read_public(&import);
+                public.retain(|(_, existing)| existing != &name);
+                public.insert(0, ("msa".to_string(), name.clone()));
+                let pairs: Vec<(&str, &str)> = public
+                    .iter()
+                    .map(|(kind, name)| (kind.as_str(), name.as_str()))
+                    .collect();
+                horizon_client::msa::write_public(&import, &pairs);
+                self.apply_account(&name);
+                self.menu.launcher_notice = Some(format!("Signed in as {name}"));
+            }
+            Err(error) => {
+                self.sign_in = Some(SignInState::Failed(error.clone()));
+                self.menu.launcher_notice = Some(error);
+            }
+        }
+    }
+
+    /// Host a world from the list the Multiplayer page drew.
+    ///
+    /// A phone has no separate server process the launcher may start, so this is the
+    /// engine's own integrated server opened to the network: the same code path as
+    /// vanilla's "Open to LAN", reached from the launcher instead of from the pause
+    /// menu. The address it prints is the one friends type.
+    #[cfg(target_os = "android")]
+    fn host_world(&mut self, id: u32) {
+        let saves = self
+            .menu
+            .title
+            .as_ref()
+            .map(|t| t.saves.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("saves"));
+        let worlds = self
+            .menu
+            .launcher_worlds
+            .clone()
+            .unwrap_or_else(|| horizon_client::title::list_worlds(&saves));
+        let Some(world) = worlds.into_iter().nth(id as usize) else {
+            self.menu.launcher_notice = Some("That world is not on this device any more.".into());
+            return;
+        };
+        let Some(address) = local_address() else {
+            self.menu.launcher_notice =
+                Some("No network address: join a Wi-Fi network first.".into());
+            return;
+        };
+        // The engine opens the world on its server thread and publishes it; the
+        // launcher records the address it will be reachable on.
+        self.hosting = Some(format!("{address}:25565"));
+        self.menu.launcher_notice = Some(format!(
+            "Hosting {}. Friends join at {address}:25565",
+            world.name
+        ));
+        self.menu.launcher_page = None;
+        if let Some(title) = &mut self.menu.title {
+            title.mode = horizon_client::title::Mode::Main;
+        }
+        self.menu.queue_entry(Action::Play { folder: world.folder }, "Host".into());
+    }
+
+    /// Switch the built-in touch layout.
+    ///
+    /// `controls.json` carries the buttons; the preset is a key in it, so the choice
+    /// survives a restart and the engine reads the same file it always did. A layout
+    /// the player has arranged themselves keeps its buttons and only changes the key.
+    #[cfg(target_os = "android")]
+    fn set_controls_preset(&mut self, preset: &str) {
+        let path = horizon_client::gfx::controls_path();
+        let mut layout = if preset == "bedrock" {
+            bedrock_layout()
+        } else {
+            java_layout()
+        };
+        layout.preset = preset.to_string();
+        if let Err(error) = layout.save(&path) {
+            log::warn!("launcher: could not save the touch layout: {error}");
+            self.menu.launcher_notice = Some(format!("Could not save the layout: {error}"));
+            return;
+        }
+        self.menu.launcher_notice = Some(format!(
+            "Touch controls: {}",
+            if preset == "bedrock" { "Bedrock PE" } else { "Java Classic" }
+        ));
+    }
+
+    /// The accounts the launcher offers: the signed-in one when there is one, plus
+    /// every offline name this device has used.
+    ///
+    /// The desktop launcher keeps a whole `accounts.json` and a keychain. A phone has
+    /// neither a keychain the launcher may reach nor a launcher process of its own, so
+    /// the list is what `import/accounts.txt` holds — one `kind:name` line per account,
+    /// the selected one marked — and the offline name beside `options.txt` is always
+    /// one of them.
+    #[cfg(target_os = "android")]
+    fn launcher_accounts(&self) -> Vec<LauncherAccount> {
+        let current = self
+            .options
+            .as_ref()
+            .map_or_else(|| "Player".into(), |o| o.player_name());
+        let mut accounts: Vec<LauncherAccount> = Vec::new();
+        // The signed-in account, when the session file was read at start.
+        if let Some(session) = horizon_client::auth::current() {
+            accounts.push(LauncherAccount {
+                name: session.name.clone(),
+                kind: "Microsoft".into(),
+                selected: session.name == current,
+            });
+        }
+        for (kind, name) in horizon_client::msa::read_public(&horizon_client::gfx::import_dir()) {
+            if accounts.iter().any(|a| a.name == name) {
+                continue;
+            }
+            accounts.push(LauncherAccount {
+                name: name.clone(),
+                kind,
+                selected: name == current,
+            });
+        }
+        if !accounts.iter().any(|a| a.name == current) {
+            accounts.insert(
+                0,
+                LauncherAccount {
+                    name: current.clone(),
+                    kind: "Offline".into(),
+                    selected: true,
+                },
+            );
+        }
+        if !accounts.iter().any(|a| a.selected) {
+            if let Some(first) = accounts.first_mut() {
+                first.selected = true;
+            }
+        }
+        accounts
+    }
+
+    /// The built-in touch layout in force, as the Profile page names it.
+    #[cfg(target_os = "android")]
+    fn launcher_controls_preset(&self) -> String {
+        let path = horizon_client::gfx::controls_path();
+        let preset = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| value.get("preset")?.as_str().map(str::to_owned));
+        preset.unwrap_or_else(|| "java".to_string())
+    }
+
+    /// The address friends join on while this device hosts, if it does.
+    #[cfg(target_os = "android")]
+    fn hosting_address(&self) -> Option<String> {
+        self.hosting.clone()
+    }
+
     /// The mod registry, fetched at most once per visit to the Mods page.
     ///
     /// It is a network fetch, so it is kept between frames rather than repeated: the
     /// page redraws at the phone's refresh rate, and asking GitHub sixty times a second
     /// would be both slow and rude. Refresh clears it.
     #[cfg(target_os = "android")]
-    fn mod_registry(&mut self) -> &horizon_client::mod_registry::Registry {
-        if self.mod_registry.is_none() {
-            self.mod_registry = Some(horizon_client::mod_registry::fetch());
+    fn mod_registry(&mut self) -> Option<&horizon_client::mod_registry::Registry> {
+        // Poll a fetch already in flight. This is the whole reason the page does not
+        // freeze: the network round trip is on a worker, and a frame only ever checks
+        // whether the answer has arrived.
+        if let Some(rx) = &self.mod_registry_rx {
+            match rx.try_recv() {
+                Ok(registry) => {
+                    self.mod_registry = Some(registry);
+                    self.mod_registry_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.mod_registry = Some(horizon_client::mod_registry::Registry {
+                        status: "The registry worker stopped".into(),
+                        failed: true,
+                        ..Default::default()
+                    });
+                    self.mod_registry_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
         }
-        self.mod_registry.as_ref().expect("filled above")
+        if self.mod_registry.is_none() && self.mod_registry_rx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // A failure to spawn is not worth a dead page: the fetch then happens
+            // inline, which is the old behaviour and still works.
+            match std::thread::Builder::new()
+                .name("horizon-mod-registry".into())
+                .spawn(move || {
+                    let _ = tx.send(horizon_client::mod_registry::fetch());
+                }) {
+                Ok(_) => self.mod_registry_rx = Some(rx),
+                Err(error) => {
+                    log::warn!("launcher: no worker for the mod registry ({error}); fetching inline");
+                    self.mod_registry = Some(horizon_client::mod_registry::fetch());
+                }
+            }
+        }
+        self.mod_registry.as_ref()
     }
 
     /// The settings the launcher's own page offers, read from the live options so a
@@ -905,6 +1334,7 @@ impl Loading {
             on,
         };
         vec![
+            // Graphics.
             slider(
                 "renderDistance",
                 "Render distance (chunks)",
@@ -915,7 +1345,7 @@ impl Loading {
             slider(
                 "simulationDistance",
                 "Simulation distance",
-                4.0,
+                5.0,
                 32.0,
                 f.int("simulationDistance") as f32,
             ),
@@ -926,13 +1356,8 @@ impl Loading {
                 4.0,
                 f.int("guiScale") as f32,
             ),
-            slider(
-                "fov",
-                "Field of view",
-                30.0,
-                110.0,
-                f.int("fov") as f32,
-            ),
+            slider("fov", "Field of view", 30.0, 110.0, f.int("fov") as f32),
+            slider("maxFps", "Frame limit", 10.0, 260.0, f.int("maxFps") as f32),
             slider(
                 "gamma",
                 "Brightness",
@@ -941,32 +1366,82 @@ impl Loading {
                 f.double("gamma") as f32,
             ),
             slider(
-                "masterVolume",
-                "Volume",
+                "entityDistanceScaling",
+                "Entity distance",
+                0.5,
+                5.0,
+                f.double("entityDistanceScaling") as f32,
+            ),
+            toggle("enableVsync", "V-Sync", f.bool("enableVsync")),
+            toggle("bobView", "View bobbing", f.bool("bobView")),
+            toggle("ao", "Smooth lighting", f.bool("ao")),
+            toggle("vignette", "Vignette", f.bool("vignette")),
+            // Controls.
+            slider(
+                "mouseSensitivity",
+                "Look sensitivity",
+                0.0,
+                1.0,
+                f.double("mouseSensitivity") as f32,
+            ),
+            toggle("autoJump", "Auto-jump", f.bool("autoJump")),
+            toggle("toggleCrouch", "Toggle crouch", f.bool("toggleCrouch")),
+            toggle("toggleSprint", "Toggle sprint", f.bool("toggleSprint")),
+            toggle("invertYMouse", "Invert mouse Y", f.bool("invertYMouse")),
+            // Sound.
+            slider(
+                "soundCategory_master",
+                "Master volume",
                 0.0,
                 1.0,
                 f.double("soundCategory_master") as f32,
             ),
-            toggle(
-                "enableVsync",
-                "V-Sync",
-                f.bool("enableVsync"),
+            slider(
+                "soundCategory_music",
+                "Music",
+                0.0,
+                1.0,
+                f.double("soundCategory_music") as f32,
             ),
-            toggle(
-                "bobView",
-                "View bobbing",
-                f.bool("bobView"),
+            slider(
+                "soundCategory_blocks",
+                "Blocks",
+                0.0,
+                1.0,
+                f.double("soundCategory_blocks") as f32,
             ),
-            toggle(
-                "autoJump",
-                "Auto-jump",
-                f.bool("autoJump"),
+            slider(
+                "soundCategory_hostile",
+                "Hostile mobs",
+                0.0,
+                1.0,
+                f.double("soundCategory_hostile") as f32,
             ),
-            toggle(
-                "showSubtitles",
-                "Subtitles",
-                f.bool("showSubtitles"),
+            // Interface.
+            slider(
+                "chatOpacity",
+                "Chat opacity",
+                0.0,
+                1.0,
+                f.double("chatOpacity") as f32,
             ),
+            slider(
+                "chatScale",
+                "Chat scale",
+                0.0,
+                1.0,
+                f.double("chatScale") as f32,
+            ),
+            slider(
+                "menuBackgroundBlurriness",
+                "Menu blur",
+                0.0,
+                10.0,
+                f.int("menuBackgroundBlurriness") as f32,
+            ),
+            toggle("showSubtitles", "Subtitles", f.bool("showSubtitles")),
+            toggle("autoSuggestions", "Command suggestions", f.bool("autoSuggestions")),
+            toggle("chatLinks", "Clickable chat links", f.bool("chatLinks")),
         ]
     }
 
@@ -1027,7 +1502,37 @@ impl Loading {
         if let Some(parsed) = parsed {
             self.settings.file.set(key, parsed);
         }
+        // The live `Settings` is what the menu draws with, so it has to follow the
+        // file: otherwise a slider moved in the launcher would not show until the game
+        // restarted, which is a control that looks broken.
+        self.reload_settings();
+        // And what the window owns: gamma, present mode, GUI scale and the font atlas
+        // are not in `Settings`, they are in the renderer and the atlas.
+        self.apply_menu_settings();
         self.menu.launcher_notice = Some(format!("{key} set to {rendered}"));
+    }
+
+    /// Re-read `options.txt` into the live settings.
+    ///
+    /// The launcher writes the file directly, which is the whole point — the game reads
+    /// the same file — but the copy already in memory is what this menu draws and
+    /// plays with. Reading it back after a write is what makes a slider take effect
+    /// without a restart.
+    #[cfg(target_os = "android")]
+    fn reload_settings(&mut self) {
+        let path = Game::options_path();
+        let mut fresh = horizon_client::settings::Settings::load(&path);
+        // The launcher's own sidecars are not in options.txt, so they survive the read.
+        fresh.horizon = self.settings.horizon.clone();
+        fresh.controller = self.settings.controller.clone();
+        fresh.extras = self.settings.extras.clone();
+        fresh.mods = self.settings.mods.clone();
+        fresh.skins = self.settings.skins.clone();
+        fresh.skin = self.settings.skin.clone();
+        self.settings = fresh;
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     /// A key press over the launcher's name field.
@@ -1623,6 +2128,141 @@ mod tests {
 /// these are the things a player of this build actually needs to know, written where
 /// they will read them. The first card is the one that is always true.
 #[cfg(target_os = "android")]
+/// This device's address on the network it is on, for the address friends type.
+/// A phone has no hostname a stranger can resolve, so this is the IPv4 of the first
+/// interface that has one and is not the loopback.
+#[cfg(target_os = "android")]
+fn local_address() -> Option<String> {
+    use std::net::UdpSocket;
+    // Connecting a UDP socket sends nothing; it only asks the routing table which
+    // local address would reach the outside world, which is the one a friend on the
+    // same network can reach too.
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let address = socket.local_addr().ok()?.ip();
+    (!address.is_loopback() && !address.is_unspecified()).then(|| address.to_string())
+}
+
+/// The Java Classic touch layout: the cross on the left, the two mouse buttons and
+/// jump on the right, the hotbar across the top. This is the layout Horizon shipped
+/// before the choice existed.
+#[cfg(target_os = "android")]
+fn java_layout() -> horizon_controls::Layout {
+    horizon_controls::Layout::default()
+}
+
+/// The Bedrock PE touch layout: the same actions, arranged the way the phone version
+/// of the game puts them — the cross is a diamond rather than a cross, jump sits at
+/// the bottom right beside the two mouse buttons, and the hotbar is a row of nine at
+/// the bottom centre, where a thumb can sweep it.
+///
+/// The numbers are fractions of the glass, so they hold on any phone: no button's
+/// middle falls inside another's, which is the one mistake a HUD layout cannot
+/// recover from.
+#[cfg(target_os = "android")]
+fn bedrock_layout() -> horizon_controls::Layout {
+    use horizon_controls::{Action, Layout};
+    let mut layout = Layout::default();
+    layout.controls.clear();
+    let mut put = |action: Action, x: f32, y: f32, size: f32| {
+        layout.controls.push(horizon_controls::Control {
+            action,
+            center: [x, y],
+            size,
+            opacity: None,
+        });
+    };
+    // Movement: a diamond, not a cross.
+    put(Action::Forward, 0.105, 0.635, 0.10);
+    put(Action::Back, 0.105, 0.895, 0.10);
+    put(Action::Left, 0.038, 0.765, 0.10);
+    put(Action::Right, 0.172, 0.765, 0.10);
+    put(Action::Sneak, 0.245, 0.885, 0.09);
+    put(Action::Sprint, 0.245, 0.755, 0.085);
+    // Right thumb: jump above the two mouse buttons, which is where a phone player's
+    // thumb rests.
+    put(Action::Jump, 0.905, 0.66, 0.115);
+    put(Action::Mine, 0.855, 0.885, 0.145);
+    put(Action::Use, 0.705, 0.885, 0.12);
+    put(Action::Fly, 0.70, 0.66, 0.085);
+    put(Action::Pick, 0.955, 0.44, 0.075);
+    // The bar along the top: menu on the left, then the row of small keys.
+    put(Action::Menu, 0.04, 0.06, 0.075);
+    put(Action::Pause, 0.04, 0.17, 0.075);
+    put(Action::Inventory, 0.55, 0.17, 0.08);
+    put(Action::Drop, 0.63, 0.17, 0.08);
+    put(Action::Chat, 0.71, 0.17, 0.08);
+    put(Action::Command, 0.79, 0.17, 0.08);
+    put(Action::TabList, 0.87, 0.17, 0.08);
+    put(Action::Debug, 0.95, 0.17, 0.08);
+    put(Action::View, 0.955, 0.06, 0.075);
+    put(Action::SwapOffhand, 0.16, 0.06, 0.05);
+    put(Action::Screenshot, 0.22, 0.06, 0.05);
+    // The hotbar along the bottom centre, the row the thumb sweeps.
+    for slot in 1..=9u8 {
+        put(
+            Action::Hotbar(slot),
+            0.36 + f32::from(slot - 1) * 0.038,
+            0.945,
+            0.052,
+        );
+    }
+    layout
+}
+
+/// The PNG's pixel size, read from its IHDR without decoding the pixels: the Skins
+/// page needs the dimensions for its UVs, and a 64x64 skin is not worth a full
+/// decode on a frame.
+#[cfg(target_os = "android")]
+fn png_size(path: &std::path::Path) -> Option<[u32; 2]> {
+    let data = std::fs::read(path).ok()?;
+    // 8 bytes of signature, then the IHDR chunk: 4 length, 4 type, 4 width, 4 height.
+    if data.len() < 24 || &data[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(data[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(data[20..24].try_into().ok()?);
+    (width > 0 && height > 0).then_some([width, height])
+}
+
+/// The folders the game reads, as the Files page lists them: what is inside
+/// `import/`, and how much of it there is.
+#[cfg(target_os = "android")]
+fn files_rows() -> Vec<horizon_overlay::LauncherRow> {
+    let import = horizon_client::gfx::import_dir();
+    let mut rows = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&import) else {
+        return rows;
+    };
+    let mut dirs: Vec<(String, usize)> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let count = std::fs::read_dir(entry.path())
+                .map(|inner| inner.flatten().count())
+                .unwrap_or(0);
+            (name, count)
+        })
+        .collect();
+    dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (id, (name, count)) in dirs.into_iter().enumerate() {
+        rows.push(horizon_overlay::LauncherRow {
+            id: id as u32,
+            title: name.clone(),
+            subtitle: match count {
+                0 => format!("{}/ · empty", import.display()),
+                1 => format!("{}/ · 1 file", import.display()),
+                n => format!("{}/ · {n} files", import.display()),
+            },
+            badge: String::new(),
+            selected: false,
+            enabled: false,
+        });
+    }
+    rows
+}
+
 fn news_stories() -> Vec<horizon_overlay::LauncherStory> {
     use horizon_overlay::LauncherStory;
     let story = |title: &str, tag: &str, body: &str| LauncherStory {

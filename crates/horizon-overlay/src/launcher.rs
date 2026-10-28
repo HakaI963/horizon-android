@@ -18,7 +18,9 @@
 //! for the platform to act on. That keeps the crate free of the engine, the way
 //! the rest of the overlay is.
 
-use imgui::{Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, Ui, WindowFlags};
+use imgui::{
+    Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, TextureId, Ui, WindowFlags,
+};
 
 /// The destinations in the left column, in the order they are drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -35,6 +37,14 @@ pub enum LauncherPage {
     /// on purpose, and a seventh row would make the column longer than the screen
     /// on a phone held in landscape.
     Settings,
+    /// The launcher's own files, reached from the FILES button. A phone cannot open a
+    /// folder dialog the way a desktop does, so this lists what is in `import/` and
+    /// offers the system file manager for the rest.
+    Files,
+    /// Horizon's own multiplayer: hosting a world and the address friends join on.
+    /// Not the game's server list — that is a different thing, and the button on the
+    /// front page used to open it by mistake.
+    Multiplayer,
 }
 
 impl LauncherPage {
@@ -48,6 +58,8 @@ impl LauncherPage {
             LauncherPage::Mods => "Mods",
             LauncherPage::Profile => "Profile",
             LauncherPage::Settings => "Settings",
+            LauncherPage::Files => "Files",
+            LauncherPage::Multiplayer => "Multiplayer",
         }
     }
 }
@@ -139,6 +151,38 @@ pub struct LauncherModel {
     /// The last registry fetch failed, so the page says why rather than showing an
     /// empty list that reads like "there is nothing to install".
     pub mods_failed: bool,
+    /// The registry is being fetched on a worker right now. The page says so instead
+    /// of freezing the whole launcher for the two or three seconds a network round
+    /// trip costs.
+    pub mods_loading: bool,
+    /// The accounts this device knows, and which one Play uses.
+    pub accounts: Vec<LauncherAccount>,
+    /// The chosen skin's pixel size, so the player figure can map the PNG's own
+    /// regions onto the model. The texture itself belongs to the overlay, which owns
+    /// the device; this is only what the layout needs to know about it.
+    pub skin_size: [u32; 2],
+    /// Which built-in touch layout is in force: `"java"` or `"bedrock"`.
+    pub controls_preset: String,
+    /// While a world is hosted: the address friends join on.
+    pub hosting: Option<String>,
+}
+
+/// One account the launcher can play as.
+#[derive(Clone, Debug, Default)]
+pub struct LauncherAccount {
+    pub name: String,
+    /// "Microsoft" or "Offline".
+    pub kind: String,
+    pub selected: bool,
+}
+
+/// A decoded skin, as the client read it from `import/skins/`.
+#[derive(Clone, Debug, Default)]
+pub struct SkinImage {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
 }
 
 /// One mod from Horizon's registry: enough to show it, and enough to install it.
@@ -173,8 +217,6 @@ pub enum LauncherEvent {
     OpenSettings,
     /// Open the skin picker.
     OpenSkins,
-    /// Open the engine's server list.
-    OpenMultiplayer,
     /// A skin file from `import/skins/` was chosen.
     PickSkin(String),
     /// Write the settings archive into import/.
@@ -192,6 +234,22 @@ pub enum LauncherEvent {
     RefreshMods,
     /// Open the mod registry's site in a browser.
     OpenModsSite,
+    /// Ask the system file manager for `import/`.
+    RevealFiles,
+    /// Host this world on the local network.
+    HostWorld(u32),
+    /// Stop hosting.
+    StopHosting,
+    /// Create another account.
+    AddAccount,
+    /// Play as this account.
+    SwitchAccount(u32),
+    /// Forget this account.
+    RemoveAccount(u32),
+    /// Sign in with a Microsoft account (the device-code flow).
+    SignInMicrosoft,
+    /// Use this built-in touch layout: "java" or "bedrock".
+    SetControls(String),
 }
 
 /// The palette: the launcher's own, not the game's menus. Cool near-black plates,
@@ -523,6 +581,7 @@ pub fn draw(
     height: f32,
     opening: Option<f32>,
     panorama: bool,
+    skin: Option<TextureId>,
     out: &mut Vec<LauncherEvent>,
 ) {
     let c = &THEME;
@@ -557,23 +616,26 @@ pub fn draw(
                 splash(ui, fonts, c, dpi, width, height);
                 return;
             }
-            // The column is drawn first because it is what applies a tab tap to the
-            // model. Reading `model.page` before it would decide the background from
-            // the page that was up a frame ago, which is how a page ended up drawn
-            // over the panorama with nothing behind it.
+            // The page the *model* was built for. The column below applies a tab tap
+            // to `model.page` in this same pass, and the platform only learns about it
+            // on the next frame — so the content drawn here has to be the page whose
+            // data actually arrived, not the one the finger just chose. Drawing the
+            // new page with the old page's model is what made the Mods page show the
+            // Play page's status line and an empty list.
+            let page = model.page;
             sidebar(ui, model, fonts, c, dpi, width, height, rise, &mut sink);
             // The Play page is the title panorama with things laid over it, so the
             // launcher must not paint over the glass there: the engine's cube map is
             // already drawn behind this window. Every other page is opaque. When there
             // is no panorama behind it — the bring-up card — the page paints itself.
-            let over_panorama = panorama && model.page == LauncherPage::Play;
+            let over_panorama = panorama && page == LauncherPage::Play;
             if !over_panorama {
                 let draw = ui.get_window_draw_list();
                 // Only the page's own region: the column has already painted itself,
                 // and covering it here would undo the selection highlight.
                 fill(&draw, [g.x, 0.0], [width, height], c.page, 1.0, 0.0);
             }
-            match model.page {
+            match page {
                 LauncherPage::Play => play_page(
                     ui,
                     model,
@@ -590,7 +652,7 @@ pub fn draw(
                     installations_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
                 }
                 LauncherPage::Skins => {
-                    skins_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    skins_page(ui, model, fonts, c, dpi, &g, height, rise, skin, &mut sink)
                 }
                 LauncherPage::PatchNotes => {
                     stories_page(
@@ -626,6 +688,12 @@ pub fn draw(
                 }
                 LauncherPage::Settings => {
                     settings_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                }
+                LauncherPage::Files => {
+                    files_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                }
+                LauncherPage::Multiplayer => {
+                    multiplayer_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
                 }
             }
             if let Some(t) = opening {
@@ -964,42 +1032,49 @@ fn play_page(
         // Over the panorama this is a scrim: the art stays visible at the top where the
         // title is, and the bottom goes dark enough for a green button and a line of
         // text. Without a panorama there is nothing to keep, so it is a wash of the
-        // page's own colour at the same weight. Stacked bands are the gradient —
-        // imgui's vertex gradient is one more API to get wrong for a wash this soft.
-        let bands = 14;
-        let top = height * 0.30;
-        let span = (height + rise - top) / bands as f32;
-        for i in 0..bands {
-            let t = i as f32 / (bands - 1) as f32;
-            let a = if over_panorama {
-                0.10 + 0.78 * t * t
-            } else {
-                0.45 + 0.55 * t
-            };
-            fill(
-                &draw,
-                [g.x, top + i as f32 * span],
-                [g.x + g.w, top + (i as f32 + 1.0) * span + 1.0],
-                c.page,
-                a,
-                0.0,
-            );
-        }
+        // page's own colour at the same weight.
+        //
+        // One quad, not a stack of bands. imgui interpolates the four corner colours
+        // across the rectangle in the shader, so the ramp is continuous at every pixel;
+        // the bands this replaces were fifteen separate rectangles, and each seam
+        // between two of them was a visible stripe with a gap under it.
+        let top = height * 0.26;
+        let bottom = height + rise;
+        let (top_a, mid_a) = if over_panorama { (0.0, 0.72) } else { (0.42, 0.86) };
+        let mid = top + (bottom - top) * 0.45;
+        let clear = rgba(c.page, 0.0);
+        // Upper half: clear to the scrim's weight.
+        draw.add_rect_filled_multicolor(
+            [g.x, top],
+            [g.x + g.w, mid],
+            clear,
+            clear,
+            rgba(c.page, mid_a),
+            rgba(c.page, mid_a),
+        );
+        // Lower half: the scrim's weight to nearly solid at the bottom edge.
+        draw.add_rect_filled_multicolor(
+            [g.x, mid],
+            [g.x + g.w, bottom],
+            rgba(c.page, mid_a),
+            rgba(c.page, mid_a),
+            rgba(c.page, 0.96),
+            rgba(c.page, 0.96),
+        );
         if !over_panorama {
-            fill(&draw, [g.x, 0.0], [g.x + g.w, top], c.page, 0.45, 0.0);
+            fill(&draw, [g.x, 0.0], [g.x + g.w, top], c.page, top_a, 0.0);
         }
-        // And a soft edge under the column, so the seam is a transition and not a cut.
-        for i in 0..10 {
-            let t = i as f32 / 9.0;
-            fill(
-                &draw,
-                [g.x + t * 90.0 * dpi, 0.0],
-                [g.x + (t + 0.1) * 90.0 * dpi, height + rise],
-                c.page,
-                0.35 * (1.0 - t),
-                0.0,
-            );
-        }
+        // The soft edge under the column: one gradient from the column's own face to
+        // nothing, so the seam reads as a shadow rather than as a cut with steps in it.
+        let fade = 120.0 * dpi;
+        draw.add_rect_filled_multicolor(
+            [g.x, 0.0],
+            [g.x + fade, height + rise],
+            rgba(c.page, 0.55),
+            rgba(c.page, 0.0),
+            rgba(c.page, 0.0),
+            rgba(c.page, 0.55),
+        );
     }
 
     // Top right: the two things a player reaches for besides Play. They are pinned to
@@ -1010,13 +1085,14 @@ fn play_page(
     let by = 12.0 * dpi + rise;
     let mut bx = g.x + g.w - g.pad - bw;
     if raised_button(ui, fonts, c, dpi, bx, by, bw, bh, "MULTIPLAYER", c.accent, c.accent_lip, c.on_accent) {
-        // Servers live in the engine's own multiplayer screen, so this is the one
-        // button on the page that hands over to the game.
-        sink.push(LauncherEvent::OpenMultiplayer);
+        // Horizon's own multiplayer: hosting this device's world. The game's server
+        // list is for joining somebody else's server and is reached from inside the
+        // game, not from the launcher's front page.
+        sink.push(LauncherEvent::Goto(LauncherPage::Multiplayer));
     }
     bx -= bw + 8.0 * dpi;
     if raised_button(ui, fonts, c, dpi, bx, by, bw, bh, "FILES", c.button, c.bevel, c.ink) {
-        sink.push(LauncherEvent::Goto(LauncherPage::Installations));
+        sink.push(LauncherEvent::Goto(LauncherPage::Files));
     }
 
     // Bottom left: which installation Play would start. The reference's card is dark
@@ -1177,38 +1253,28 @@ fn installations_page(
     if raised_button(ui, fonts, c, dpi, bx, y, btn_w + 26.0 * dpi, btn_h, "+ Modpack", c.button, c.bevel, c.ink) {
         sink.push(LauncherEvent::NewInstance);
     }
+    // FILES, here as well as on the front page: this is the page a player lands on
+    // when they want to see what the install actually put on their phone, so the
+    // button that opens the folder belongs beside the list of what is in it.
     bx += btn_w + 36.0 * dpi;
-    // A search field, which is a well rather than a widget: the phone's keyboard
-    // commits words to the activity, so this is drawn and the typing is the
-    // platform's, exactly like the name field.
-    let sw = (g.x + g.w - g.pad - bx).max(80.0 * dpi);
-    {
-        let draw = ui.get_window_draw_list();
-        fill(&draw, [bx, y], [bx + sw, y + btn_h], c.well, 1.0, 3.0 * dpi);
-        stroke(&draw, [bx, y], [bx + sw, y + btn_h], c.rule, 1.0, 3.0 * dpi, 1.0);
-        draw.add_text(
-            [bx + 14.0 * dpi, y + 12.0 * dpi],
-            rgba(c.muted, 1.0),
-            "Search installations...",
-        );
+    if raised_button(ui, fonts, c, dpi, bx, y, btn_w, btn_h, "FILES", c.button, c.bevel, c.ink) {
+        sink.push(LauncherEvent::RevealFiles);
     }
     y += btn_h + 22.0 * dpi;
 
-    // The version filter, as three ticks. They are labels here; the platform decides
-    // what each one means when instances become real.
+    // The version filter. These are labels on this build: the engine plays one
+    // version, so a filter that promised snapshots would be a control that does
+    // nothing, which is worse than not drawing it. What is here says what the build
+    // is instead.
     {
         let draw = ui.get_window_draw_list();
         let _f = ui.push_font(fonts.small);
-        draw.add_text([g.x + g.pad, y + 4.0 * dpi], rgba(c.muted, 1.0), "VERSIONS:");
-        let mut tx = g.x + g.pad + text_width(ui, fonts.small, "VERSIONS:") + 18.0 * dpi;
-        for (i, label) in ["Releases", "Snapshots", "Modded"].iter().enumerate() {
-            let box_ = 18.0 * dpi;
-            let on = i == 0;
-            fill(&draw, [tx, y + 2.0 * dpi], [tx + box_, y + 2.0 * dpi + box_], if on { c.accent } else { c.well }, 1.0, 2.0 * dpi);
-            stroke(&draw, [tx, y + 2.0 * dpi], [tx + box_, y + 2.0 * dpi + box_], if on { c.accent } else { c.bevel }, 1.0, 2.0 * dpi, 1.0);
-            draw.add_text([tx + box_ + 8.0 * dpi, y + 4.0 * dpi], rgba(c.ink_soft, 1.0), *label);
-            tx += box_ + 8.0 * dpi + text_width(ui, fonts.small, label) + 20.0 * dpi;
-        }
+        draw.add_text(
+            [g.x + g.pad, y + 4.0 * dpi],
+            rgba(c.muted, 1.0),
+            "One version per build: the engine's protocol, registry and block tables are \
+             generated for it. Every installation below is that version.",
+        );
     }
     y += 36.0 * dpi;
 
@@ -1226,7 +1292,7 @@ fn installations_page(
                 "NO INSTALLATIONS FOUND",
             );
         }
-        let sub = "Click '+ New...' above to download and install any version of Minecraft!";
+        let sub = "Click '+ New...' above to download and install Minecraft.";
         let [sw, _] = ui.calc_text_size(sub);
         draw.add_text(
             [g.x + (g.w - sw) / 2.0, y + 58.0 * dpi],
@@ -1244,10 +1310,216 @@ fn installations_page(
     }
     if !model.status.is_empty() && y + 18.0 * dpi <= height + rise {
         let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        for (i, line) in wrap(ui, &model.status, g.w - 2.0 * g.pad).iter().enumerate() {
+            draw.add_text(
+                [g.x + g.pad, y + i as f32 * 17.0 * dpi],
+                rgba(c.muted, 1.0),
+                line.as_str(),
+            );
+        }
+    }
+}
+
+/// Files: what the install actually put on the phone, in the one folder a file
+/// manager can reach. A phone has no `open folder` dialog, so this lists the
+/// subfolders the game reads and offers the system picker for the rest.
+fn files_page(
+    ui: &Ui,
+    model: &LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    g: &Grid,
+    height: f32,
+    rise: f32,
+    sink: &mut Sink<'_>,
+) {
+    let mut y = heading(ui, fonts, c, dpi, g, "FILES", rise);
+    {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        let blurb = "The folder the game reads, where a file manager can reach it.";
+        draw.add_text([g.x + g.pad, y - 20.0 * dpi], rgba(c.muted, 1.0), blurb);
+    }
+    let btn_w = 220.0 * dpi;
+    let btn_h = 42.0 * dpi;
+    if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, btn_w, btn_h, "OPEN IN FILE MANAGER", c.accent, c.accent_lip, c.on_accent) {
+        sink.push(LauncherEvent::RevealFiles);
+    }
+    y += btn_h + 22.0 * dpi;
+
+    let row_h = 56.0 * dpi;
+    if model.rows.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
         draw.add_text(
             [g.x + g.pad, y],
             rgba(c.muted, 1.0),
-            fit(ui, &model.status, g.w - 2.0 * g.pad),
+            "Nothing here yet. The install fills this in.",
+        );
+        return;
+    }
+    for row in &model.rows {
+        if y + row_h > height + rise {
+            break;
+        }
+        let x = g.x + g.pad;
+        let w = g.w - 2.0 * g.pad;
+        let draw = ui.get_window_draw_list();
+        panel(&draw, c, [x, y], [x + w, y + row_h], c.panel, 3.0 * dpi);
+        {
+            let _f = ui.push_font(fonts.pixel);
+            draw.add_text(
+                [x + 16.0 * dpi, y + 10.0 * dpi],
+                rgba(c.ink, 1.0),
+                fit(ui, &row.title, w - 32.0 * dpi),
+            );
+        }
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [x + 16.0 * dpi, y + 32.0 * dpi],
+                rgba(c.muted, 1.0),
+                fit(ui, &row.subtitle, w - 32.0 * dpi),
+            );
+        }
+        y += row_h + 8.0 * dpi;
+    }
+}
+
+/// Horizon's own multiplayer: hosting this device's world for friends on the same
+/// network, and the address they type to join. The game's server list is a different
+/// thing — it is for joining somebody else's server — and the front page's button
+/// used to open that by mistake.
+fn multiplayer_page(
+    ui: &Ui,
+    model: &LauncherModel,
+    fonts: &Fonts,
+    c: &Css,
+    dpi: f32,
+    g: &Grid,
+    height: f32,
+    rise: f32,
+    sink: &mut Sink<'_>,
+) {
+    let mut y = heading(ui, fonts, c, dpi, g, "MULTIPLAYER", rise);
+    {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text(
+            [g.x + g.pad, y - 20.0 * dpi],
+            rgba(c.muted, 1.0),
+            "Host a world for friends on this network, then give them the address below.",
+        );
+    }
+    // The state: hosting an address, or not.
+    let card_h = 92.0 * dpi;
+    {
+        let draw = ui.get_window_draw_list();
+        panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + card_h], c.panel, 4.0 * dpi);
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text([g.x + g.pad + 18.0 * dpi, y + 16.0 * dpi], rgba(c.muted, 1.0), "THIS DEVICE");
+        }
+        {
+            let _f = ui.push_font(fonts.pixel);
+            let line = model.hosting.as_deref().unwrap_or("Not hosting");
+            draw.add_text(
+                [g.x + g.pad + 18.0 * dpi, y + 38.0 * dpi],
+                rgba(if model.hosting.is_some() { c.accent } else { c.ink }, 1.0),
+                fit(ui, line, g.w - 2.0 * g.pad - 36.0 * dpi),
+            );
+        }
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [g.x + g.pad + 18.0 * dpi, y + 64.0 * dpi],
+                rgba(c.muted, 1.0),
+                match &model.hosting {
+                    Some(_) => "Friends on the same network can join with the address above.",
+                    None => "Open a world first, then press Host. The world stays on this device.",
+                },
+            );
+        }
+    }
+    y += card_h + 16.0 * dpi;
+
+    let btn_w = 200.0 * dpi;
+    let btn_h = 44.0 * dpi;
+    if model.hosting.is_some() {
+        if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, btn_w, btn_h, "STOP HOSTING", c.button, c.bevel, c.ink) {
+            sink.push(LauncherEvent::StopHosting);
+        }
+    } else if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, btn_w, btn_h, "HOST THIS WORLD", c.accent, c.accent_lip, c.on_accent) {
+        // The first world row is the one the launcher can open; the platform decides
+        // which folder that is, so this asks it rather than naming one here.
+        sink.push(LauncherEvent::HostWorld(0));
+    }
+    y += btn_h + 24.0 * dpi;
+
+    // The worlds that can be hosted, and the fact that the engine's own list is a
+    // different screen for a different job.
+    if y + 20.0 * dpi <= height + rise {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), "WORLDS ON THIS DEVICE");
+        y += 26.0 * dpi;
+    }
+    let row_h = 56.0 * dpi;
+    for row in &model.rows {
+        if y + row_h > height + rise {
+            break;
+        }
+        let x = g.x + g.pad;
+        let w = g.w - 2.0 * g.pad;
+        // Scoped: the Host button below asks for its own draw list.
+        {
+            let draw = ui.get_window_draw_list();
+            panel(&draw, c, [x, y], [x + w, y + row_h], c.panel, 3.0 * dpi);
+            {
+                let _f = ui.push_font(fonts.pixel);
+                draw.add_text(
+                    [x + 16.0 * dpi, y + 10.0 * dpi],
+                    rgba(c.ink, 1.0),
+                    fit(ui, &row.title, w - 200.0 * dpi),
+                );
+            }
+            {
+                let _f = ui.push_font(fonts.small);
+                draw.add_text(
+                    [x + 16.0 * dpi, y + 32.0 * dpi],
+                    rgba(c.muted, 1.0),
+                    fit(ui, &row.subtitle, w - 200.0 * dpi),
+                );
+            }
+        }
+        let bw = 120.0 * dpi;
+        if raised_button(
+            ui,
+            fonts,
+            c,
+            dpi,
+            x + w - 16.0 * dpi - bw,
+            y + (row_h - 32.0 * dpi) / 2.0,
+            bw,
+            32.0 * dpi,
+            "Host",
+            c.button,
+            c.bevel,
+            c.ink,
+        ) {
+            sink.push(LauncherEvent::HostWorld(row.id));
+        }
+        y += row_h + 8.0 * dpi;
+    }
+    if model.rows.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text(
+            [g.x + g.pad, y],
+            rgba(c.muted, 1.0),
+            "No worlds yet. Play once to make one.",
         );
     }
 }
@@ -1330,9 +1602,10 @@ fn row_card(
     }
 }
 
-/// Skins: the model on the left, the wardrobe on the right. The player is drawn as
-/// a stack of blocks from their own skin, which is the one picture a skin picker
-/// has to get right.
+/// Skins: the player on the left, the wardrobe on the right. The figure is drawn
+/// from the chosen PNG's own pixels, so what the page shows is the skin, not a
+/// stand-in for it.
+#[allow(clippy::too_many_arguments)]
 fn skins_page(
     ui: &Ui,
     model: &LauncherModel,
@@ -1342,12 +1615,11 @@ fn skins_page(
     g: &Grid,
     height: f32,
     rise: f32,
+    skin: Option<TextureId>,
     sink: &mut Sink<'_>,
 ) {
     let y = heading(ui, fonts, c, dpi, g, "SKINS & WARDROBE", rise);
     let avail_h = height + rise - y - g.pad;
-    // The model panel takes the left third and the wardrobe the rest; on a narrow
-    // page the wardrobe drops under the model instead.
     let side_by_side = g.w > 900.0 * dpi;
     let model_w = if side_by_side {
         (g.w * 0.34).max(220.0 * dpi)
@@ -1363,7 +1635,22 @@ fn skins_page(
     {
         let draw = ui.get_window_draw_list();
         panel(&draw, c, [mx, y], [mx + model_w, y + model_h], c.panel, 4.0 * dpi);
-        player_figure(&draw, c, dpi, mx + model_w / 2.0, y + model_h * 0.46, (model_h * 0.34).min(model_w * 0.5));
+        // The figure: the skin's own pixels when there is one, the flat figure only
+        // when there is nothing to sample. This is the difference between a preview
+        // and a picture of a player.
+        let figure_h = (model_h - 110.0 * dpi).max(80.0 * dpi);
+        match skin {
+            Some(texture) => skin_figure(
+                ui,
+                draw,
+                texture,
+                model.skin_size,
+                mx + model_w / 2.0,
+                y + 26.0 * dpi,
+                figure_h,
+            ),
+            None => player_figure(draw, c, dpi, mx + model_w / 2.0, y + model_h * 0.46, (model_h * 0.34).min(model_w * 0.5)),
+        }
         {
             let _f = ui.push_font(fonts.pixel);
             let name = fit(ui, &model.account, model_w - 32.0 * dpi);
@@ -1375,12 +1662,16 @@ fn skins_page(
             );
         }
         let _f = ui.push_font(fonts.small);
-        let line = "Classic Model (4px Arms) · Drag 360°";
-        let [lw, _] = ui.calc_text_size(line);
+        let line = match &model.chosen_skin {
+            Some(name) => format!("{name} · the skin in game"),
+            None => "No skin chosen · drop a PNG in import/skins".to_string(),
+        };
+        let line = fit(ui, &line, model_w - 32.0 * dpi);
+        let [lw, _] = ui.calc_text_size(line.as_str());
         draw.add_text(
             [mx + (model_w - lw) / 2.0, y + model_h - 36.0 * dpi],
-            rgba(c.accent, 1.0),
-            line,
+            rgba(if model.chosen_skin.is_some() { c.accent } else { c.muted }, 1.0),
+            line.as_str(),
         );
     }
 
@@ -1400,55 +1691,8 @@ fn skins_page(
         y + model_h + g.pad
     };
 
-    // SKINS / CAPES, then the model kind, then the way in.
-    let seg_h = 44.0 * dpi;
-    let half = (ww - 10.0 * dpi) / 2.0;
-    if wy + seg_h <= height + rise {
-        let draw = ui.get_window_draw_list();
-        raised_face(&draw, [wx, wy], [wx + half, wy + seg_h], c.accent, c.bevel, c.accent_lip, 3.0 * dpi, dpi);
-        {
-            let _f = ui.push_font(fonts.small);
-            let [tw, th] = ui.calc_text_size("SKINS");
-            draw.add_text([wx + (half - tw) / 2.0, wy + (seg_h - th) / 2.0], rgba(c.on_accent, 1.0), "SKINS");
-        }
-        raised_face(&draw, [wx + half + 10.0 * dpi, wy], [wx + ww, wy + seg_h], c.button, c.bevel, c.well, 3.0 * dpi, dpi);
-        {
-            let _f = ui.push_font(fonts.small);
-            let [tw, th] = ui.calc_text_size("CAPES");
-            draw.add_text([wx + half + 10.0 * dpi + (half - tw) / 2.0, wy + (seg_h - th) / 2.0], rgba(c.muted, 1.0), "CAPES");
-        }
-        wy += seg_h + 18.0 * dpi;
-    }
-    if wy + 20.0 * dpi <= height + rise {
-        let draw = ui.get_window_draw_list();
-        let _f = ui.push_font(fonts.small);
-        draw.add_text([wx, wy], rgba(c.muted, 1.0), "PLAYER MODEL");
-        wy += 26.0 * dpi;
-    }
-    if wy + seg_h <= height + rise {
-        let draw = ui.get_window_draw_list();
-        raised_face(&draw, [wx, wy], [wx + half, wy + seg_h], c.accent, c.bevel, c.accent_lip, 3.0 * dpi, dpi);
-        {
-            let _f = ui.push_font(fonts.small);
-            let [tw, th] = ui.calc_text_size("CLASSIC (4px)");
-            draw.add_text([wx + (half - tw) / 2.0, wy + (seg_h - th) / 2.0], rgba(c.on_accent, 1.0), "CLASSIC (4px)");
-        }
-        raised_face(&draw, [wx + half + 10.0 * dpi, wy], [wx + ww, wy + seg_h], c.button, c.bevel, c.well, 3.0 * dpi, dpi);
-        {
-            let _f = ui.push_font(fonts.small);
-            let [tw, th] = ui.calc_text_size("SLIM (3px)");
-            draw.add_text([wx + half + 10.0 * dpi + (half - tw) / 2.0, wy + (seg_h - th) / 2.0], rgba(c.muted, 1.0), "SLIM (3px)");
-        }
-        wy += seg_h + 18.0 * dpi;
-    }
-    if wy + seg_h <= height + rise
-        && raised_button(ui, fonts, c, dpi, wx, wy, ww, seg_h, "+ BROWSE CUSTOM SKIN (PNG)", c.accent, c.accent_lip, c.on_accent)
-    {
-        sink.push(LauncherEvent::OpenSkins);
-    }
-    wy += seg_h + 22.0 * dpi;
-
-    // The library: every PNG in import/skins, then the ones that ship.
+    // The library: every PNG in import/skins, drawn with the PNG itself, so the grid
+    // shows the skins rather than their file names.
     if wy + 20.0 * dpi <= height + rise {
         let draw = ui.get_window_draw_list();
         let _f = ui.push_font(fonts.small);
@@ -1487,6 +1731,17 @@ fn skins_page(
             1.0,
             2.0 * dpi,
         );
+        // The thumbnail is the chosen skin's own head when it is this one; for the
+        // others the page has no texture of theirs uploaded, so the file name stands
+        // in and the tap applies it — the preview above is what confirms it.
+        if chosen && let Some(texture) = skin {
+            let (w, h) = (model.skin_size[0] as f32, model.skin_size[1] as f32);
+            let (tw, th) = (cell_w - 28.0 * dpi, cell_h - 52.0 * dpi);
+            draw.add_image(texture, [cx + 14.0 * dpi, cy + 12.0 * dpi], [cx + 14.0 * dpi + tw, cy + 12.0 * dpi + th])
+                .uv0([8.0 / w, 8.0 / h])
+                .uv1([16.0 / w, 16.0 / h])
+                .build();
+        }
         {
             let _f = ui.push_font(fonts.small);
             let label = name.trim_end_matches(".png");
@@ -1507,23 +1762,85 @@ fn skins_page(
     }
     if model.skins.is_empty() {
         let draw = ui.get_window_draw_list();
-        let line = "No PNGs in import/skins yet. Drop one there and reopen this page.";
-        draw.add_text(
-            [wx, cy + 8.0 * dpi],
-            rgba(c.muted, 1.0),
-            fit(ui, line, ww),
-        );
+        let _f = ui.push_font(fonts.small);
+        let line = "No PNGs in import/skins yet. Drop a 64x64 skin there and reopen this page.";
+        for (i, part) in wrap(ui, line, ww).iter().enumerate() {
+            draw.add_text(
+                [wx, cy + 8.0 * dpi + i as f32 * 18.0 * dpi],
+                rgba(c.muted, 1.0),
+                part.as_str(),
+            );
+        }
     }
 }
 
-/// A player as blocks: head, body, arms, legs. Deliberately not a 3D model — the
-/// picker's job is to show which file is chosen, and a flat figure reads at a
-/// glance where a rotating one needs a finger to mean anything.
+/// The player, drawn from the skin's own pixels: head, body, arms and legs, each a
+/// quad sampling the region of the PNG the model uses for that face.
+///
+/// The layout is the standard 64x64 skin (and the 64x32 legacy one, whose front
+/// faces sit at the same coordinates); a face that is not there — a size this build
+/// does not know — leaves the figure as blocks rather than drawing garbage.
+fn skin_figure(
+    ui: &Ui,
+    draw: &DrawListMut<'_>,
+    texture: TextureId,
+    size: [u32; 2],
+    cx: f32,
+    top: f32,
+    height: f32,
+) {
+    let (w, h) = (size[0] as f32, size[1] as f32);
+    if w < 64.0 || h < 32.0 {
+        return;
+    }
+    let legacy = h < 64.0;
+    // The figure is eight units of body wide and thirteen tall, so the whole thing
+    // fits the height it was given without spilling out of the card.
+    let u = (height / 15.0).max(1.0);
+    let body_w = 4.0 * u;
+    let head = 4.0 * u;
+    let part = |x0: f32, y0: f32, x1: f32, y1: f32, min: [f32; 2], max: [f32; 2]| {
+        draw.add_image(texture, min, max)
+            .uv0([x0 / w, y0 / h])
+            .uv1([x1 / w, y1 / h])
+            .build();
+    };
+    let x0 = cx - head / 2.0;
+    // Head: the front face, then the hat layer over it when the skin has one.
+    part(8.0, 8.0, 16.0, 16.0, [x0, top], [x0 + head, top + head]);
+    part(40.0, 8.0, 48.0, 16.0, [x0, top], [x0 + head, top + head]);
+    let body_y = top + head;
+    let body_h = 3.0 * u;
+    part(20.0, 20.0, 28.0, 32.0, [cx - body_w / 2.0, body_y], [cx + body_w / 2.0, body_y + body_h]);
+    // Arms: the right one from its own face, the left from the mirrored copy on a
+    // legacy skin (which has no left-hand region of its own).
+    let arm_w = 1.0 * u;
+    let arm_h = 3.0 * u;
+    part(44.0, 20.0, 48.0, 32.0, [cx - body_w / 2.0 - arm_w, body_y], [cx - body_w / 2.0, body_y + arm_h]);
+    if legacy {
+        part(44.0, 20.0, 48.0, 32.0, [cx + body_w / 2.0, body_y], [cx + body_w / 2.0 + arm_w, body_y + arm_h]);
+    } else {
+        part(36.0, 52.0, 40.0, 64.0, [cx + body_w / 2.0, body_y], [cx + body_w / 2.0 + arm_w, body_y + arm_h]);
+    }
+    // Legs, likewise.
+    let leg_y = body_y + body_h;
+    let leg_h = 4.0 * u;
+    let leg_w = 1.0 * u;
+    part(4.0, 20.0, 8.0, 32.0, [cx - body_w / 2.0, leg_y], [cx - body_w / 2.0 + leg_w, leg_y + leg_h]);
+    if legacy {
+        part(4.0, 20.0, 8.0, 32.0, [cx + body_w / 2.0 - leg_w, leg_y], [cx + body_w / 2.0, leg_y + leg_h]);
+    } else {
+        part(20.0, 52.0, 24.0, 64.0, [cx + body_w / 2.0 - leg_w, leg_y], [cx + body_w / 2.0, leg_y + leg_h]);
+    }
+    let _ = ui;
+}
+
+/// A player as blocks: head, body, arms, legs. The fallback when no skin is
+/// decoded, so the card is never empty.
 fn player_figure(draw: &DrawListMut<'_>, c: &Css, dpi: f32, cx: f32, cy: f32, s: f32) {
     let u = s / 8.0;
     let head = [cx - u * 1.4, cy - u * 4.0];
     fill(draw, head, [head[0] + u * 2.8, head[1] + u * 2.8], 0xc79a72, 1.0, u * 0.2);
-    // Hair, eyes and mouth: enough to read as a face and no more.
     fill(draw, head, [head[0] + u * 2.8, head[1] + u * 0.8], 0x4a3423, 1.0, u * 0.2);
     fill(draw, [head[0] + u * 0.6, head[1] + u * 1.4], [head[0] + u * 1.0, head[1] + u * 1.8], 0x2a2a2e, 1.0, 0.0);
     fill(draw, [head[0] + u * 1.8, head[1] + u * 1.4], [head[0] + u * 2.2, head[1] + u * 1.8], 0x2a2a2e, 1.0, 0.0);
@@ -1654,6 +1971,18 @@ fn mods_page(
     }
     y += 40.0 * dpi;
 
+    if model.mods_loading {
+        // The fetch runs on a worker; this frame has nothing to list yet. Saying so is
+        // the whole difference between a page that is loading and one that froze.
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text(
+            [g.x + g.pad, y],
+            rgba(c.muted, 1.0),
+            "Asking the registry...",
+        );
+        return;
+    }
     if model.mods.is_empty() {
         // The reason, not a shrug: an empty list is either "the registry has nothing
         // for this build" or "the fetch failed", and only the status line can say
@@ -1745,18 +2074,18 @@ fn profile_page(
     sink: &mut Sink<'_>,
 ) {
     let mut y = heading(ui, fonts, c, dpi, g, "PROFILE", rise);
-    let face = 72.0 * dpi;
+    let face = 64.0 * dpi;
     {
         let draw = ui.get_window_draw_list();
-        panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + face + 32.0 * dpi], c.panel, 4.0 * dpi);
-        fill(&draw, [g.x + g.pad + 16.0 * dpi, y + 16.0 * dpi], [g.x + g.pad + 16.0 * dpi + face, y + 16.0 * dpi + face], c.accent, 1.0, 4.0 * dpi);
+        panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + face + 28.0 * dpi], c.panel, 4.0 * dpi);
+        fill(&draw, [g.x + g.pad + 16.0 * dpi, y + 14.0 * dpi], [g.x + g.pad + 16.0 * dpi + face, y + 14.0 * dpi + face], c.accent, 1.0, 4.0 * dpi);
         {
             let _f = ui.push_font(fonts.title);
             let initial: String = model.account.chars().take(1).collect::<String>().to_uppercase();
             let initial = if initial.is_empty() { "P".to_string() } else { initial };
             let [iw, ih] = ui.calc_text_size(initial.as_str());
             draw.add_text(
-                [g.x + g.pad + 16.0 * dpi + (face - iw) / 2.0, y + 16.0 * dpi + (face - ih) / 2.0],
+                [g.x + g.pad + 16.0 * dpi + (face - iw) / 2.0, y + 14.0 * dpi + (face - ih) / 2.0],
                 rgba(c.on_accent, 1.0),
                 initial.as_str(),
             );
@@ -1764,45 +2093,188 @@ fn profile_page(
         {
             let _f = ui.push_font(fonts.pixel);
             draw.add_text(
-                [g.x + g.pad + face + 32.0 * dpi, y + 26.0 * dpi],
+                [g.x + g.pad + face + 32.0 * dpi, y + 22.0 * dpi],
                 rgba(c.ink, 1.0),
                 fit(ui, &model.account, g.w - 2.0 * g.pad - face - 48.0 * dpi),
             );
         }
-        draw.add_text(
-            [g.x + g.pad + face + 32.0 * dpi, y + 54.0 * dpi],
-            rgba(c.muted, 1.0),
-            "Offline account · tap to rename",
-        );
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text(
+                [g.x + g.pad + face + 32.0 * dpi, y + 46.0 * dpi],
+                rgba(c.muted, 1.0),
+                "Tap to rename",
+            );
+        }
     }
     ui.set_cursor_screen_pos([g.x + g.pad, y]);
-    if ui.invisible_button("##rename", [g.w - 2.0 * g.pad, face + 32.0 * dpi]) {
-        if sink.live() {
-            // The launcher cannot write the model it was handed, so the rename flag
-            // travels as an event and the platform turns it on.
-        }
+    if ui.invisible_button("##rename", [g.w - 2.0 * g.pad, face + 28.0 * dpi]) {
         sink.push(LauncherEvent::RenameAccount);
     }
-    y += face + 48.0 * dpi;
+    y += face + 44.0 * dpi;
 
+    // The line the platform has for this page: a sign-in waiting on the browser, a
+    // failure, or the last thing that changed.
+    if !model.status.is_empty() && y + 20.0 * dpi <= height + rise {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        for (i, line) in wrap(ui, &model.status, g.w - 2.0 * g.pad).iter().enumerate() {
+            draw.add_text(
+                [g.x + g.pad, y + i as f32 * 17.0 * dpi],
+                rgba(c.ink_soft, 1.0),
+                line.as_str(),
+            );
+        }
+        y += wrap(ui, &model.status, g.w - 2.0 * g.pad).len() as f32 * 17.0 * dpi + 14.0 * dpi;
+    }
+
+    // Accounts: the list this device knows, one of them selected, and the two ways
+    // to add one. A Microsoft account is the real thing — the device-code flow in
+    // `auth` — and an offline name is the other, which is what a phone could do
+    // before. Both are rows, because they are the same decision.
+    if y + 22.0 * dpi <= height + rise {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), "ACCOUNTS");
+        y += 24.0 * dpi;
+    }
+    let row_h = 52.0 * dpi;
+    for (i, account) in model.accounts.iter().enumerate() {
+        if y + row_h > height + rise {
+            break;
+        }
+        let x = g.x + g.pad;
+        let w = g.w - 2.0 * g.pad;
+        {
+            let draw = ui.get_window_draw_list();
+            panel(
+                &draw,
+                c,
+                [x, y],
+                [x + w, y + row_h],
+                if account.selected { c.raised } else { c.panel },
+                3.0 * dpi,
+            );
+            if account.selected {
+                stroke(&draw, [x, y], [x + w, y + row_h], c.accent, 1.0, 3.0 * dpi, 2.0);
+            }
+            {
+                let _f = ui.push_font(fonts.pixel);
+                draw.add_text(
+                    [x + 16.0 * dpi, y + 8.0 * dpi],
+                    rgba(c.ink, 1.0),
+                    fit(ui, &account.name, w - 220.0 * dpi),
+                );
+            }
+            {
+                let _f = ui.push_font(fonts.small);
+                draw.add_text(
+                    [x + 16.0 * dpi, y + 30.0 * dpi],
+                    rgba(if account.selected { c.accent } else { c.muted }, 1.0),
+                    &account.kind,
+                );
+            }
+        }
+        let bw = 100.0 * dpi;
+        if !account.selected
+            && raised_button(
+                ui,
+                fonts,
+                c,
+                dpi,
+                x + w - 16.0 * dpi - bw * 2.0 - 8.0 * dpi,
+                y + (row_h - 32.0 * dpi) / 2.0,
+                bw,
+                32.0 * dpi,
+                "Play as",
+                c.accent,
+                c.accent_lip,
+                c.on_accent,
+            )
+        {
+            sink.push(LauncherEvent::SwitchAccount(i as u32));
+        }
+        if model.accounts.len() > 1
+            && raised_button(
+                ui,
+                fonts,
+                c,
+                dpi,
+                x + w - 16.0 * dpi - bw,
+                y + (row_h - 32.0 * dpi) / 2.0,
+                bw,
+                32.0 * dpi,
+                "Remove",
+                c.button,
+                c.bevel,
+                c.muted,
+            )
+        {
+            sink.push(LauncherEvent::RemoveAccount(i as u32));
+        }
+        y += row_h + 8.0 * dpi;
+    }
+
+    let btn_h = 38.0 * dpi;
+    if y + btn_h <= height + rise {
+        let bw = 190.0 * dpi;
+        if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, bw, btn_h, "+ MICROSOFT", c.accent, c.accent_lip, c.on_accent) {
+            sink.push(LauncherEvent::SignInMicrosoft);
+        }
+        if raised_button(ui, fonts, c, dpi, g.x + g.pad + bw + 10.0 * dpi, y, bw, btn_h, "+ OFFLINE", c.button, c.bevel, c.ink) {
+            sink.push(LauncherEvent::AddAccount);
+        }
+        y += btn_h + 22.0 * dpi;
+    }
+
+    // Touch controls: the two layouts a phone player already knows. This is a
+    // launcher setting, so it stays here and never sends the player into the game's
+    // own options to find it.
+    if y + 22.0 * dpi <= height + rise {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), "TOUCH CONTROLS");
+        y += 24.0 * dpi;
+    }
+    if y + btn_h <= height + rise {
+        let bw = 190.0 * dpi;
+        let java = model.controls_preset == "java";
+        let face = if java { c.accent } else { c.button };
+        let ink = if java { c.on_accent } else { c.ink };
+        if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, bw, btn_h, "JAVA CLASSIC", face, c.bevel, ink) {
+            sink.push(LauncherEvent::SetControls("java".into()));
+        }
+        let bedrock = model.controls_preset == "bedrock";
+        let face = if bedrock { c.accent } else { c.button };
+        let ink = if bedrock { c.on_accent } else { c.ink };
+        if raised_button(ui, fonts, c, dpi, g.x + g.pad + bw + 10.0 * dpi, y, bw, btn_h, "BEDROCK PE", face, c.bevel, ink) {
+            sink.push(LauncherEvent::SetControls("bedrock".into()));
+        }
+        y += btn_h + 22.0 * dpi;
+    }
+
+    // The facts, each a row, and the three actions under them.
     for (key, value) in &model.facts {
-        if y + 44.0 * dpi > height + rise {
+        if y + 40.0 * dpi > height + rise {
             break;
         }
         let draw = ui.get_window_draw_list();
-        panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + 44.0 * dpi], c.panel, 3.0 * dpi);
-        draw.add_text([g.x + g.pad + 16.0 * dpi, y + 14.0 * dpi], rgba(c.muted, 1.0), key.as_str());
+        panel(&draw, c, [g.x + g.pad, y], [g.x + g.w - g.pad, y + 40.0 * dpi], c.panel, 3.0 * dpi);
+        {
+            let _f = ui.push_font(fonts.small);
+            draw.add_text([g.x + g.pad + 16.0 * dpi, y + 12.0 * dpi], rgba(c.muted, 1.0), key.as_str());
+        }
         let [vw, _] = ui.calc_text_size(value.as_str());
         draw.add_text(
-            [g.x + g.w - g.pad - 16.0 * dpi - vw, y + 14.0 * dpi],
+            [g.x + g.w - g.pad - 16.0 * dpi - vw, y + 12.0 * dpi],
             rgba(c.ink, 1.0),
             value.as_str(),
         );
-        y += 44.0 * dpi + 8.0 * dpi;
+        y += 40.0 * dpi + 6.0 * dpi;
     }
 
-    let btn_w = 200.0 * dpi;
-    let btn_h = 44.0 * dpi;
+    let btn_w = 170.0 * dpi;
+    let btn_h = 42.0 * dpi;
     if y + btn_h <= height + rise {
         if raised_button(ui, fonts, c, dpi, g.x + g.pad, y, btn_w, btn_h, "SETTINGS", c.button, c.bevel, c.ink) {
             sink.push(LauncherEvent::Goto(LauncherPage::Settings));

@@ -1437,6 +1437,10 @@ struct Game<'a> {
     dragon_model: Option<horizon_client::mobs::Part>,
     /// Map textures waiting for the next HUD batch to upload them.
     map_patches: Vec<horizon_client::font::Patch>,
+    /// The local skin already uploaded to an atlas slot, by the file it came from:
+    /// the Skins page writes the choice, and this is what makes the player in the
+    /// world wear it without a restart.
+    local_skin: Option<String>,
     /// Player skin downloads, and which skin each atlas skin slot holds
     /// (least recently shown first).
     skin_downloads: RefCell<horizon_client::skins::Downloader>,
@@ -1515,6 +1519,12 @@ struct Game<'a> {
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
     integrated: Option<integrated::Integrated>,
+    /// The integrated server's answer while it opens a world: the receiver and the
+    /// player to join as. Parked rather than waited on, so the frame keeps drawing.
+    integrated_ready: Option<(
+        std::sync::mpsc::Receiver<std::result::Result<(horizon_protocol::connection::Pipe, String), String>>,
+        String,
+    )>,
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
@@ -7499,8 +7509,48 @@ impl Game<'_> {
         self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
+        self.tick_local_skin();
         Ok(())
     }
+    /// Wear the skin the launcher's Skins page chose.
+    ///
+    /// The page writes `horizon-skin.txt`; a PNG there is a skin the player dropped on
+    /// the phone, which no account lookup will ever find. So it is decoded here, given
+    /// an atlas slot the same way a downloaded skin is, and named `skins/local` on the
+    /// player's own model — the identity is the file, so a new choice replaces it and
+    /// an unchanged one costs a string compare per tick.
+    fn tick_local_skin(&mut self) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        let _ = player;
+        let dir = horizon_client::gfx::skins_dir();
+        let Some(name) = horizon_client::skin_choice::load(&dir) else {
+            return;
+        };
+        if self.local_skin.as_deref() == Some(name.as_str()) {
+            // Already in an atlas slot: the model may have been rebuilt (respawn, a
+            // dimension change) and lost its skin, so put it back if it has none.
+            if let Some(mob) = self.player_model.as_mut()
+                && mob.skin.is_none()
+            {
+                mob.skin = Some("skins/local".to_string());
+            }
+            return;
+        }
+        let path = dir.join(&name);
+        let Some(rgba) = scoreboard::decode_skin(&path) else {
+            log::warn!("Horizon: {} is not a 64x32 or 64x64 skin", path.display());
+            return;
+        };
+        self.store_skin("skins/local".to_string(), rgba);
+        if let Some(mob) = self.player_model.as_mut() {
+            mob.skin = Some("skins/local".to_string());
+        }
+        log::info!("Horizon: wearing the skin from {}", path.display());
+        self.local_skin = Some(name);
+    }
+
     /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle.
     /// Returns the sun and moon quads, and the stars' frame and brightness
     /// (the renderer keeps their geometry, built once).
@@ -9841,6 +9891,22 @@ impl Game<'_> {
         Ok(())
     }
     fn render(&mut self) -> Result<bool> {
+        // The integrated server is opening the world on its own thread. The window is
+        // not frozen — it draws this — and the join happens in `poll_integrated` the
+        // moment the server is ready.
+        if self.integrated_ready.is_some() {
+            if let Some(renderer) = &mut self.renderer {
+                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                horizon_client::level_loading::draw_progress(
+                    &mut hud,
+                    &self.gui.atlas,
+                    "Opening world",
+                    0.0,
+                );
+                return renderer.render(&loading_frame(&hud));
+            }
+            return Ok(false);
+        }
         if let Some(loader) = &self.world_loader {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
@@ -10885,7 +10951,9 @@ impl ApplicationHandler for Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
-        if (self.pending_entry.is_some() || self.world_loader.is_some())
+        if (self.pending_entry.is_some()
+            || self.world_loader.is_some()
+            || self.integrated_ready.is_some())
             && matches!(&event, WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && event.physical_key == PhysicalKey::Code(KeyCode::Escape))
@@ -10901,7 +10969,9 @@ impl ApplicationHandler for Game<'_> {
             self.perf.cancel_world_opening();
             return;
         }
-        if (self.pending_entry.is_some() || self.world_loader.is_some())
+        if (self.pending_entry.is_some()
+            || self.world_loader.is_some()
+            || self.integrated_ready.is_some())
             && !matches!(
                 &event,
                 WindowEvent::CloseRequested
@@ -11973,6 +12043,7 @@ impl<'a> Game<'a> {
             breath_clouds: Vec::new(),
             dragon_model: prepared.dragon_model,
             map_patches: Vec::new(),
+            local_skin: None,
             skin_downloads: RefCell::new(horizon_client::skins::Downloader::new(
                 std::env::current_dir()
                     .unwrap_or_default()
@@ -12023,6 +12094,7 @@ impl<'a> Game<'a> {
             remote: None,
             lan: None,
             integrated: None,
+            integrated_ready: None,
             serving: None,
             world_options: None,
             options_to_world_options: false,
@@ -12181,6 +12253,9 @@ impl Game<'_> {
         if self.rest_loader.is_none() && self.world_loader.is_none() {
             return Ok(false);
         }
+        // The rest of the world resources are still arriving: queue the entry and let
+        // the loop keep drawing instead of waiting for them on this thread. That wait
+        // was the one-to-three-second freeze between the tap and the world.
         self.perf.world_opening();
         if self.title.is_none() {
             self.title = Some(Title::new(
@@ -12195,6 +12270,11 @@ impl Game<'_> {
 
     fn resume_world_entry(&mut self) -> Result<()> {
         self.poll_world_rest()?;
+        // The integrated server opens its world on its own thread; this is where the
+        // window joins it, once, when it says it is ready. Nothing waits.
+        if self.poll_integrated()? {
+            return Ok(());
+        }
         if let Some(loader) = &self.world_loader {
             if !loader.ready() {
                 return Ok(());
@@ -12245,20 +12325,19 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Wait for the rest of the world resources, without holding the frame.
+    ///
+    /// This used to spin here with a 10 ms sleep until the loader finished. On a phone
+    /// that is a freeze of however long the load takes — one to three seconds between
+    /// the tap on a world and anything moving — because the thread doing the waiting is
+    /// the only one that can draw. A world entry that is not ready yet is now deferred
+    /// instead (see `defer_world_entry`), and `resume_world_entry` picks it up when the
+    /// loader says it is done; the loop keeps drawing in between.
     fn join_world_rest(&mut self) -> Result<()> {
         if self.rest_loader.is_some() {
-            let waited = Instant::now();
-            log::info!("Horizon: waiting for world resources");
-            while self.rest_loader.is_some() {
-                self.poll_world_rest()?;
-                if self.rest_loader.is_some() {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-            log::info!(
-                "Horizon: world resources joined after {} ms",
-                waited.elapsed().as_millis()
-            );
+            // Ask the loader once, so a load that finished this frame is taken now
+            // rather than on the next.
+            self.poll_world_rest()?;
         }
         if self.res.rest.get().is_none() {
             return Err("world resources are unavailable".into());
@@ -12964,10 +13043,18 @@ struct Loading {
     settings: Settings,
     fullscreen: horizon_client::window::FullscreenState,
     options: Option<Options>,
-    /// The mod registry as it was fetched, kept for the visit to the Mods page rather
-    /// than fetched again on every frame the page is up.
+    /// The mod registry, fetched on a worker so the launcher keeps drawing. `None`
+    /// until the fetch lands, which the page draws as "asking".
     #[cfg(target_os = "android")]
     mod_registry: Option<horizon_client::mod_registry::Registry>,
+    /// The worker's receiver while a fetch is in flight. Dropped when it lands, so the
+    /// page cannot accidentally fetch twice for one visit.
+    #[cfg(target_os = "android")]
+    mod_registry_rx: Option<std::sync::mpsc::Receiver<horizon_client::mod_registry::Registry>>,
+    /// Where the Skins page's PNG is read from, kept so the texture is uploaded once
+    /// per choice rather than every frame.
+    #[cfg(target_os = "android")]
+    launcher_skin: Option<std::path::PathBuf>,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13379,6 +13466,10 @@ fn run_loading(
         options: Some(options),
         #[cfg(target_os = "android")]
         mod_registry: None,
+        #[cfg(target_os = "android")]
+        mod_registry_rx: None,
+        #[cfg(target_os = "android")]
+        launcher_skin: None,
         vanilla_root,
         pack_error,
         started,

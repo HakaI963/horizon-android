@@ -125,6 +125,7 @@ pub mod mobs;
 pub mod mod_content;
 pub mod mod_list;
 pub mod mod_registry;
+pub mod msa;
 mod model_library;
 pub mod models;
 pub mod motion;

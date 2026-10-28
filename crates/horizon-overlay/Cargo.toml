@@ -16,6 +16,10 @@ horizon-controls = { path = "../horizon-controls" }
 horizon-imgui = { path = "../horizon-imgui" }
 horizon-theme = { path = "../horizon-theme" }
 imgui = "0.12"
+# The Skins page draws the player from the chosen PNG's own pixels, so it decodes
+# one. The engine already carries `png` for the game's textures; this is the same
+# crate at the same version.
+png = "0.18"
 # The phone's feature set, so that building this for the host does not pull in the
 # backends a phone has none of.
 wgpu = { version = "30.0.1", default-features = false, features = [

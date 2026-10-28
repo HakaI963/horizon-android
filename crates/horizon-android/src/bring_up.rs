@@ -598,9 +598,11 @@ impl BringUp {
             .unwrap_or_default();
         for event in events {
             match event {
+                // The card has one row and one thing to do with it: install. Every
+                // control that could mean "start" means that here, because there is no
+                // engine behind the card to start anything.
                 LauncherEvent::Install
                 | LauncherEvent::Play
-                | LauncherEvent::PlayRow(_)
                 | LauncherEvent::SelectRow(_)
                 | LauncherEvent::NewInstance
                     if !installing && !installed =>

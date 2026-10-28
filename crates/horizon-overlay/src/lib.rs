@@ -28,8 +28,8 @@ use imgui::{
 
 mod launcher;
 pub use launcher::{
-    LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow, LauncherSetting,
-    LauncherStory,
+    LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
+    LauncherSetting, LauncherStory,
 };
 
 /// The button at rest: dark enough to see through, bright enough to find.
@@ -84,6 +84,12 @@ pub struct Overlay {
     launcher_events: Vec<LauncherEvent>,
     /// The Geist faces the launcher draws with, once the fonts are added.
     launcher_fonts: Option<launcher::Fonts>,
+    /// The chosen skin, uploaded as an imgui texture so the Skins page can draw the
+    /// player from its own pixels instead of a stand-in.
+    skin_texture: Option<imgui::TextureId>,
+    /// The PNG the texture was made from, so a new choice replaces it rather than
+    /// uploading the same file every frame.
+    skin_source: Option<String>,
     /// The panel as it was drawn last frame. A finger inside it belongs to the panel
     /// and to nothing else, and the only place to learn that from is the window
     /// imgui has just laid out.
@@ -139,6 +145,8 @@ impl Overlay {
             launcher_model: LauncherModel::default(),
             launcher_events: Vec::new(),
             launcher_fonts: None,
+            skin_texture: None,
+            skin_source: None,
             panel_rect: None,
             panorama: true,
             pointer: Pointer::idle(),
@@ -362,6 +370,7 @@ impl Overlay {
             launcher_model,
             launcher_events,
             launcher_fonts,
+            skin_texture,
             panel_rect,
             panorama,
             dpi,
@@ -432,6 +441,7 @@ impl Overlay {
                         height,
                         opening,
                         *panorama,
+                        *skin_texture,
                         launcher_events,
                     );
                 }
@@ -559,6 +569,87 @@ impl Overlay {
 
     pub fn panel_open(&self) -> bool {
         self.panel
+    }
+
+    /// Show this PNG on the Skins page, decoding it into an imgui texture the first
+    /// time it changes.
+    ///
+    /// The page draws the player out of the skin's own pixels, so it needs the image
+    /// on the GPU; the overlay owns the device, and the platform only knows which file
+    /// the player chose. `None` clears it, which is what the page draws as a plain
+    /// figure.
+    pub fn set_launcher_skin(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: Option<&Path>,
+    ) {
+        let key = path.map(|p| p.display().to_string());
+        if key == self.skin_source {
+            return;
+        }
+        self.skin_source = key;
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        if let Some(old) = self.skin_texture.take() {
+            renderer.textures.remove(old);
+        }
+        let Some(path) = path else {
+            return;
+        };
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+        // Skins are indexed, greyscale or RGBA; let the decoder hand back RGBA8
+        // whichever it is, so the texture's format is one thing.
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let Ok(mut reader) = decoder.read_info() else {
+            return;
+        };
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let Ok(info) = reader.next_frame(&mut buffer) else {
+            return;
+        };
+        // The texture is RGBA8 whatever the PNG was: expand three channels, and add
+        // an opaque alpha to a greyscale or a two-channel image.
+        let pixels = match info.color_type {
+            png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
+            png::ColorType::Rgb => buffer[..info.buffer_size()]
+                .chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+            png::ColorType::GrayscaleAlpha => buffer[..info.buffer_size()]
+                .chunks_exact(2)
+                .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                .collect(),
+            png::ColorType::Grayscale => buffer[..info.buffer_size()]
+                .iter()
+                .flat_map(|g| [*g, *g, *g, 255])
+                .collect(),
+            png::ColorType::Indexed => return,
+        };
+        let texture = horizon_imgui::Texture::new(
+            device,
+            renderer,
+            horizon_imgui::TextureConfig {
+                label: Some("launcher skin"),
+                size: wgpu::Extent3d {
+                    width: info.width,
+                    height: info.height,
+                    depth_or_array_layers: 1,
+                },
+                // The same format the font atlas uses: the renderer samples every
+                // imgui texture through one shader, and an sRGB texture there would be
+                // corrected twice.
+                format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                ..Default::default()
+            },
+        );
+        texture.write(queue, &pixels, info.width, info.height);
+        self.skin_texture = Some(renderer.textures.insert(texture));
     }
 
     /// Tell the overlay whether the engine's title panorama is behind it. The
