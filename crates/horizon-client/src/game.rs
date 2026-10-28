@@ -11525,13 +11525,21 @@ impl ApplicationHandler for Game<'_> {
                     #[cfg(target_os = "android")]
                     if self.back_to_launcher {
                         // `Game` has no `StartupMenu`: that belongs to the loading
-                        // surface. What the running game can do is stop owning the
-                        // title screen, and the launcher's own host picks the front page
-                        // up from `return_to_launcher` on the way back.
+                        // surface. What the running game can do is let go of the title
+                        // and the world, and the launcher draws over a cleared frame.
                         self.back_to_launcher = false;
                         self.title = None;
                         self.screen = Screen::Playing;
                         horizon_overlay::with(|o| o.return_to_launcher());
+                        // The launcher is the screen now. A world left drawing under it
+                        // shows through every gap in the page — which is what "the game
+                        // is still there behind the launcher" looked like.
+                        if let Some(handle) = self.integrated.take() {
+                            handle.request_stop();
+                        }
+                        self.world_loader = None;
+                        self.pending_entry = None;
+                        self.integrated_ready = None;
                     }
                     self.observe_fullscreen();
                     let now = Instant::now();
