@@ -983,6 +983,21 @@ fn nav_icon(draw: &DrawListMut<'_>, page: LauncherPage, x: f32, cy: f32, s: f32,
             block(2.0, 6.0, 12.0, 4.0, 0x9aa0a8);
             block(6.0, 3.0, 4.0, 10.0, 0x9aa0a8);
         }
+        // A folder: a tab on the lid and a body.
+        LauncherPage::Files => {
+            block(2.0, 3.0, 6.0, 2.0, 0xc0a24a);
+            block(2.0, 5.0, 12.0, 9.0, 0xd8b95c);
+            block(2.0, 7.0, 12.0, 1.0, 0xb99a3f);
+        }
+        // A signal: two arcs and a dot, the mark a host wears.
+        LauncherPage::Multiplayer => {
+            block(7.0, 9.0, 2.0, 2.0, 0x5bbf4a);
+            block(5.0, 6.0, 1.5, 1.5, 0x5bbf4a);
+            block(9.5, 6.0, 1.5, 1.5, 0x5bbf4a);
+            block(3.5, 4.0, 1.5, 1.5, 0x5bbf4a);
+            block(11.0, 4.0, 1.5, 1.5, 0x5bbf4a);
+            block(6.0, 8.0, 4.0, 1.0, 0x5bbf4a);
+        }
     }
 }
 
@@ -1642,7 +1657,7 @@ fn skins_page(
         match skin {
             Some(texture) => skin_figure(
                 ui,
-                draw,
+                &draw,
                 texture,
                 model.skin_size,
                 mx + model_w / 2.0,
@@ -1737,10 +1752,14 @@ fn skins_page(
         if chosen && let Some(texture) = skin {
             let (w, h) = (model.skin_size[0] as f32, model.skin_size[1] as f32);
             let (tw, th) = (cell_w - 28.0 * dpi, cell_h - 52.0 * dpi);
-            draw.add_image(texture, [cx + 14.0 * dpi, cy + 12.0 * dpi], [cx + 14.0 * dpi + tw, cy + 12.0 * dpi + th])
-                .uv0([8.0 / w, 8.0 / h])
-                .uv1([16.0 / w, 16.0 / h])
-                .build();
+            draw.add_image(
+                texture,
+                [cx + 14.0 * dpi, cy + 12.0 * dpi],
+                [cx + 14.0 * dpi + tw, cy + 12.0 * dpi + th],
+            )
+            .uv_min([8.0 / w, 8.0 / h])
+            .uv_max([16.0 / w, 16.0 / h])
+            .build();
         }
         {
             let _f = ui.push_font(fonts.small);
@@ -1801,8 +1820,8 @@ fn skin_figure(
     let head = 4.0 * u;
     let part = |x0: f32, y0: f32, x1: f32, y1: f32, min: [f32; 2], max: [f32; 2]| {
         draw.add_image(texture, min, max)
-            .uv0([x0 / w, y0 / h])
-            .uv1([x1 / w, y1 / h])
+            .uv_min([x0 / w, y0 / h])
+            .uv_max([x1 / w, y1 / h])
             .build();
     };
     let x0 = cx - head / 2.0;

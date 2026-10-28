@@ -2263,6 +2263,7 @@ fn files_rows() -> Vec<horizon_overlay::LauncherRow> {
     rows
 }
 
+#[cfg(target_os = "android")]
 fn news_stories() -> Vec<horizon_overlay::LauncherStory> {
     use horizon_overlay::LauncherStory;
     let story = |title: &str, tag: &str, body: &str| LauncherStory {
@@ -2314,6 +2315,7 @@ fn news_stories() -> Vec<horizon_overlay::LauncherStory> {
 /// The launcher's Patch Notes page: what changed in the build the player is holding.
 /// Newest first, and written for someone who wants to know whether their problem was
 /// fixed rather than what was refactored.
+#[cfg(target_os = "android")]
 #[cfg(target_os = "android")]
 fn patch_stories() -> Vec<horizon_overlay::LauncherStory> {
     use horizon_overlay::LauncherStory;

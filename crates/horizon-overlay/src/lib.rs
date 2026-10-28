@@ -608,7 +608,10 @@ impl Overlay {
         let Ok(mut reader) = decoder.read_info() else {
             return;
         };
-        let mut buffer = vec![0; reader.output_buffer_size()];
+        let Some(size) = reader.output_buffer_size() else {
+            return;
+        };
+        let mut buffer = vec![0; size];
         let Ok(info) = reader.next_frame(&mut buffer) else {
             return;
         };

@@ -640,7 +640,7 @@ pub(crate) fn decode_skin(path: &std::path::Path) -> Option<Vec<u8>> {
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
-    let mut buffer = vec![0; reader.output_buffer_size()];
+    let mut buffer = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buffer).ok()?;
     let rgba: Vec<u8> = match info.color_type {
         png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
