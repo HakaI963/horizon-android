@@ -274,6 +274,73 @@ public class HorizonActivity extends NativeActivity {
     }
 
     /**
+     * Copy matching files out of the phone's Download folder into `import/<kind>`.
+     *
+     * A file picker is a second activity, and a picker started from a native activity
+     * on a secondary display does not always come up. The Download folder is the one
+     * place a phone user already drops things, so this is the path that always works:
+     * no dialog, no second activity, just a copy of every file whose extension matches
+     * the kind.
+     *
+     * Returns how many files were copied, or -1 when there is nothing to copy.
+     */
+    public int horizonImportFromDownload(String kind) {
+        String folder = "skin".equals(kind) ? "skins"
+                : "resourcepack".equals(kind) ? "resourcepacks"
+                : "settings".equals(kind) ? ""
+                : "mods";
+        String[] extensions;
+        if ("skin".equals(kind)) {
+            extensions = new String[] { ".png" };
+        } else if ("mod".equals(kind)) {
+            extensions = new String[] { ".hmod" };
+        } else if ("resourcepack".equals(kind)) {
+            extensions = new String[] { ".zip" };
+        } else {
+            extensions = new String[] { ".json", ".txt", ".hmod", ".png", ".zip" };
+        }
+        java.io.File downloads = new java.io.File(
+                android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS).getAbsolutePath());
+        java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/" + folder);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            return -1;
+        }
+        java.io.File[] entries = downloads.listFiles();
+        if (entries == null) {
+            return -1;
+        }
+        int copied = 0;
+        for (java.io.File entry : entries) {
+            if (!entry.isFile()) {
+                continue;
+            }
+            String name = entry.getName().toLowerCase();
+            boolean wanted = false;
+            for (String extension : extensions) {
+                if (name.endsWith(extension)) {
+                    wanted = true;
+                    break;
+                }
+            }
+            if (!wanted) {
+                continue;
+            }
+            try {
+                copyFile(entry, new java.io.File(dir, entry.getName()));
+                copied++;
+            } catch (Exception error) {
+                // One unreadable file must not stop the rest.
+            }
+        }
+        if (copied > 0) {
+            Toast.makeText(this, "Copied " + copied + " file(s) to import/" + folder,
+                    Toast.LENGTH_SHORT).show();
+        }
+        return copied > 0 ? copied : -1;
+    }
+
+    /**
      * Write the game's own files out where the player can reach them.
      *
      * Export is the mirror of import: `kind` names a folder inside `import/`, and every
@@ -297,6 +364,22 @@ public class HorizonActivity extends NativeActivity {
                 Toast.makeText(this, "Export failed: " + error, Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    /** Copy one file, making its parent if the caller's target is nested. */
+    private static void copyFile(java.io.File from, java.io.File to) throws java.io.IOException {
+        java.io.File parent = to.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            throw new java.io.IOException("cannot create " + parent);
+        }
+        try (java.io.InputStream in = new java.io.FileInputStream(from);
+             java.io.OutputStream out = new java.io.FileOutputStream(to)) {
+            byte[] buffer = new byte[1 << 16];
+            int count;
+            while ((count = in.read(buffer)) > 0) {
+                out.write(buffer, 0, count);
+            }
+        }
     }
 
     private static void copyTree(java.io.File from, java.io.File to) throws java.io.IOException {

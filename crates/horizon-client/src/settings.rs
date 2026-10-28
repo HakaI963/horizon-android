@@ -94,7 +94,8 @@ pub fn source_volume(i: usize) -> f32 {
 pub struct Settings {
     /// Degrees, 30..=110 (options.txt stores (fov - 70) / 40).
     pub fov: f32,
-    /// Chunks, 2..=32.
+    /// Chunks, 2..=64 (the file's range; 64 is what a desktop's render distance
+    /// option allows and the streaming radius reads it as is).
     pub render_distance: i32,
     /// Chunks, 5..=32.
     pub simulation_distance: i32,

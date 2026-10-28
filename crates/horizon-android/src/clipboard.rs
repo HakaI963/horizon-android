@@ -88,8 +88,44 @@ fn call_with_string(method: &'static JNIStr, value: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// The picker, with the Download folder as the fallback.
+///
+/// A picker is a second activity, and a picker started from a native activity on a
+/// secondary display does not always come up: the display the game draws on is not the
+/// one the picker wants. So the files are copied straight out of the phone's Download
+/// folder first — the place a phone user already drops things — and the picker is only
+/// offered when there is nothing there to copy. That makes Import work on a device
+/// where the dialog never appears.
 fn pick(kind: &str) -> bool {
+    let copied = import_from_download(kind);
+    if copied > 0 {
+        log::info!("clipboard: copied {copied} file(s) from Download into import/{kind}");
+        return true;
+    }
     call_with_string(jni_str!("horizonPickFile"), kind)
+}
+
+/// `horizonImportFromDownload`: copies matching files out of Download and answers how
+/// many landed, or 0 when there were none.
+fn import_from_download(kind: &str) -> i32 {
+    let Some((vm, activity)) = context() else {
+        return 0;
+    };
+    vm.attach_current_thread(|env| -> jni::errors::Result<i32> {
+        // SAFETY: the pointer is the activity's global reference, held by `APP`.
+        let activity = unsafe { env.as_cast_raw::<JObject<'static>>(&activity) }?;
+        let text: JString = env.new_string(kind)?;
+        let count = env
+            .call_method(
+                &*activity,
+                jni_str!("horizonImportFromDownload"),
+                jni_sig!("(Ljava/lang/String;)I"),
+                &[JValue::Object(&text)],
+            )?
+            .i()?;
+        Ok(count)
+    })
+    .unwrap_or(0)
 }
 
 fn export(kind: &str) -> bool {

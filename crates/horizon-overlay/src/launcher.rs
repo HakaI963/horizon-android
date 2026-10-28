@@ -49,11 +49,10 @@ thread_local! {
     /// page. `None` when no drag is in progress.
     static SETTINGS_DRAG: Cell<Option<f32>> = const { Cell::new(None) };
 
-    /// Whether the press in progress began on a slider's track. The page's scroll drag
-    /// and the slider's own drag both start with a finger on the row, and only the
-    /// track's owner may move the value; this is what tells them apart, because imgui
-    /// says only that *some* item is active.
-    static SETTINGS_ON_TRACK: Cell<bool> = const { Cell::new(false) };
+    /// Whether a finger was down on the last frame, so a press is only anchored on the
+    /// frame it begins: a finger that came in from outside the page must not start
+    /// scrolling it halfway through its own gesture.
+    static SETTINGS_HELD: Cell<bool> = const { Cell::new(false) };
 
     /// Where the finger landed on the Settings page. A tap and a drag both begin with
     /// a press, and the only thing that tells them apart afterwards is how far the
@@ -64,7 +63,6 @@ thread_local! {
     /// must not also be a tap on the row it started on, and imgui reports the click on
     /// the frame the finger lifts — after the drag has already been read.
     static SETTINGS_SWALLOW: Cell<bool> = const { Cell::new(false) };
-
 }
 
 /// The destinations in the left column, in the order they are drawn.
@@ -148,9 +146,8 @@ pub struct LauncherSetting {
     /// A switch rather than a slider.
     pub toggle: bool,
     pub on: bool,
-    /// What the number is measured in: "chunks", "fps", "°", "%". Empty for a bare
-    /// number. A degree and a percent are set tight against the digits, everything
-    /// else gets a space.
+    /// What the number is measured in: "chunks", "fps", "°", "%", "x". Empty for a
+    /// bare number. A symbol is set tight against the digits, a word gets a space.
     pub unit: String,
     /// The heading this row sits under. The page draws one heading per run of the
     /// same group, so the order of `LauncherModel::settings` is the page's order.
@@ -802,6 +799,22 @@ pub fn draw(
             // new page with the old page's model is what made the Mods page show the
             // Play page's status line and an empty list.
             let page = model.page;
+            // The settings page owns a gesture across frames: a press anchor, a scroll
+            // drag and the "this was a scroll, not a tap" flag. None of them may survive
+            // onto another page, where a finger that left mid-drag would come back to an
+            // anchor from a page ago.
+            if page != LauncherPage::Settings {
+                SETTINGS_PRESS.set(None);
+                SETTINGS_DRAG.set(None);
+                SETTINGS_SWALLOW.set(false);
+                // The column starts at its top the next time the page is opened: a
+                // page that came back halfway down would look like it had lost rows.
+                SETTINGS_SCROLL.set(0.0);
+                // A finger already on the glass when the page opens is not a press the
+                // page saw begin, so it must not anchor a scroll halfway through its
+                // own gesture.
+                SETTINGS_HELD.set(ui.io().mouse_down[0]);
+            }
             sidebar(ui, model, fonts, c, dpi, width, height, rise, &mut sink);
             // The Play page is the title panorama with things laid over it, so the
             // launcher must not paint over the glass there: the engine's cube map is
@@ -3064,12 +3077,24 @@ fn settings_page(
     rise: f32,
     sink: &mut Sink<'_>,
 ) {
-    let mut y = heading(ui, fonts, c, dpi, g, "SETTINGS", rise);
+    let y = heading(ui, fonts, c, dpi, g, "SETTINGS", rise);
     if raised_button(ui, fonts, c, dpi, g.x + g.pad, y - 8.0 * dpi, 120.0 * dpi, 34.0 * dpi, "Back", c.button, c.bevel, c.ink) {
         sink.push(LauncherEvent::Goto(LauncherPage::Profile));
     }
-    y += 30.0 * dpi;
-    let top = y;
+    // What the last change did. The platform sets this after every write, and a page
+    // that never draws it leaves a player who moved a slider with no answer at all.
+    // It is a line beside Back rather than under it, so it never pushes the rows down.
+    if !model.status.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        let x = g.x + g.pad + 132.0 * dpi;
+        draw.add_text(
+            [x, y + 4.0 * dpi],
+            rgba(c.muted, 1.0),
+            fit(ui, &model.status, (g.x + g.w - g.pad - x).max(0.0)),
+        );
+    }
+    let top = y + 30.0 * dpi;
     let bottom = (height + rise - 14.0 * dpi).max(top);
     let view = bottom - top;
     let row_h = 60.0 * dpi;
@@ -3107,9 +3132,14 @@ fn settings_page(
         scroll -= wheel * 48.0 * dpi;
     }
     // Read before the gesture can end below: on the frame the finger lifts, imgui
-    // reports the row's click, and a drag that scrolled must not also be a tap.
-    let swallow = SETTINGS_SWALLOW.get();
+    // reports the row's click, and a drag that scrolled must not also be a tap. A
+    // finger that flicked and lifted between two frames never got a frame with the
+    // flag set, so the drag's own existence at the lift counts as one.
+    let mut swallow = SETTINGS_SWALLOW.get();
+    let held = SETTINGS_HELD.get();
+    SETTINGS_HELD.set(ui.io().mouse_down[0]);
     if !ui.io().mouse_down[0] {
+        swallow |= SETTINGS_DRAG.get().is_some();
         SETTINGS_PRESS.set(None);
         SETTINGS_DRAG.set(None);
         SETTINGS_SWALLOW.set(false);
@@ -3120,24 +3150,21 @@ fn settings_page(
             // past the page's edge, so coming back does not make it jump.
             scroll -= mouse[1] - last;
             SETTINGS_DRAG.set(Some(mouse[1]));
-        } else if !SETTINGS_ON_TRACK.get()
-            && dy.abs() > 12.0 * dpi
-            && dy.abs() > (mouse[0] - origin[0]).abs()
-        {
+        } else if dy.abs() > 12.0 * dpi && dy.abs() > (mouse[0] - origin[0]).abs() {
             // A mostly-vertical drag is the page's, even when it began on a row: the
             // rows fill the column, so requiring bare glass would leave almost nowhere
-            // to scroll from. A mostly-horizontal one is the slider's, which is the
-            // only control that reads the x axis. The threshold is what tells the two
-            // apart from a tap, and the first step only covers what is past it.
+            // to scroll from. A mostly-horizontal one belongs to the slider under the
+            // finger, which is the only control that reads the x axis. The threshold is
+            // what tells the two apart from a tap, and the first step only covers what
+            // is past it.
             scroll -= dy - 12.0 * dpi * dy.signum();
             SETTINGS_DRAG.set(Some(mouse[1]));
             SETTINGS_SWALLOW.set(true);
         }
-    } else if over_page {
+    } else if over_page && !held {
+        // Only the frame a press begins can anchor a drag. A finger that arrived over
+        // the page after pressing somewhere else is not a scroll.
         SETTINGS_PRESS.set(Some(mouse));
-        // A press on the page is not on a track until a row says otherwise, and the
-        // rows are drawn after this. Last frame's answer is cleared with the press.
-        SETTINGS_ON_TRACK.set(false);
     }
     let scroll = scroll.clamp(0.0, max_scroll);
     SETTINGS_SCROLL.set(scroll);
@@ -3154,7 +3181,11 @@ fn settings_page(
                     if y + group_h > top && y < bottom {
                         {
                             let _f = ui.push_font(fonts.small);
-                            draw.add_text([left, y + 6.0 * dpi], rgba(c.muted, 1.0), setting.group.as_str());
+                            draw.add_text(
+                                [left, y + 6.0 * dpi],
+                                rgba(c.muted, 1.0),
+                                setting.group.as_str(),
+                            );
                         }
                         // A hairline under the heading: `stroke` needs a box with a
                         // height, so the rule is a filled one-pixel band.
@@ -3232,12 +3263,16 @@ fn settings_page(
                         // The row is drawn before the button, so its hover and press
                         // ring goes on after it, in the same list: a second
                         // `DrawListMut` for the same window cannot exist at once.
-                        if hit || ui.is_item_hovered() {
+                        let lit = hit || ui.is_item_active();
+                        if lit || ui.is_item_hovered() {
+                            // The ring is clipped to the visible part of the row, the
+                            // same way the hit target is: half a ring around a sliver
+                            // would draw over the heading.
                             stroke(
                                 &draw,
-                                [left, y],
-                                [right, y + row_h],
-                                if hit { c.accent } else { c.bevel },
+                                [left, hit_y],
+                                [right, hit_y + hit_h],
+                                if lit { c.accent } else { c.bevel },
                                 1.0,
                                 3.0 * dpi,
                                 1.0,
@@ -3261,13 +3296,21 @@ fn settings_page(
                         (ui.calc_text_size(low.as_str())[0], ui.calc_text_size(high.as_str())[0])
                     };
                     let track_x = left + 16.0 * dpi + low_w + 10.0 * dpi;
-                    let track_w = (right - 16.0 * dpi - high_w - 10.0 * dpi - track_x).max(60.0 * dpi);
+                    let track_w =
+                        (right - 16.0 * dpi - high_w - 10.0 * dpi - track_x).max(60.0 * dpi);
                     // The track is the well and the fill is the value; the handle is a
                     // block, because everything else on this screen is a block.
                     let ty = y + 34.0 * dpi;
                     let span = (setting.max - setting.min).max(f32::EPSILON);
                     let t = ((setting.value - setting.min) / span).clamp(0.0, 1.0);
-                    fill(&draw, [track_x, ty], [track_x + track_w, ty + 6.0 * dpi], c.well, 1.0, 3.0 * dpi);
+                    fill(
+                        &draw,
+                        [track_x, ty],
+                        [track_x + track_w, ty + 6.0 * dpi],
+                        c.well,
+                        1.0,
+                        3.0 * dpi,
+                    );
                     if t > 0.0 {
                         fill(
                             &draw,
@@ -3308,21 +3351,26 @@ fn settings_page(
                             high.as_str(),
                         );
                     }
-                    // The hit target is the whole track's band, and the value follows
-                    // the finger: a press sets it, and holding keeps sending as the
-                    // finger slides, so a thumb that lands on 12 and drags to 30 sees
-                    // the number move with it. Only a change of a step or more is
-                    // sent, or a drag would write `options.txt` sixty times a second.
+                    // The hit target is the whole track's band, not the handle: a
+                    // 10-pixel handle is a slider a thumb cannot use.
                     if hit_h > 0.0 {
                         ui.set_cursor_screen_pos([track_x, hit_y]);
                         let id = format!("##set{}", setting.key);
                         let pressed = ui.invisible_button(id.as_str(), [track_w, hit_h]);
-                        if ui.is_item_active() || pressed {
-                            SETTINGS_ON_TRACK.set(true);
-                        }
+                        // The value follows the finger, but not on the frame it lands:
+                        // a finger on its way down the page also begins on this track,
+                        // and a scroll must not jump the slider to where it started. A
+                        // tap commits on the lift — imgui reports the click then, at the
+                        // release position, which is what a touch screen needs — and a
+                        // drag commits once it is actually going across. Only a change of
+                        // a step or more is sent, or a drag would write `options.txt`
+                        // sixty times a second.
+                        let across = SETTINGS_PRESS.get().is_none_or(|origin| {
+                            (mouse[0] - origin[0]).abs() > 4.0 * dpi
+                        });
                         // A drag that became a scroll owns the finger: the slider must
                         // not also jump to wherever the scroll happened to end.
-                        if (pressed || ui.is_item_active())
+                        if (pressed || (ui.is_item_active() && across))
                             && !swallow
                             && SETTINGS_DRAG.get().is_none()
                         {
@@ -3354,8 +3402,8 @@ fn settings_page(
         let draw = ui.get_window_draw_list();
         let x = g.x + g.w - 7.0 * dpi;
         fill(&draw, [x, top], [x + 3.0 * dpi, bottom], c.well, 1.0, 2.0 * dpi);
-        let thumb = (view / content * view).max(28.0 * dpi);
-        let at = top + (scroll / max_scroll) * (view - thumb);
+        let thumb = (view / content * view).max(28.0 * dpi).min(view);
+        let at = top + (scroll / max_scroll) * (view - thumb).max(0.0);
         fill(&draw, [x, at], [x + 3.0 * dpi, at + thumb], c.rule, 1.0, 2.0 * dpi);
     }
 }

@@ -1115,10 +1115,15 @@ impl Loading {
                 // Settings travel as one archive in the folder a file manager can
                 // reach: the export writes it there, the import takes the newest one.
                 LauncherEvent::ImportFiles(kind) => {
-                    if !horizon_client::clipboard::pick_file(&kind) {
-                        self.menu.launcher_notice = Some(
-                            "No file picker on this device: drop the file in import/.".to_string(),
-                        );
+                    if horizon_client::clipboard::pick_file(&kind) {
+                        // The copy landed in `import/<kind>`, so the page has to read
+                        // its folders again rather than show what it had.
+                        self.menu.launcher_notice =
+                            Some(format!("Imported into import/{kind}. Reopen the page to see it."));
+                    } else {
+                        self.menu.launcher_notice = Some(format!(
+                            "Nothing to import: put the file in Download, or in import/{kind}."
+                        ));
                     }
                 }
                 LauncherEvent::ExportFiles(kind) => {
@@ -1715,6 +1720,25 @@ impl Loading {
     #[cfg(target_os = "android")]
     fn apply_launcher_option(&mut self, key: &str, value: f32) {
         use horizon_client::options_file::{OptionsFile, V};
+        // GUI scale is the one option the screen itself constrains: the file may ask
+        // for 4 while the framebuffer only fits 2, and the game clamps on load. Writing
+        // the clamped number is what keeps the file and the page saying the same thing
+        // instead of the slider springing back a frame later.
+        let value = if key == "guiScale" {
+            match &self.renderer {
+                Some(r) => {
+                    let max = horizon_client::window::calculate_scale(
+                        [r.config.width as i32, r.config.height as i32],
+                        0,
+                        self.settings.force_unicode,
+                    ) as f32;
+                    value.min(max)
+                }
+                None => value,
+            }
+        } else {
+            value
+        };
         let path = Game::options_path();
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         // The file as the game reads it, so the candidate is the same type the key
@@ -1773,7 +1797,9 @@ impl Loading {
             // thing to create.
             serialized
         };
-        text.push('\n');
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
         if let Err(error) = std::fs::write(&path, &text) {
             log::warn!("launcher: could not write {key}: {error}");
             self.menu.launcher_notice = Some(format!("Could not save {key}"));
