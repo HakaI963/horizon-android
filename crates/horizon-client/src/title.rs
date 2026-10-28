@@ -571,18 +571,23 @@ impl Title {
         }
         folder
     }
-    /// Whether any `.hmod` is installed in the folder the game reads.
+    /// Whether any `.hmod` is installed in a folder the game reads.
     ///
     /// A directory listing, and only asked on the main menu, which is a screen the
     /// player sits on rather than one that redraws while playing. The cost is one
     /// `read_dir` per frame of the title, which is why it is a count and not a parse.
     fn mods_installed(&self) -> bool {
-        let folder = std::env::current_dir()
-            .unwrap_or_default()
-            .join("mods");
-        // A phone keeps them in `import/mods`, the folder the launcher installs into.
-        let import = crate::gfx::import_dir().join("mods");
-        [folder, import].iter().any(|dir| {
+        // `horizon-mods/` beside `options.txt` is the folder `start_mods` scans, which
+        // is `mod_list::DIR`. `mods/` was the old guess and the loader has never read
+        // it; it is kept because a player may still have dropped a file there, and
+        // `import/mods` is what the launcher downloads into.
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let folders = [
+            cwd.join(crate::mod_list::DIR),
+            cwd.join("mods"),
+            crate::gfx::import_dir().join("mods"),
+        ];
+        folders.iter().any(|dir| {
             std::fs::read_dir(dir).is_ok_and(|entries| {
                 entries.flatten().any(|entry| {
                     entry

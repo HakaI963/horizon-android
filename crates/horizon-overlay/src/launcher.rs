@@ -18,9 +18,27 @@
 //! for the platform to act on. That keeps the crate free of the engine, the way
 //! the rest of the overlay is.
 
+use std::cell::Cell;
+
+use std::cell::RefCell;
+use std::time::Instant;
+
 use imgui::{
     Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, TextureId, Ui, WindowFlags,
 };
+
+thread_local! {
+    /// The eased hover glow of each destination row, 0 to 1, one per [`PAGES`] row.
+    /// `sidebar` runs every frame and imgui keeps no state for a fill of its own, so
+    /// the one number that has to survive between frames lives here: a row's highlight
+    /// fades in under the finger and out again when it leaves.
+    static NAV_GLOW: Cell<[f32; NAV_ROWS]> = const { Cell::new([0.0; NAV_ROWS]) };
+
+    /// Whether the platform wants animations. `draw` has the answer and the page
+    /// functions do not, and threading a bool through thirty button calls would put
+    /// the same argument on every line for the one thing they all do alike.
+    static MOTION: Cell<bool> = const { Cell::new(true) };
+}
 
 /// The destinations in the left column, in the order they are drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -74,6 +92,9 @@ pub const PAGES: [LauncherPage; 7] = [
     LauncherPage::Mods,
     LauncherPage::Profile,
 ];
+
+/// How many rows the column has: the one number the hover glow's state is sized by.
+const NAV_ROWS: usize = PAGES.len();
 
 /// One line in a list: an installation, a version, a skin.
 #[derive(Clone, Debug, Default)]
@@ -144,8 +165,13 @@ pub struct LauncherModel {
     pub patches: Vec<LauncherStory>,
     /// The registry's mods, as the platform fetched them.
     pub mods: Vec<LauncherMod>,
-    /// The `.hmod` files already in `import/mods/`, by name.
+    /// The `.hmod` files already installed, by name. Both the launcher's `import/mods/`
+    /// and the game's `horizon-mods/` are listed, so a mod dropped in by hand shows up
+    /// beside one installed from the registry.
     pub installed_mods: Vec<String>,
+    /// The mod id being downloaded right now, if one is. The page names it and keeps
+    /// the install buttons from starting a second download on top of the first.
+    pub installing: Option<String>,
     /// Where the mod registry's website is, so the page can offer it.
     pub mods_site: String,
     /// The last registry fetch failed, so the page says why rather than showing an
@@ -239,6 +265,9 @@ pub enum LauncherEvent {
     ToggleOption(String, bool),
     /// Install this mod from the registry.
     InstallMod(String),
+    /// Delete this installed `.hmod` (a file name from the INSTALLED list) from both
+    /// folders the launcher and the game read.
+    UninstallMod(String),
     /// Fetch the registry again.
     RefreshMods,
     /// Open the mod registry's site in a browser.
@@ -321,6 +350,18 @@ fn rgba(c: u32, a: f32) -> [f32; 4] {
     ]
 }
 
+/// One frame of a hover glow: `current` moving towards `target` at a rate set by the
+/// frame's own time, so the same fade takes the same tenth of a second at any refresh
+/// rate. Exponential rather than linear because a linear ramp visibly stops; this one
+/// arrives.
+fn ease_glow(current: f32, target: f32, dt: f32) -> f32 {
+    if dt <= 0.0 {
+        return current;
+    }
+    let k = 1.0 - (-dt / NAV_GLOW_TAU).exp();
+    (current + (target - current) * k).clamp(0.0, 1.0)
+}
+
 /// The faces the launcher draws with: Geist for body, Pixelify Sans for the
 /// blocky wordmark, headings, navigation and the primary action.
 pub struct Fonts {
@@ -401,8 +442,22 @@ const PLAY_H: f32 = 54.4;
 const DROP_W: f32 = 257.0;
 const DROP_H: f32 = 59.0;
 
+/// How far a page's content slides in when the page changes, and how heavy the veil
+/// over it starts. Both are spent by the time `MOVE` is, so a page change is felt as a
+/// settle rather than as a transition.
+const PAGE_SLIDE: f32 = 8.0;
+const PAGE_VEIL: f32 = 0.55;
+/// How far a raised button's face drops under a finger, in logical pixels.
+const PRESS_DROP: f32 = 2.0;
+/// The hover glow of a column row: the weight of the fill at full strength, and the
+/// time constant of its approach. The glow is a settle rather than a fade — a tenth of
+/// a second is about the shortest that still reads as movement.
+const NAV_GLOW_ALPHA: f32 = 0.18;
+const NAV_GLOW_TAU: f32 = 0.09;
+
 /// The one geometry every element is placed from: the sidebar's edge is where the
 /// page begins, and the page's own gutter is the same number everywhere.
+#[derive(Clone, Copy)]
 struct Grid {
     /// The page's left edge: just past the sidebar.
     x: f32,
@@ -468,7 +523,9 @@ fn panel(draw: &DrawListMut<'_>, c: &Css, min: [f32; 2], max: [f32; 2], face: u3
 }
 
 /// A raised control: the face, a light top edge and a dark lip, which is the whole
-/// trick behind a button that looks pressable on a flat screen.
+/// trick behind a button that looks pressable on a flat screen. `lit` is the light top
+/// edge: a face under a finger drops and loses it, because a bevel on a pressed button
+/// is what makes it read as still raised.
 fn raised_face(
     draw: &DrawListMut<'_>,
     min: [f32; 2],
@@ -478,17 +535,20 @@ fn raised_face(
     lip: u32,
     radius: f32,
     dpi: f32,
+    lit: bool,
 ) {
     fill(draw, min, max, face, 1.0, radius);
     // The bevel is the top two pixels; the lip is the bottom three.
-    fill(
-        draw,
-        [min[0] + radius * 0.5, min[1]],
-        [max[0] - radius * 0.5, min[1] + 2.0 * dpi],
-        bevel,
-        1.0,
-        0.0,
-    );
+    if lit {
+        fill(
+            draw,
+            [min[0] + radius * 0.5, min[1]],
+            [max[0] - radius * 0.5, min[1] + 2.0 * dpi],
+            bevel,
+            1.0,
+            0.0,
+        );
+    }
     fill(
         draw,
         [min[0] + radius * 0.5, max[1] - 3.0 * dpi],
@@ -497,6 +557,13 @@ fn raised_face(
         1.0,
         0.0,
     );
+}
+
+/// A colour at 78% of its own brightness, which is the face of a button under a
+/// finger: darker without being a different colour, so a green Play is still green.
+fn darker(c: u32) -> u32 {
+    let scale = |shift: u32| (((c >> shift) & 0xff) as f32 * 0.78) as u32;
+    (scale(16) << 16) | (scale(8) << 8) | scale(0)
 }
 
 /// The width of `text` in a given face, without leaving that face pushed.
@@ -576,10 +643,12 @@ impl<'a> Sink<'a> {
 /// The whole launcher, edge to edge.
 ///
 /// `opening` is `Some(t)` while the opening animation runs, with `t` in 0..1; it is
-/// `None` once spent. `panorama` says the engine has already drawn the title's cube
-/// map behind this window, so the front page must leave that half of the glass alone.
-/// Navigation is applied to `model` in place, so the destination that was pressed and
-/// the page it switched to are drawn in the same pass.
+/// `None` once spent. `fade` is how far a page change has got, 0 to 1: the page's
+/// content slides and fades in with it while the column stays put, because the column
+/// is the thing the finger is still on. `panorama` says the engine has already drawn
+/// the title's cube map behind this window, so the front page must leave that half of
+/// the glass alone. Navigation is applied to `model` in place, so the destination that
+/// was pressed and the page it switched to are drawn in the same pass.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &Ui,
@@ -589,14 +658,28 @@ pub fn draw(
     width: f32,
     height: f32,
     opening: Option<f32>,
-    /// A Play transition in progress, 0 to 1: the page zooms in, the wordmark fades,
-    /// and the last frame is the world's own loading screen.
+    // A Play transition in progress, 0 to 1: the page zooms in, the wordmark fades,
+    // and the last frame is the world's own loading screen.
     zoom: Option<f32>,
+    // How far a page change has got, 0 to 1, as the overlay timed it.
+    fade: f32,
+    // The system's "remove animations" setting. Everything time-based in here is
+    // skipped when it is set: the page slide and veil, the button press, the hover
+    // glow. The overlay has already done the same for the opening and the zoom.
+    reduce_motion: bool,
     panorama: bool,
     skin: Option<TextureId>,
     out: &mut Vec<LauncherEvent>,
 ) {
     let c = &THEME;
+    // The buttons and the column are called from here and cannot see this argument, so
+    // it goes in the one place they can read: the flag the press and the glow consult.
+    MOTION.with(|m| m.set(!reduce_motion));
+    if reduce_motion {
+        // Nothing is arriving and nothing is held: clear the eased values so the first
+        // animated frame after the setting goes back to off starts from rest.
+        NAV_GLOW.with(|g| g.set([0.0; NAV_ROWS]));
+    }
     // The opening owns the glass until it is spent. Its last frame is the first one
     // where a finger is allowed to land on anything. A Play transition locks it out
     // too: the world is opening behind the zoom, and a second tap has nowhere to go.
@@ -608,6 +691,28 @@ pub fn draw(
     let rise = match opening {
         Some(t) => horizon_theme::RISE * (1.0 - horizon_theme::ease_out_cubic(t)) * dpi,
         None => 0.0,
+    };
+    // The page change, eased here rather than in the overlay: the overlay knows the
+    // time, this knows the curve the rest of the design system moves on. `MOVE` is the
+    // theme's own curve for selection and page changes.
+    let page_ease = if reduce_motion {
+        1.0
+    } else {
+        horizon_theme::MOVE.ease(fade)
+    };
+    let slide = if page_ease < 1.0 {
+        PAGE_SLIDE * dpi * (1.0 - page_ease)
+    } else {
+        0.0
+    };
+    // The content is drawn a little to the right and arrives at its place. The column
+    // is not: it was already there, and moving it would undo the highlight the finger
+    // is looking at. The width comes in by the same amount, so the page's right gutter
+    // — where Play and the version dropdown are pinned — does not move at all.
+    let page_g = Grid {
+        x: g.x + slide,
+        w: g.w - slide,
+        ..g
     };
     let _ = ui
         .window("##launcher")
@@ -662,17 +767,17 @@ pub fn draw(
                     fonts,
                     c,
                     dpi,
-                    &g,
+                    &page_g,
                     height,
                     rise,
                     over_panorama,
                     &mut sink,
                 ),
                 LauncherPage::Installations => {
-                    installations_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    installations_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
                 LauncherPage::Skins => {
-                    skins_page(ui, model, fonts, c, dpi, &g, height, rise, skin, &mut sink)
+                    skins_page(ui, model, fonts, c, dpi, &page_g, height, rise, skin, &mut sink)
                 }
                 LauncherPage::PatchNotes => {
                     stories_page(
@@ -683,7 +788,7 @@ pub fn draw(
                         fonts,
                         c,
                         dpi,
-                        &g,
+                        &page_g,
                         height,
                         rise,
                     )
@@ -696,25 +801,39 @@ pub fn draw(
                     fonts,
                     c,
                     dpi,
-                    &g,
+                    &page_g,
                     height,
                     rise,
                 ),
                 LauncherPage::Mods => {
-                    mods_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    mods_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
                 LauncherPage::Profile => {
-                    profile_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    profile_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
                 LauncherPage::Settings => {
-                    settings_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    settings_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
                 LauncherPage::Files => {
-                    files_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    files_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
                 LauncherPage::Multiplayer => {
-                    multiplayer_page(ui, model, fonts, c, dpi, &g, height, rise, &mut sink)
+                    multiplayer_page(ui, model, fonts, c, dpi, &page_g, height, rise, &mut sink)
                 }
+            }
+            // The other half of a page change: the content fades up out of the page's
+            // own colour. Only the page's region, so the column the finger is on does
+            // not dim under it.
+            if page_ease < 1.0 {
+                let draw = ui.get_window_draw_list();
+                fill(
+                    &draw,
+                    [g.x, 0.0],
+                    [width, height],
+                    c.page,
+                    (1.0 - page_ease) * PAGE_VEIL,
+                    0.0,
+                );
             }
             if let Some(t) = opening {
                 // The reliable half of the entrance: the interface is already drawn,
@@ -740,6 +859,12 @@ pub fn draw(
 /// is made of what can move — a vignette that closes in, the wordmark growing, and the
 /// scrim deepening. That reads as a push into the world without needing a second pass
 /// over the engine's cube map.
+///
+/// Everything here is one number. `horizon_theme` has no `ease_in_out_cubic`, so the
+/// zoom moves on the shared `ease_out_cubic`, and the vignette and the veil are both
+/// read off that same eased value: two curves on two layers is what makes a transition
+/// look like two transitions. The vignette also starts at nothing — it used to open at
+/// 55% dark, which was a step on the very first frame rather than the start of a push.
 fn zoom_out(
     ui: &Ui,
     fonts: &Fonts,
@@ -759,9 +884,10 @@ fn zoom_out(
         fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
     }
     // A closing vignette: four quads whose inner edges march inwards, which is what a
-    // camera pushing into a scene does to its edges.
+    // camera pushing into a scene does to its edges. The bands' own weight grows with
+    // the same ease, so the first frame is the page and not a dark frame.
     let inset = (0.5 - 0.5 * ease) * height * 0.55;
-    let dark = 0.55 + 0.45 * ease;
+    let dark = ease;
     draw.add_rect_filled_multicolor(
         [0.0, 0.0],
         [width, inset.max(1.0)],
@@ -799,7 +925,7 @@ fn zoom_out(
         draw.add_text([cx, cy], rgba(0xffffff, alpha), "MINECRAFT");
     }
     // The last stretch is nearly opaque, so the loading screen behind it is a fade and
-    // not a cut.
+    // not a cut. Same `ease` as the vignette: one curve, two layers.
     if ease > 0.55 {
         let veil = ((ease - 0.55) / 0.45).powf(1.4);
         fill(&draw, [0.0, 0.0], [width, height], c.page, veil * 0.92, 0.0);
@@ -931,6 +1057,9 @@ fn sidebar(
     let row_h = NAV_H * dpi;
     let gap = NAV_GAP * dpi;
     let mut y = fy + face + 30.0 * dpi;
+    // The glow eases by time rather than by frame, so it takes the same tenth of a
+    // second whether the phone is at 60 Hz or 120.
+    let dt = ui.io().delta_time;
     for (i, page) in PAGES.iter().enumerate() {
         let page = *page;
         let selected = page == model.page
@@ -943,6 +1072,10 @@ fn sidebar(
         if y + row_h > height + rise {
             break;
         }
+        // This row's glow as the last frame left it. It is drawn from the old value and
+        // updated after the button below has said whether the finger is on it, which
+        // is the one frame of lag that makes a hover fade rather than snap.
+        let glow = NAV_GLOW.with(|g| g.get()[i]);
         {
             let draw = ui.get_window_draw_list();
             if selected {
@@ -950,6 +1083,18 @@ fn sidebar(
                 // filled green bar: the label stays white and the block is the mark.
                 fill(&draw, [x, y], [x + w, y + row_h], c.raised, 1.0, 3.0 * dpi);
                 stroke(&draw, [x, y], [x + w, y + row_h], c.accent, 1.0, 3.0 * dpi, 2.0);
+            } else if glow > 0.002 {
+                // A hover on a row that is not the current page: the same raised face as
+                // the selection, at a fraction of its weight, so a finger resting on the
+                // column can see where it would land.
+                fill(
+                    &draw,
+                    [x, y],
+                    [x + w, y + row_h],
+                    c.raised,
+                    glow * NAV_GLOW_ALPHA,
+                    3.0 * dpi,
+                );
             }
             let icon = 22.0 * dpi;
             nav_icon(&draw, page, x + 14.0 * dpi, y + row_h / 2.0, icon, c, selected);
@@ -963,7 +1108,17 @@ fn sidebar(
         }
         ui.set_cursor_screen_pos([x, y]);
         let id = format!("##nav{i}");
-        if ui.invisible_button(id.as_str(), [w, row_h]) {
+        let clicked = ui.invisible_button(id.as_str(), [w, row_h]);
+        // The button has just been laid out, so this is the row the pointer is on. The
+        // glow follows it: up while the finger is there or held down, down when it
+        // leaves, and never at all when the system has animations off.
+        let hot = MOTION.with(|m| m.get()) && (ui.is_item_hovered() || ui.is_item_active());
+        NAV_GLOW.with(|g| {
+            let mut all = g.get();
+            all[i] = ease_glow(glow, if hot { 1.0 } else { 0.0 }, dt);
+            g.set(all);
+        });
+        if clicked {
             if sink.live() {
                 // Applied here, not on a round trip to the engine: the loading
                 // surface redraws on demand, so the page the finger landed on has to
@@ -1292,6 +1447,11 @@ fn play_page(
 
 /// A raised button: the face, a light top edge, a dark lip, and the pixel face
 /// centred on it. Returns whether it was released under the finger this frame.
+///
+/// The widget is laid out first and painted second. That order is the whole point: a
+/// face that drops under a finger cannot be drawn before the widget that knows the
+/// finger is there, and `invisible_button` is what tells imgui the rectangle exists.
+/// The click it returns is the click every caller already acts on.
 #[allow(clippy::too_many_arguments)]
 fn raised_button(
     ui: &Ui,
@@ -1307,19 +1467,40 @@ fn raised_button(
     lip: u32,
     ink: u32,
 ) -> bool {
-    let draw = ui.get_window_draw_list();
-    raised_face(&draw, [x, y], [x + w, y + h], face, c.bevel, lip, 4.0 * dpi, dpi);
-    {
-        let _f = ui.push_font(fonts.pixel);
-        let [tw, th] = ui.calc_text_size(label);
-        draw.add_text(
-            [x + (w - tw) / 2.0, y + (h - th) / 2.0 - 1.0 * dpi],
-            rgba(ink, 1.0),
-            label,
-        );
-    }
     ui.set_cursor_screen_pos([x, y]);
-    ui.invisible_button(label, [w, h])
+    let clicked = ui.invisible_button(label, [w, h]);
+    // Under a finger the face sits a couple of pixels lower and loses its bevel: that
+    // is a press, where a still face is only a hover. With animations off the press is
+    // a tap that lands between frames, so there would be nothing to see anyway.
+    let down = MOTION.with(|m| m.get()) && ui.is_item_active();
+    let drop = if down { PRESS_DROP * dpi } else { 0.0 };
+    let top = y + drop;
+    {
+        // Scoped: `raised_face` asks for the same draw list, and imgui allows one live
+        // borrow of it per window.
+        let draw = ui.get_window_draw_list();
+        raised_face(
+            &draw,
+            [x, top],
+            [x + w, top + h],
+            if down { darker(face) } else { face },
+            c.bevel,
+            lip,
+            4.0 * dpi,
+            dpi,
+            !down,
+        );
+        {
+            let _f = ui.push_font(fonts.pixel);
+            let [tw, th] = ui.calc_text_size(label);
+            draw.add_text(
+                [x + (w - tw) / 2.0, top + (h - th) / 2.0 - 1.0 * dpi],
+                rgba(ink, 1.0),
+                label,
+            );
+        }
+    }
+    clicked
 }
 
 /// The page's heading, and the y its content starts at. Every page begins on the
@@ -2280,10 +2461,15 @@ fn mods_page(
     let mut y = heading(ui, fonts, c, dpi, g, "MODS", rise);
     // The registry's own site, and a way to fetch it again: the list is a snapshot of
     // what the registry said when the page opened, and a mod published since then is
-    // only visible after a refresh.
+    // only visible after a refresh. A failed fetch keeps the same button, which is the
+    // retry.
     let bw = 150.0 * dpi;
     let bh = 36.0 * dpi;
     let mut bx = g.x + g.pad;
+    // Refresh is also the retry: it drops the registry and the last notice, so a fetch
+    // that failed is asked again and a list that went stale is rebuilt. It is not the
+    // retry for an install — that is the row's own Install button, which is still there
+    // because the file never landed.
     if raised_button(ui, fonts, c, dpi, bx, y - 10.0 * dpi, bw, bh, "Refresh", c.button, c.bevel, c.ink) {
         sink.push(LauncherEvent::RefreshMods);
     }
@@ -2296,11 +2482,94 @@ fn mods_page(
         let _f = ui.push_font(fonts.small);
         draw.add_text(
             [bx + bw + 56.0 * dpi, y - 2.0 * dpi],
+            // An install that failed is drawn in the same red as a fetch that did: both
+            // are "this did not work", and only the wording differs.
             rgba(if model.mods_failed { c.danger } else { c.muted }, 1.0),
             fit(ui, &model.status, g.x + g.w - g.pad - bx - bw - 64.0 * dpi),
         );
     }
     y += 40.0 * dpi;
+
+    // INSTALLED, above the registry: what is on the phone is the first thing a player
+    // wants to see on a page called Mods, and the only rows that can be removed. The
+    // registry below is what can be added.
+    if !model.installed_mods.is_empty() {
+        {
+            let draw = ui.get_window_draw_list();
+            let _f = ui.push_font(fonts.small);
+            draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), "INSTALLED");
+        }
+        y += 22.0 * dpi;
+        let row_h = 46.0 * dpi;
+        for name in &model.installed_mods {
+            if y + row_h > height + rise {
+                break;
+            }
+            let x = g.x + g.pad;
+            let w = g.w - 2.0 * g.pad;
+            // Scoped: `raised_button` asks for its own draw list at the end of the row.
+            {
+                let draw = ui.get_window_draw_list();
+                panel(&draw, c, [x, y], [x + w, y + row_h], c.panel, 3.0 * dpi);
+                fill(
+                    &draw,
+                    [x + 14.0 * dpi, y + 14.0 * dpi],
+                    [x + 34.0 * dpi, y + row_h - 14.0 * dpi],
+                    c.well,
+                    1.0,
+                    2.0 * dpi,
+                );
+                fill(
+                    &draw,
+                    [x + 19.0 * dpi, y + 20.0 * dpi],
+                    [x + 29.0 * dpi, y + 26.0 * dpi],
+                    c.accent,
+                    1.0,
+                    1.0,
+                );
+            }
+            let btn_w = 104.0 * dpi;
+            let text_x = x + 46.0 * dpi;
+            let text_w = (x + w - 16.0 * dpi - btn_w - 12.0 * dpi - text_x).max(0.0);
+            {
+                let draw = ui.get_window_draw_list();
+                let _f = ui.push_font(fonts.small);
+                draw.add_text(
+                    [text_x, y + (row_h - 16.0 * dpi) / 2.0],
+                    rgba(c.ink, 1.0),
+                    fit(ui, name, text_w),
+                );
+            }
+            // Uninstall stays live during a download: it deletes a different file from
+            // the one the worker is writing (the download goes to a `.part` first), so
+            // there is no state to protect here.
+            if raised_button(
+                ui,
+                fonts,
+                c,
+                dpi,
+                x + w - 16.0 * dpi - btn_w,
+                y + (row_h - 32.0 * dpi) / 2.0,
+                btn_w,
+                32.0 * dpi,
+                "Uninstall",
+                c.danger,
+                c.bevel,
+                c.on_accent,
+            ) {
+                sink.push(LauncherEvent::UninstallMod(name.clone()));
+            }
+            y += row_h + 6.0 * dpi;
+        }
+        y += 12.0 * dpi;
+    }
+
+    {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text([g.x + g.pad, y], rgba(c.muted, 1.0), "REGISTRY");
+    }
+    y += 22.0 * dpi;
 
     if model.mods_loading {
         // The fetch runs on a worker; this frame has nothing to list yet. Saying so is
@@ -2342,6 +2611,7 @@ fn mods_page(
         let x = g.x + g.pad;
         let w = g.w - 2.0 * g.pad;
         let installed = model.installed_mods.iter().any(|name| name == &m.file);
+        let installing = model.installing.as_deref() == Some(m.id.as_str());
         // Scoped: `raised_button` asks for its own draw list at the end of the row.
         {
             let draw = ui.get_window_draw_list();
@@ -2369,9 +2639,18 @@ fn mods_page(
                 fit(ui, &format!("{} · {}", m.version, m.summary), text_w),
             );
         }
-        let label = if installed { "Installed" } else { "Install" };
-        let face = if installed { c.button } else { c.accent };
-        let ink = if installed { c.muted } else { c.on_accent };
+        // A download in flight says so on its own row, and the others stay pressable:
+        // one at a time is enforced where the event is handled, and the label is what
+        // tells the player why a second tap did nothing.
+        let label = if installed {
+            "Installed"
+        } else if installing {
+            "Installing..."
+        } else {
+            "Install"
+        };
+        let face = if installed || installing { c.button } else { c.accent };
+        let ink = if installed || installing { c.muted } else { c.on_accent };
         if raised_button(
             ui,
             fonts,
@@ -2386,6 +2665,7 @@ fn mods_page(
             c.bevel,
             ink,
         ) && !installed
+            && !installing
         {
             sink.push(LauncherEvent::InstallMod(m.id.clone()));
         }

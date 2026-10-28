@@ -51,6 +51,11 @@ pub(super) struct StartupMenu {
     /// What the last export or import said, shown under the settings page.
     #[cfg(target_os = "android")]
     launcher_notice: Option<String>,
+    /// Why the last mod install or uninstall failed. Kept apart from `launcher_notice`
+    /// so the Mods page can draw it in the danger colour and so the error cannot leak
+    /// onto another page's notice.
+    #[cfg(target_os = "android")]
+    mod_error: Option<String>,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
     root: PathBuf,
@@ -96,6 +101,10 @@ impl StartupMenu {
         #[cfg(target_os = "android")]
         {
             menu.launcher_page = Some(LauncherPage::Play);
+            // A launcher before this one wrote downloads only into `import/mods/`, which
+            // the game does not read. Copying them once here is what makes those mods
+            // load without asking the player to install them again.
+            horizon_client::mod_registry::adopt(&horizon_client::gfx::import_dir());
         }
         if let Some(error) = pack_error {
             menu.options.open_at(false, Page::Packs);
@@ -574,6 +583,8 @@ impl Loading {
         self.handle_launcher_events(event_loop);
         // A Microsoft sign-in runs on a worker; its answer arrives here.
         self.poll_sign_in();
+        // So does a mod install: the download must not hold a frame.
+        self.poll_install();
         if self.menu.launcher_page.is_none() {
             // A Play transition keeps the launcher on the glass until the zoom has
             // played out: the world is loading behind it, and clearing the page at the
@@ -705,18 +716,45 @@ impl Loading {
             // The notice is read before the registry is borrowed: `mod_registry` takes
             // `&mut self`, so nothing else on `self` can be touched while it is held.
             let notice = self.menu.launcher_notice.clone();
+            let error = self.menu.mod_error.clone();
+            let install_failed = error.is_some();
+            // What an install in flight is doing: the page names the mod rather than
+            // showing a list of buttons that do nothing for the length of a download.
+            // Cloned before the registry borrow below, which holds `&mut self`.
+            let installing = self.installing.clone();
             let registry = self.mod_registry();
-            // A fetch failure is the more urgent line: the install notice describes
-            // something that already worked, and a registry that could not be reached
-            // is why the list is empty. So the error wins, then the notice, then the
-            // count.
+            // An install in flight is what is happening now, so it wins. After that the
+            // two errors come before the notice: a fetch that failed explains an empty
+            // list, and an install that failed is the thing the player just tried to do,
+            // so neither should be hidden behind a line about something that worked.
             model.mods_loading = registry.is_none();
-            model.status = match registry {
-                None => String::new(),
-                Some(registry) if registry.failed => registry.status.clone(),
-                Some(registry) => notice.unwrap_or_else(|| registry.status.clone()),
+            model.status = match &installing {
+                // The id is what the event carried; the name is what the player
+                // recognises, and the registry is already in hand to translate it.
+                Some(id) => format!(
+                    "Installing {}...",
+                    registry
+                        .and_then(|registry| registry.entries.iter().find(|e| &e.id == id))
+                        .map_or_else(|| id.clone(), |entry| entry.name.clone())
+                ),
+                None => error
+                    .or_else(|| {
+                        registry
+                            .filter(|registry| registry.failed)
+                            .map(|registry| registry.status.clone())
+                    })
+                    .or(notice)
+                    .unwrap_or_else(|| {
+                        registry
+                            .map(|registry| registry.status.clone())
+                            .unwrap_or_default()
+                    }),
             };
-            model.mods_failed = registry.is_some_and(|registry| registry.failed);
+            // An install failure is as red as a fetch failure, and stays red until the
+            // next thing that goes right replaces the notice.
+            model.mods_failed = registry.is_some_and(|registry| registry.failed)
+                || (installing.is_none() && install_failed);
+            model.installing = installing;
             model.installed_mods = horizon_client::mod_registry::installed(&import);
             model.mods_site = MODS_SITE.to_string();
             model.mods = registry
@@ -908,34 +946,99 @@ impl Loading {
                     self.mod_registry = None;
                     self.mod_registry_rx = None;
                     self.menu.launcher_notice = None;
+                    self.menu.mod_error = None;
                 }
                 LauncherEvent::InstallMod(id) => {
-                    let import = horizon_client::gfx::import_dir();
+                    // The download is a network round trip and a hash over a file: on the
+                    // UI thread that is a frozen frame for as long as GitHub takes, which
+                    // on a phone is long enough for the system to call it an ANR. It goes
+                    // to a worker; `poll_install` picks the answer up next frame.
+                    if self.installing.is_some() {
+                        // One at a time: two downloads writing the same partial file is
+                        // a hash failure waiting to happen.
+                        continue;
+                    }
                     // Cloned out before the install: `mod_registry` borrows `self`, and
-                    // the entry has to outlive that borrow to reach the download.
+                    // the entry has to outlive that borrow to reach the worker.
                     let entry = self
                         .mod_registry()
                         .and_then(|registry| registry.entries.iter().find(|e| e.id == id).cloned());
                     // A miss means the list was refreshed between the tap and here, which
                     // is not an error worth dropping the rest of this frame's events for.
-                    if let Some(entry) = entry {
-                        let notice = match horizon_client::mod_registry::install(&import, &entry) {
-                            // The game reads `import/mods/` when a world opens, so a mod
-                            // installed from here is live on the next world, not this one.
-                            Ok(path) => format!(
-                                "Installed {}. It loads with the next world.",
-                                path.file_name()
-                                    .map(|name| name.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| id.clone())
-                            ),
-                            Err(error) => format!("Install failed: {error}"),
-                        };
-                        self.menu.launcher_notice = Some(notice);
-                        // The list is stale now: it says "Install" where the file is
-                        // already there. Dropping it re-fetches on the next frame, and the
-                        // notice above it survives because only the registry is cleared.
-                        self.mod_registry = None;
-                        self.mod_registry_rx = None;
+                    let Some(entry) = entry else {
+                        continue;
+                    };
+                    let import = horizon_client::gfx::import_dir();
+                    // The id, not the name: the page looks the entry up to draw the
+                    // name, and the row compares ids to show which one is in flight.
+                    let label = entry.id.clone();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let worker_entry = entry.clone();
+                    // A failure to spawn falls back to the download on this thread, which
+                    // is the old behaviour and still lands the file.
+                    match std::thread::Builder::new()
+                        .name("horizon-mod-install".into())
+                        .spawn(move || {
+                            let _ = tx.send(
+                                horizon_client::mod_registry::install(&import, &worker_entry).map(
+                                    |path| {
+                                        path.file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                            .unwrap_or_default()
+                                    },
+                                ),
+                            );
+                        }) {
+                        Ok(_) => {
+                            self.installing = Some(label);
+                            self.install_rx = Some(rx);
+                            self.menu.launcher_notice = None;
+                            self.menu.mod_error = None;
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "launcher: no mod install worker ({error}); downloading inline"
+                            );
+                            match horizon_client::mod_registry::install(
+                                &horizon_client::gfx::import_dir(),
+                                &entry,
+                            ) {
+                                Ok(path) => {
+                                    self.menu.mod_error = None;
+                                    self.menu.launcher_notice = Some(format!(
+                                        "Installed {}. Turn it on in Options > Mods.",
+                                        path.file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                            .unwrap_or_else(|| id.clone())
+                                    ));
+                                }
+                                Err(error) => {
+                                    self.menu.launcher_notice = None;
+                                    self.menu.mod_error = Some(format!("Install failed: {error}"));
+                                }
+                            }
+                        }
+                    }
+                }
+                LauncherEvent::UninstallMod(name) => {
+                    // Deleting is local and instant: no worker, and no reason to make the
+                    // player wait a frame to see the row go.
+                    match horizon_client::mod_registry::uninstall(
+                        &horizon_client::gfx::import_dir(),
+                        &name,
+                    ) {
+                        Ok(0) => {
+                            self.menu.launcher_notice = Some(format!("{name} was already gone"));
+                            self.menu.mod_error = None;
+                        }
+                        Ok(_) => {
+                            self.menu.launcher_notice = Some(format!("Removed {name}"));
+                            self.menu.mod_error = None;
+                        }
+                        Err(error) => {
+                            self.menu.launcher_notice = None;
+                            self.menu.mod_error = Some(format!("Could not remove {name}: {error}"));
+                        }
                     }
                 }
                 LauncherEvent::OpenModsSite => {
@@ -1129,6 +1232,49 @@ impl Loading {
             .collect();
         horizon_client::msa::write_public(&import, &pairs);
         self.menu.launcher_notice = Some(format!("Removed {}", account.name));
+    }
+
+    /// Pick up a mod install that was started on a worker.
+    ///
+    /// The download and its SHA-256 check take as long as the network takes; the page
+    /// shows "Installing <name>..." from `self.installing` while this is pending and
+    /// this is the only place that clears it. A failure goes into `mod_error` so the
+    /// status line draws it in the danger colour, and the registry is dropped either
+    /// way so the rows say "Installed" (or offer the install again).
+    #[cfg(target_os = "android")]
+    fn poll_install(&mut self) {
+        let Some(rx) = &self.install_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the install worker stopped".to_string())
+            }
+        };
+        self.install_rx = None;
+        let label = self.installing.take().unwrap_or_default();
+        match result {
+            Ok(file) => {
+                let name = if file.is_empty() { label } else { file };
+                // Mods start off (`mod_list`): the install puts the file where the game
+                // reads it, and turning it on is the deliberate step after that.
+                self.menu.launcher_notice = Some(format!(
+                    "Installed {name}. Turn it on in Options > Mods."
+                ));
+                self.menu.mod_error = None;
+            }
+            Err(error) => {
+                self.menu.launcher_notice = None;
+                self.menu.mod_error = Some(format!("Install failed: {error}"));
+            }
+        }
+        // The list is stale now: it says "Install" where the file is already there, or
+        // still offers the mod that just failed. Dropping it re-fetches next frame; the
+        // notice above it survives because only the registry is cleared.
+        self.mod_registry = None;
+        self.mod_registry_rx = None;
     }
 
     /// Start a Microsoft sign-in on a worker, and show the code to type.
@@ -2118,6 +2264,26 @@ mod tests {
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
             options: None,
+            #[cfg(target_os = "android")]
+            mod_registry: None,
+            #[cfg(target_os = "android")]
+            mod_registry_rx: None,
+            #[cfg(target_os = "android")]
+            installing: None,
+            #[cfg(target_os = "android")]
+            install_rx: None,
+            #[cfg(target_os = "android")]
+            launcher_skin: None,
+            #[cfg(target_os = "android")]
+            uploaded_skin: None,
+            #[cfg(target_os = "android")]
+            hosting: None,
+            #[cfg(target_os = "android")]
+            sign_in: None,
+            #[cfg(target_os = "android")]
+            sign_in_rx: None,
+            #[cfg(target_os = "android")]
+            zoom_until: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,
             started: Instant::now(),

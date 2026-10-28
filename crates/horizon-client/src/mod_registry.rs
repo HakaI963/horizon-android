@@ -10,7 +10,9 @@
 //! publishes `.hmod` files with a size and a SHA-256, the file is checked against both
 //! before it is renamed into `import/mods/`, and a file the registry has taken down is
 //! refused even if it is asked for by name. The launcher never runs a mod — it puts it
-//! where the game will find it.
+//! where the game will find it, which is two folders: `import/mods/` for the launcher
+//! and the player's file manager, and `horizon-mods/` beside `options.txt` for the
+//! game's loader.
 //!
 //! The registry's own documents are TOML per project in the repository and one
 //! `index.json` built by its CI; only the built index is read here.
@@ -216,25 +218,134 @@ fn parse_entry(text: &str) -> Result<Option<Entry>, String> {
     }))
 }
 
-/// Where installed mods go: `import/mods/`, the folder the game reads.
+/// Where the launcher keeps a downloaded mod: `import/mods/`, the folder a file
+/// manager on the phone can reach.
+///
+/// This is *not* where the game loads from. `start_mods` and `content_root` scan
+/// `<working directory>/horizon-mods/` (`mod_list::DIR`) and nothing else, so a file
+/// that only reaches this folder is one the launcher can see and the game cannot.
+/// [`install`] therefore copies every download into [`game_mods_dir`] as well.
 pub fn mods_dir(import: &Path) -> PathBuf {
     import.join("mods")
 }
 
-/// The mods already on disk, by file name.
-pub fn installed(import: &Path) -> Vec<String> {
-    let dir = mods_dir(import);
+/// The folder the game itself loads mods from: `horizon-mods/` beside `options.txt`
+/// in the working directory, which is what `mod_list::DIR` names and what
+/// `Game::start_mods` scans.
+pub fn game_mods_dir() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(crate::mod_list::DIR)
+}
+
+/// The `.hmod` files in one folder, by file name.
+fn hmods(dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = entries
+    entries
         .flatten()
         .filter(|entry| entry.path().is_file())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".hmod"))
-        .collect();
+        .collect()
+}
+
+/// The mods already on disk, by file name.
+///
+/// Both folders are listed, because either one can hold a mod: the launcher writes
+/// `import/mods/`, the game reads `horizon-mods/`, and a player may drop a file into
+/// either by hand. One name appears once.
+pub fn installed(import: &Path) -> Vec<String> {
+    let mut names = hmods(&mods_dir(import));
+    names.extend(hmods(&game_mods_dir()));
     names.sort();
+    names.dedup();
     names
+}
+
+/// Delete a mod from both folders it can live in. Returns how many files went.
+///
+/// The argument is a file name from a page, not a path: refusing separators and `..`
+/// is what stops a crafted event from deleting something outside the mod folders.
+pub fn uninstall(import: &Path, name: &str) -> Result<usize, String> {
+    // A bare file name, and nothing that could climb out of the folder it is joined
+    // to. `install` builds names the same way, so anything else did not come from here.
+    let plain = !name.is_empty()
+        && name.ends_with(".hmod")
+        && !name.starts_with('.')
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..");
+    if !plain {
+        return Err(format!("not a mod file name: {name}"));
+    }
+    let mut removed = 0;
+    let mut errors: Vec<String> = Vec::new();
+    for dir in [mods_dir(import), game_mods_dir()] {
+        let path = dir.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if errors.is_empty() {
+        Ok(removed)
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Put a downloaded file where the game actually reads it.
+///
+/// A copy rather than a link: `import/` is shared storage that can be unmounted, and
+/// a link into it that went dangling would silently take the mod away from the game.
+fn publish(source: &Path, name: &str) -> Result<PathBuf, String> {
+    let dir = game_mods_dir();
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("could not make {}: {error}", dir.display()))?;
+    let destination = dir.join(name);
+    fs::copy(source, &destination).map_err(|error| {
+        format!(
+            "downloaded to {} but could not put it in the game's folder {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(destination)
+}
+
+/// Copy any mod that is in the launcher's folder but not the game's into the game's.
+///
+/// Mods installed before `install` learned to publish live only in `import/mods/`, and
+/// the game has never looked there. This is what makes them load without asking the
+/// player to install them a second time; it only copies when the destination is
+/// missing, so it costs one `read_dir` and a `stat` per file on a page that is already
+/// listing both folders.
+pub fn adopt(import: &Path) -> usize {
+    let source_dir = mods_dir(import);
+    let destination_dir = game_mods_dir();
+    if source_dir == destination_dir {
+        return 0;
+    }
+    let mut copied = 0;
+    for name in hmods(&source_dir) {
+        let destination = destination_dir.join(&name);
+        if destination.exists() {
+            continue;
+        }
+        if publish(&source_dir.join(&name), &name).is_ok() {
+            copied += 1;
+        }
+    }
+    if copied > 0 {
+        log::info!(
+            "Horizon: copied {copied} mod(s) into {}",
+            destination_dir.display()
+        );
+    }
+    copied
 }
 
 /// Download one mod, check it against the registry's size and SHA-256, and move it
@@ -304,6 +415,9 @@ pub fn install(import: &Path, entry: &Entry) -> Result<PathBuf, String> {
     }
     fs::rename(&partial, &destination)
         .map_err(|error| format!("{}: {error}", destination.display()))?;
+    // The download is in the launcher's folder; the game reads another. Both get the
+    // file, or an install that reported success would load nothing.
+    publish(&destination, name)?;
     Ok(destination)
 }
 

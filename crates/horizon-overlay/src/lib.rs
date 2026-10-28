@@ -80,6 +80,16 @@ pub struct Overlay {
     launcher_since: Option<Instant>,
     /// When Play was pressed, for the zoom into the world.
     launcher_zoom_since: Option<Instant>,
+    /// When the launcher's page last changed, and which page it changed to. A tab tap
+    /// is a page arriving rather than a page being swapped, so the content slides in
+    /// over a fifth of a second; `None` means the page on the glass has already
+    /// arrived and the ordinary draw costs nothing.
+    page_since: Option<(LauncherPage, Instant)>,
+    /// The platform reports the system's "remove animations" setting. Every
+    /// time-based effect here — the opening, the Play zoom, the page slide and the
+    /// column's hover glow — is skipped when this is set, so the interface is simply
+    /// there rather than arriving.
+    pub reduce_motion: bool,
     /// What to show, gathered by the platform from the engine each frame.
     launcher_model: LauncherModel,
     /// Which page the launcher is on. This is the authority, not the model: the sidebar
@@ -151,6 +161,8 @@ impl Overlay {
             launcher: false,
             launcher_since: None,
             launcher_zoom_since: None,
+            page_since: None,
+            reduce_motion: false,
             launcher_model: LauncherModel::default(),
             launcher_page: LauncherPage::Play,
             launcher_events: Vec::new(),
@@ -370,6 +382,7 @@ impl Overlay {
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
         let zoom = self.launcher_zoom();
+        let fade = self.page_fade();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -380,6 +393,8 @@ impl Overlay {
             launcher,
             launcher_model,
             launcher_page,
+            page_since,
+            reduce_motion,
             launcher_events,
             launcher_fonts,
             skin_texture,
@@ -453,14 +468,20 @@ impl Overlay {
                         height,
                         opening,
                         zoom,
+                        fade,
+                        *reduce_motion,
                         *panorama,
                         *skin_texture,
                         launcher_events,
                     );
                     // The sidebar applies a tab tap to the model inside `draw`, so the
                     // page the glass is on is read back here: that is what makes the
-                    // tap stick rather than being undone by the next model report.
-                    *launcher_page = launcher_model.page;
+                    // tap stick rather than being undone by the next model report. A
+                    // change made there is a page arriving, so it starts the slide.
+                    if launcher_model.page != *launcher_page {
+                        *launcher_page = launcher_model.page;
+                        *page_since = Some((launcher_model.page, Instant::now()));
+                    }
                 }
             } else {
                 hud_buttons(
@@ -719,6 +740,9 @@ impl Overlay {
             self.pointer = Pointer::idle();
             self.pending_release = false;
             self.launcher_since = Some(Instant::now());
+            // The page the launcher comes back on has been there all along as far as
+            // the player is concerned, so it does not slide in under the splash.
+            self.page_since = None;
         }
         self.launcher = on;
     }
@@ -732,6 +756,10 @@ impl Overlay {
     /// wordmark is a delay there rather than a brand moment. The reveal keeps the
     /// shared length, so the two platforms still move alike once they move.
     fn launcher_opening(&self) -> Option<f32> {
+        // With animations off the launcher is simply there: no splash, no rise.
+        if self.reduce_motion {
+            return None;
+        }
         let since = self.launcher_since?;
         let elapsed = since.elapsed();
         let hold = Duration::from_millis(420);
@@ -742,6 +770,40 @@ impl Overlay {
         Some(((elapsed.saturating_sub(hold)).as_secs_f32() / reveal.as_secs_f32()).clamp(0.0, 1.0))
     }
 
+    /// How far a page change has got, 0 to 1, over about a fifth of a second: 0 is the
+    /// new page just arriving, 1 is it settled. The content slides and fades in with
+    /// it; the column does not move, because it is the thing the finger is still on.
+    ///
+    /// The length is the theme's `MOVE` — the curve it names for selection and page
+    /// changes — so a page change on the phone and one in the desktop launcher take
+    /// the same time.
+    fn page_fade(&self) -> f32 {
+        if self.reduce_motion {
+            return 1.0;
+        }
+        let Some((page, since)) = self.page_since else {
+            return 1.0;
+        };
+        // A page noted and then left again: the newest page is not the one being
+        // timed, so it has already arrived.
+        if page != self.launcher_page {
+            return 1.0;
+        }
+        let span = horizon_theme::MOVE.duration().as_secs_f32();
+        (since.elapsed().as_secs_f32() / span).clamp(0.0, 1.0)
+    }
+
+    /// Note that the page on the glass is now `page`, and that it has just arrived.
+    /// Called from the two places a page can change: the platform's `set_launcher_page`
+    /// and the column's own tap, which is applied inside `draw`.
+    fn note_page(&mut self, page: LauncherPage) {
+        if page == self.launcher_page {
+            return;
+        }
+        self.launcher_page = page;
+        self.page_since = Some((page, Instant::now()));
+    }
+
     pub fn launcher_active(&self) -> bool {
         self.launcher
     }
@@ -750,6 +812,9 @@ impl Overlay {
     /// the world it is about to open. The launcher draws it; the platform opens the
     /// world underneath it, so the tap never lands on a frozen frame.
     pub fn launcher_zoom(&self) -> Option<f32> {
+        if self.reduce_motion {
+            return None;
+        }
         let since = self.launcher_zoom_since?;
         let span = Duration::from_millis(520);
         let t = since.elapsed().as_secs_f32() / span.as_secs_f32();
@@ -770,9 +835,20 @@ impl Overlay {
     /// Move the launcher to `page` from the platform: what a FILES, MULTIPLAYER,
     /// Settings or Back button means. The platform calls this while it handles the
     /// event, then builds the model for the page `launcher_page` reports.
+    ///
+    /// The page that was asked for and the page on the glass are compared, not
+    /// assigned: the platform may report the same page on several frames, and only a
+    /// real change is a page arriving.
     pub fn set_launcher_page(&mut self, page: LauncherPage) {
-        self.launcher_page = page;
+        self.note_page(page);
         self.launcher_model.page = page;
+    }
+
+    /// Tell the overlay whether the system wants animations. `true` short-circuits the
+    /// opening, the Play zoom, the page slide and the column's hover glow, so the
+    /// interface is simply there. The platform reads the setting; nothing here can.
+    pub fn set_reduce_motion(&mut self, on: bool) {
+        self.reduce_motion = on;
     }
 
     /// What to draw on the launcher next frame. The page and whether the name field is

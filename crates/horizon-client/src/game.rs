@@ -13092,6 +13092,12 @@ struct Loading {
     /// page cannot accidentally fetch twice for one visit.
     #[cfg(target_os = "android")]
     mod_registry_rx: Option<std::sync::mpsc::Receiver<horizon_client::mod_registry::Registry>>,
+    /// A mod download in flight: the mod's id, so the page can name what it is
+    /// waiting for, and the worker's answer — the installed file's name, or why not.
+    #[cfg(target_os = "android")]
+    installing: Option<String>,
+    #[cfg(target_os = "android")]
+    install_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
     /// Where the Skins page's PNG is read from, kept so the texture is uploaded once
     /// per choice rather than every frame.
     #[cfg(target_os = "android")]
@@ -13532,6 +13538,10 @@ fn run_loading(
         mod_registry: None,
         #[cfg(target_os = "android")]
         mod_registry_rx: None,
+        #[cfg(target_os = "android")]
+        installing: None,
+        #[cfg(target_os = "android")]
+        install_rx: None,
         #[cfg(target_os = "android")]
         launcher_skin: None,
         #[cfg(target_os = "android")]

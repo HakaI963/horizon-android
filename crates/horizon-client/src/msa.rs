@@ -19,6 +19,7 @@
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -94,7 +95,7 @@ pub enum Poll {
 /// that produces something to show the player.
 pub fn device_code(client_id: &str) -> Result<DeviceCode, String> {
     let body = form(&[("client_id", client_id), ("scope", SCOPE)]);
-    let (status, value) = post(&format!("{CONSUMERS}/devicecode"), &body, "Microsoft")?;
+    let (status, value) = post_form(&format!("{CONSUMERS}/devicecode"), &body, "Microsoft")?;
     match (
         status,
         text(&value, "user_code"),
@@ -123,7 +124,7 @@ pub fn poll(client_id: &str, code: &DeviceCode) -> Result<Poll, String> {
         ("client_id", client_id),
         ("device_code", &code.device_code),
     ]);
-    let (status, value) = post(&format!("{CONSUMERS}/token"), &body, "Microsoft")?;
+    let (status, value) = post_form(&format!("{CONSUMERS}/token"), &body, "Microsoft")?;
     match value.get("error").and_then(Value::as_str) {
         Some("authorization_pending") => return Ok(Poll::Pending),
         Some("slow_down") => return Ok(Poll::SlowDown),
@@ -142,23 +143,24 @@ pub fn poll(client_id: &str, code: &DeviceCode) -> Result<Poll, String> {
 /// Wait for the player to approve in the browser, polling as Microsoft asks.
 ///
 /// `cancelled` is checked between polls, so a player who backs out of the page does
-/// not leave a thread asking Microsoft for fifteen minutes.
+/// not leave a thread asking Microsoft for fifteen minutes. The flag is shared with
+/// the caller's worker, which is how the launcher's Cancel button stops it.
 pub fn wait_for_sign_in(
     client_id: &str,
     code: &DeviceCode,
-    cancelled: &dyn Fn() -> bool,
+    cancelled: &AtomicBool,
 ) -> Result<MsTokens, String> {
     let mut interval = code.interval;
     loop {
-        let until = std::time::Instant::now() + Duration::from_secs(interval);
-        while std::time::Instant::now() < until {
-            if cancelled() {
-                return Err("Sign-in cancelled.".into());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
         if now() > code.expires_at {
             return Err("The sign-in code expired. Start again.".into());
+        }
+        let until = std::time::Instant::now() + Duration::from_secs(interval);
+        while std::time::Instant::now() < until {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(CANCELLED.into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         match poll(client_id, code)? {
             Poll::Pending => {}
@@ -168,9 +170,12 @@ pub fn wait_for_sign_in(
     }
 }
 
+/// What a cancelled sign-in says, in one place so the launcher can recognise it.
+pub const CANCELLED: &str = "Sign-in cancelled.";
+
 /// A signed-in Minecraft account: the public half, plus the tokens that let the game
 /// join online-mode servers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Account {
     pub name: String,
     pub uuid: String,
@@ -178,6 +183,37 @@ pub struct Account {
     pub refresh_token: String,
     /// When the Minecraft token stops being usable, in Unix seconds.
     pub expires_at: u64,
+}
+
+/// Never the tokens: `Account` travels through `log::info!` and crash reports.
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Account")
+            .field("name", &self.name)
+            .field("uuid", &self.uuid)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A token with less than this left is renewed before the game uses it: a join that
+/// starts a minute before the expiry would otherwise fail halfway through.
+pub const RENEW_BEFORE: u64 = 3600;
+
+/// Whether `account`'s Minecraft token has to be renewed before the game may use it.
+pub fn needs_refresh(account: &Account) -> bool {
+    account.expires_at <= now().saturating_add(RENEW_BEFORE)
+}
+
+/// The in-memory session the game plays as, built from a stored account. `None` when
+/// the account's UUID is not one, which the session parser would refuse anyway.
+pub fn session(account: &Account) -> Option<crate::auth::AuthSession> {
+    let uuid = crate::auth::parse_uuid(&account.uuid)?;
+    Some(crate::auth::AuthSession::new(
+        &account.name,
+        uuid,
+        &account.access_token,
+    ))
 }
 
 /// Steps 3 to 7 of the flow: Xbox Live, XSTS, the Minecraft login, ownership and the
@@ -269,14 +305,14 @@ pub fn refresh(account: &Account) -> Result<Account, String> {
         ("refresh_token", &account.refresh_token),
         ("scope", SCOPE),
     ]);
-    let (status, value) = post(&format!("{CONSUMERS}/token"), &body, "Microsoft")?;
+    let (status, value) = post_form(&format!("{CONSUMERS}/token"), &body, "Microsoft")?;
+    if status != 200 {
+        return Err(oauth_error(&value));
+    }
     let (Some(access), Some(refresh)) = (text(&value, "access_token"), text(&value, "refresh_token"))
     else {
         return Err(oauth_error(&value));
     };
-    if status != 200 {
-        return Err(oauth_error(&value));
-    }
     let ms = MsTokens { access, refresh };
     finish_sign_in(&ms)
 }
@@ -393,6 +429,16 @@ fn post(url: &str, body: &str, what: &str) -> Result<(u16, Value), String> {
     let response = agent()
         .post(url)
         .set("Content-Type", "application/json")
+        .send_string(body);
+    read(response, what)
+}
+
+/// The OAuth endpoints take `application/x-www-form-urlencoded`, not JSON: sending a
+/// form body as JSON is what made the device-code call answer 400 with no code.
+fn post_form(url: &str, body: &str, what: &str) -> Result<(u16, Value), String> {
+    let response = agent()
+        .post(url)
+        .set("Content-Type", "application/x-www-form-urlencoded")
         .send_string(body);
     read(response, what)
 }
