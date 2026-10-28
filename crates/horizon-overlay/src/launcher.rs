@@ -27,6 +27,9 @@ use imgui::{
     Condition, DrawListMut, FontConfig, FontId, FontSource, StyleColor, TextureId, Ui, WindowFlags,
 };
 
+/// How many destinations the rail has, and so how many state layers it keeps.
+const NAV_ROWS: usize = PAGES.len();
+
 thread_local! {
     /// The destination the pointer was on last frame, if any.
     static NAV_HOVER: Cell<Option<LauncherPage>> = const { Cell::new(None) };
