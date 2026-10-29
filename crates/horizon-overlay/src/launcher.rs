@@ -3995,43 +3995,50 @@ pub fn draw_info_panel(
     reset: &mut bool,
     save: &mut bool,
 ) {
-    let at = pos.get_or_insert([width - 232.0 * dpi, 64.0 * dpi]);
+    // Wide enough for the longest line the engine reports, and tall enough for four
+    // buttons and the frame line. The panel is sized to its own text rather than to a
+    // guess: a status line clipped at the edge is a number a player cannot read.
+    let w = 250.0 * dpi;
+    let at = pos.get_or_insert([width - w - 16.0 * dpi, 64.0 * dpi]);
     // Kept on the glass: a panel dragged past the edge can never be dragged back.
-    at[0] = at[0].clamp(0.0, (width - 120.0 * dpi).max(0.0));
-    at[1] = at[1].clamp(0.0, (height - 80.0 * dpi).max(0.0));
+    at[0] = at[0].clamp(0.0, (width - w).max(0.0));
+    at[1] = at[1].clamp(0.0, (height - 90.0 * dpi).max(0.0));
     let mut moved = *at;
     let _ = ui
         .window("##info")
         .flags(
-            WindowFlags::NO_RESIZE
-                | WindowFlags::NO_COLLAPSE
+            WindowFlags::NO_COLLAPSE
                 | WindowFlags::NO_SCROLLBAR
                 | WindowFlags::NO_SCROLL_WITH_MOUSE
                 | WindowFlags::ALWAYS_AUTO_RESIZE
                 | WindowFlags::NO_SAVED_SETTINGS,
         )
         .position([at[0], at[1]], Condition::Always)
-        .size([216.0 * dpi, 0.0], Condition::FirstUseEver)
+        .size([w, 0.0], Condition::Always)
         .build(|| {
             if let Some([x, y]) = ui.window_pos().into() {
                 moved = [x, y];
             }
             ui.text("Horizon");
             ui.separator();
-            // The frame line the engine reports: frame rate, fingers, and whatever it
-            // put in front of them.
+            // The frame line the engine reports: frame rate, memory, fingers.
             ui.text_wrapped(status);
             ui.separator();
-            if ui.button(if *edit { "Done arranging" } else { "Move the buttons" }) {
+            // Full width, so the four of them read as one column of actions.
+            let bw = ui.content_region_avail()[0];
+            if ui.button_with_size(
+                if *edit { "Done arranging" } else { "Move the buttons" },
+                [bw, 26.0 * dpi],
+            ) {
                 *edit = !*edit;
             }
-            if ui.button("Save layout") {
+            if ui.button_with_size("Save layout", [bw, 26.0 * dpi]) {
                 *save = true;
             }
-            if ui.button("Reset layout") {
+            if ui.button_with_size("Reset layout", [bw, 26.0 * dpi]) {
                 *reset = true;
             }
-            if ui.button("Close") {
+            if ui.button_with_size("Close", [bw, 26.0 * dpi]) {
                 *close = true;
             }
         });

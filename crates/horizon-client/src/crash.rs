@@ -190,6 +190,25 @@ pub fn cpu() -> String {
     )
 }
 
+/// What this process is holding resident, in MiB, on a system that reports it.
+///
+/// The overlay's panel shows it: a phone that is close to its memory limit stutters
+/// before it dies, and the number is the only warning a player gets.
+pub fn rss_mib() -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let status = read("/proc/self/status")?;
+    let kib: u64 = status
+        .lines()
+        .find(|line| line.starts_with("VmRSS:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(kib as f64 / 1024.0)
+}
+
 /// Total memory and what this process uses, in MiB where the system says.
 fn memory() -> String {
     const MIB: u64 = 1024 * 1024;

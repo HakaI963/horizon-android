@@ -255,9 +255,16 @@ impl Game<'_> {
         else {
             return;
         };
+        // What the floating panel shows: the frame rate the loop measured, how much
+        // memory this process is holding, and the two numbers that say whether the
+        // phone is keeping up. Read here rather than in the overlay, because only the
+        // game knows them.
+        let memory = horizon_client::crash::rss_mib()
+            .map(|mib| format!("{mib:.0} MB"))
+            .unwrap_or_else(|| "memory n/a".to_string());
         horizon_overlay::with(|overlay| {
             overlay.set_status(format!(
-                "{:.0} fps, {fingers} finger(s){}",
+                "{:.0} fps  ·  {memory}\n{fingers} finger(s){}",
                 self.fps,
                 if editing { ", editing" } else { "" }
             ));
