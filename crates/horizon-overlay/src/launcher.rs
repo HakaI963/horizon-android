@@ -53,6 +53,17 @@ thread_local! {
 
     /// Whether a slider was the widget holding the finger on the last frame.
     static SETTINGS_ON_TRACK: Cell<bool> = const { Cell::new(false) };
+
+    /// Where the finger was on the last frame of a drag that turns the Skins model.
+    static SKIN_DRAG: Cell<Option<[f32; 2]>> = const { Cell::new(None) };
+
+    /// Whether a finger was already down when the Skins page opened, so a drag that
+    /// began elsewhere does not grab the model.
+    static SKIN_HELD: Cell<bool> = const { Cell::new(false) };
+
+    /// The model's angle and tilt, kept between frames because the platform rebuilds
+    /// the model on every one.
+    static SKIN_TURN: Cell<(f32, f32)> = const { Cell::new((0.6, 0.10)) };
 }
 
 /// The destinations in the top bar, in the order they are drawn.
@@ -224,8 +235,10 @@ pub struct LauncherModel {
     pub accounts: Vec<LauncherAccount>,
     /// The chosen skin's pixel size.
     pub skin_size: [u32; 2],
-    /// Where the model is turned to, in radians.
+    /// Where the model is turned to, and how far it is tilted. The player drags the
+    /// figure; nothing moves it on its own.
     pub skin_yaw: f32,
+    pub skin_pitch: f32,
     /// Which built-in touch layout is in force: `"java"` or `"bedrock"`.
     pub controls_preset: String,
     /// While a world is hosted: the address friends join on.
@@ -2026,7 +2039,22 @@ fn skins_page(
         panel(&draw, c, [x, y], [x + model_w, y + avail_h], c.panel, dpi);
     }
     let figure_top = y + 28.0 * dpi;
-    let figure_h = (avail_h - 90.0 * dpi).max(60.0 * dpi);
+    // The figure is a preview, not the page: it takes most of the card but leaves the
+    // room a player needs to see it whole.
+    let figure_h = (avail_h - 96.0 * dpi).clamp(120.0 * dpi, 360.0 * dpi);
+    // Dragging the figure turns it. The drag is read before the figure is drawn, so
+    // this frame already shows the angle the finger asked for.
+    let (yaw, pitch) = drag_skin(
+        ui,
+        [x, y],
+        [x + model_w, y + avail_h],
+        model.skin_yaw,
+        model.skin_pitch,
+        dpi,
+    );
+    // The angle is the page's, not the model's: the platform rebuilds the model every
+    // frame, so the drag is kept in the page's own cell and handed back to the overlay
+    // at the end of the frame.
     match skin {
         Some(texture) => skin_figure(
             ui,
@@ -2036,7 +2064,8 @@ fn skins_page(
             x + model_w / 2.0,
             figure_top,
             figure_h,
-            model.skin_yaw,
+            yaw,
+            pitch,
         ),
         None => {
             let draw = ui.get_window_draw_list();
@@ -3541,6 +3570,55 @@ fn icon(draw: &DrawListMut<'_>, name: &str, x: f32, y: f32, s: f32, col: u32) {
     }
 }
 
+/// The Skins page's angle, as the overlay reads it after a frame: `(yaw, pitch)`.
+pub fn skin_angle() -> (f32, f32) {
+    SKIN_TURN.with(|t| t.get())
+}
+
+/// Read a drag on the figure and answer the angle to draw it at.
+///
+/// The drag is the whole of the model's motion: a player turns it to see the back of a
+/// skin, and it stays where they left it. The angle is kept between frames because the
+/// model is rebuilt every frame from the platform's report.
+fn drag_skin(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    yaw: f32,
+    pitch: f32,
+    dpi: f32,
+) -> (f32, f32) {
+    let mouse = ui.io().mouse_pos;
+    let over = mouse[0] >= min[0] && mouse[0] <= max[0] && mouse[1] >= min[1] && mouse[1] <= max[1];
+    // A drag is anchored where the finger landed, and only a finger that landed on the
+    // figure turns it: a thumb scrolling the page must not spin the model.
+    let mut turning = SKIN_DRAG.with(|d| d.get());
+    if !ui.io().mouse_down[0] {
+        SKIN_DRAG.with(|d| d.set(None));
+        SKIN_TURN.with(|t| t.set((yaw, pitch)));
+        return (yaw, pitch);
+    }
+    if turning.is_none() && over && !SKIN_HELD.with(|h| h.get()) {
+        turning = Some(mouse);
+        SKIN_DRAG.with(|d| d.set(turning));
+    }
+    SKIN_HELD.with(|h| h.set(ui.io().mouse_down[0]));
+    let Some(last) = turning else {
+        return (yaw, pitch);
+    };
+    // One finger width turns the figure a half turn, which is the range a hand has.
+    let (yaw, pitch) = SKIN_TURN.with(|t| t.get());
+    let dx = mouse[0] - last[0];
+    let dy = mouse[1] - last[1];
+    let yaw = yaw + dx / (140.0 * dpi);
+    // The tilt stops at straight up and straight down: past that the model is upside
+    // down, which no skin was drawn for.
+    let pitch = (pitch + dy / (220.0 * dpi)).clamp(-1.35, 1.35);
+    SKIN_DRAG.with(|d| d.set(Some(mouse)));
+    SKIN_TURN.with(|t| t.set((yaw, pitch)));
+    (yaw, pitch)
+}
+
 /// A player, built the way the game builds one: six boxes with the skin's own UVs,
 /// back faces culled, and the overlay layer inflated over the base.
 ///
@@ -3557,6 +3635,7 @@ fn skin_figure(
     top: f32,
     height: f32,
     yaw: f32,
+    pitch: f32,
 ) {
     let (w, h) = (size[0] as f32, size[1] as f32);
     if w < 64.0 || h < 32.0 {
@@ -3566,7 +3645,6 @@ fn skin_figure(
     let _ = ui;
     // One model unit is a sixteenth of a block, and the player is 32 units tall.
     let u = height / 32.0;
-    let pitch = 0.10f32;
     let (sy, cy_) = (yaw.sin(), yaw.cos());
     let (sp, cp) = (pitch.sin(), pitch.cos());
     let project = |p: [f32; 3]| -> ([f32; 2], f32) {

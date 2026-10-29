@@ -841,7 +841,9 @@ impl Game<'_> {
                         r.joined = true;
                         r.profile = uuid;
                         r.profile_name = name.clone();
-                        r.status = format!("Joined as {name}; loading terrain...");
+                        // No "joined as" line: the loading screen already says what
+                        // is happening, and vanilla does not name the player there.
+                        r.status = "Loading terrain...".to_string();
                     }
                 }
                 Event::Brand(brand) => {
@@ -4961,10 +4963,23 @@ impl Game<'_> {
         self.send(S::ClientCommand(play::ClientCommand { action: 0 }));
     }
 
-    /// Connecting / loading screens; true when it covered the frame.
+    /// Whether a connection screen covers the frame.
+    ///
+    /// A world that has not placed the player yet is a world still opening, and the
+    /// game already has a screen for that: `LevelLoadingScreen`, with the title's
+    /// panorama behind it and a bar that fills as the chunks arrive. This used to paint
+    /// a black rectangle over it with the address and "Joined as <name>" on it, which
+    /// hid the panorama and the progress the player needed. Only a server the player
+    /// joined by address, and which has not answered yet, has no world to draw at all;
+    /// that is the one case left here.
     pub(super) fn remote_overlay(&self, batch: &mut HudBatch) -> bool {
         let Some(r) = &self.remote else { return false };
         if self.player.is_some() {
+            return false;
+        }
+        // A local world (the launcher's own) is opening behind the level screen, so
+        // there is nothing to cover.
+        if r.session.address == "local" || r.joined {
             return false;
         }
         let atlas = &self.gui.atlas;
@@ -4986,7 +5001,6 @@ impl Game<'_> {
                 true,
             );
         }
-        let _ = r.joined;
         true
     }
     /// The server's death message; chat uses the shared ChatComponent.

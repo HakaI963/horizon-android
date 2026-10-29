@@ -669,11 +669,14 @@ impl Loading {
         // Turn the Skins model before the model is built, so the frame drawn is the
         // frame the angle belongs to. A still figure reads as a drawing, and the point
         // of the page is that this is the player.
-        if page == LauncherPage::Skins && self.skin_turns {
-            let now = std::time::Instant::now();
-            let delta = now.duration_since(self.skin_turned).as_secs_f32();
-            self.skin_turned = now;
-            self.skin_yaw = (self.skin_yaw + delta * 0.45) % std::f32::consts::TAU;
+        // The model does not turn by itself: a player who wants to see the back of a
+        // skin drags it. What the platform does here is only read the drag the launcher
+        // reported, so the angle survives the model being rebuilt every frame.
+        if page == LauncherPage::Skins {
+            let (yaw, pitch) = horizon_overlay::with(|o| o.launcher_skin_angle())
+                .unwrap_or((self.skin_yaw, self.skin_pitch));
+            self.skin_yaw = yaw;
+            self.skin_pitch = pitch;
         }
         // A sign-in that is waiting on the browser says so above the account list; a
         // finished one has already moved the notice to "Signed in as ...".
@@ -697,6 +700,7 @@ impl Loading {
             skins,
             chosen_skin: chosen_skin.clone(),
             skin_yaw: self.skin_yaw,
+            skin_pitch: self.skin_pitch,
             accounts,
             controls_preset,
             hosting: self.hosting_address(),
@@ -741,11 +745,13 @@ impl Loading {
             if !uploaded
                 && let Some(r) = &self.renderer
             {
-                // Nothing picked yet: the page shows the launcher's own default player,
-                // which is drawn from a palette and so can never be missing. It used to
-                // come out of the pack's atlas, and when that sprite was absent the page
-                // had no texture at all and drew an empty card.
-                let fallback = path.is_none().then(horizon_overlay::default_skin);
+                // Nothing picked yet: the page shows the pack's own default player,
+                // which is the real Steve a Minecraft player recognises. The drawn skin
+                // is only the last resort, for the bring-up card where there is no pack.
+                let fallback = path.is_none().then(|| {
+                    self.default_skin_pixels()
+                        .unwrap_or_else(horizon_overlay::default_skin)
+                });
                 horizon_overlay::with(|o| {
                     o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
                 });
@@ -1756,7 +1762,6 @@ impl Loading {
         // Options screen is, exactly as they are on a desktop.
         let rows = [
             l("launcherControls", "Customise controls"),
-            l("launcherSkinTurn", "Turn the player on the Skins page"),
             l("launcherBackground", "Animated launcher"),
             l("launcherBattery", "Battery saver"),
             d("launcherResolution", "Render resolution", "DEVICE", "%", 50.0, 200.0, 5.0),
@@ -1859,7 +1864,6 @@ impl Loading {
     fn launcher_switch(&self, key: &str) -> f32 {
         let on = match key {
             "launcherBackground" => !horizon_overlay::with(|o| o.reduce_motion()).unwrap_or(false),
-            "launcherSkinTurn" => self.skin_turns,
             "launcherBattery" => self.settings.horizon.battery,
             // "Customise controls" is a row that opens the editor, so its switch is
             // always drawn off: it is an action, not a state.
@@ -1892,11 +1896,6 @@ impl Loading {
                 horizon_overlay::with(|o| o.open_controls_editor());
                 self.menu.launcher_notice =
                     Some("Drag a button to move it; the panel sets its size.".to_string());
-            }
-            "launcherSkinTurn" => {
-                self.skin_turns = on;
-                self.menu.launcher_notice =
-                    Some(if on { "The player turns." } else { "The player stands still." }.to_string());
             }
             _ => {}
         }
@@ -2027,6 +2026,37 @@ impl Loading {
             _ => String::new(),
         };
         self.menu.launcher_notice = Some(format!("{label}: {shown}"));
+    }
+
+    /// The pack's own default player skin as 64x64 RGBA, cut out of the menu atlas.
+    ///
+    /// This is the real Steve: the texture the game itself wears when a player has no
+    /// skin, taken from the pack the player already installed. A drawn stand-in is
+    /// only for the bring-up card, which has no pack to read.
+    #[cfg(target_os = "android")]
+    fn default_skin_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let gui = self.gui.as_ref()?;
+        let rect = gui.atlas.sprites.get("entity/player/wide/steve").copied()?;
+        let (w, h) = (gui.atlas.width, gui.atlas.height);
+        let (x0, y0) = (
+            (rect.u0 * w as f32).round() as u32,
+            (rect.v0 * h as f32).round() as u32,
+        );
+        let (sw, sh) = (rect.w, rect.h);
+        if sw < 64 || sh < 32 {
+            return None;
+        }
+        let mut out = Vec::with_capacity((sw as usize) * (sh as usize) * 4);
+        for y in 0..sh {
+            // The atlas is indexed in `u32` coordinates; the pixel buffer is `usize`.
+            let row = (((y0 + y) * w + x0) * 4) as usize;
+            let end = row + sw as usize * 4;
+            if end > gui.atlas.pixels.len() {
+                return None;
+            }
+            out.extend_from_slice(&gui.atlas.pixels[row..end]);
+        }
+        Some((sw, sh, out))
     }
 
     /// Re-read `options.txt` into the live settings.

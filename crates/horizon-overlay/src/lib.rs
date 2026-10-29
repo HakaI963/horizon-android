@@ -121,6 +121,10 @@ pub struct Overlay {
     /// The chosen skin, uploaded as an imgui texture so the Skins page can draw the
     /// player from its own pixels instead of a stand-in.
     skin_texture: Option<imgui::TextureId>,
+    /// Where the Skins page's model is turned to, and how far it is tilted. The page
+    /// reports a drag here; nothing turns the model on its own.
+    skin_yaw: f32,
+    skin_pitch: f32,
     /// The PNG the texture was made from, so a new choice replaces it rather than
     /// uploading the same file every frame.
     skin_source: Option<String>,
@@ -189,6 +193,8 @@ impl Overlay {
             launcher_fonts: None,
             skin_texture: None,
             skin_source: None,
+            skin_yaw: 0.6,
+            skin_pitch: 0.10,
             panel_rect: None,
             panorama: true,
             pointer: Pointer::idle(),
@@ -554,6 +560,10 @@ impl Overlay {
                 launcher::draw_loading(ui, screen, fonts, *dpi, width, height, elapsed);
             }
         }
+
+        // The Skins page turned its model under a finger: keep the angle, so the next
+        // model report carries it and the figure does not snap back.
+        self.take_skin_angle();
 
         hud.layout.scale = scale;
         hud.layout.opacity = opacity;
@@ -1028,6 +1038,23 @@ impl Overlay {
         model.page = self.launcher_page;
         model.editing = self.launcher_model.editing;
         self.launcher_model = model;
+    }
+
+    /// Where the Skins page's model is turned to, and how far it is tilted.
+    ///
+    /// The figure is dragged rather than animated: a player looking at a skin wants to
+    /// see the back of it, and a model that turns on its own takes that away. The angle
+    /// lives here because the launcher's model is rebuilt every frame.
+    pub fn launcher_skin_angle(&self) -> (f32, f32) {
+        (self.skin_yaw, self.skin_pitch)
+    }
+
+    /// Take the angle the Skins page ended its frame at. Called from `paint`, because
+    /// the page is what knows where the finger left the model.
+    fn take_skin_angle(&mut self) {
+        let (yaw, pitch) = launcher::skin_angle();
+        self.skin_yaw = yaw;
+        self.skin_pitch = pitch;
     }
 
     /// Open the control editor: the arrange panel, over the HUD, with the launcher out

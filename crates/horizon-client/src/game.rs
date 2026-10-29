@@ -4096,10 +4096,11 @@ impl Game<'_> {
     fn tick(&mut self) -> Result<()> {
         self.tick_debug_keys()?;
         self.tick_debug_charts();
-        if self.remote.is_some() {
-            return self.tick_remote();
-        }
-        // LevelLoadingScreen.tick.
+        // LevelLoadingScreen.tick. This runs before the remote branch below, because a
+        // world entered from the launcher is a world on the server thread: the window is
+        // a client of it, so `remote` is set and the early return used to skip the bar
+        // entirely. That is why "Opening world" sat on an empty bar and then jumped to
+        // the world.
         self.loading_progress = match self.loading_reason() {
             Some(_) => horizon_client::level_loading::smooth(
                 self.loading_progress,
@@ -4107,6 +4108,9 @@ impl Game<'_> {
             ),
             None => 0.0,
         };
+        if self.remote.is_some() {
+            return self.tick_remote();
+        }
         self.ticks += 1;
         self.track_experience_display();
         // `/tick freeze` stops the world but not the player.
@@ -10352,8 +10356,16 @@ impl Game<'_> {
     /// opening a world, or after a portal or a respawn into another dimension.
     fn loading_reason(&self) -> Option<horizon_client::level_loading::Reason> {
         use horizon_client::level_loading::Reason;
-        if self.title.is_some() || self.remote.is_some() || self.player.is_some() {
+        // A world joined from the launcher arrives through `remote`, and the loading
+        // screen is exactly what the player should see until its chunks are in: the
+        // old check treated `remote` as "already playing" and showed the world before
+        // it had drawn. What ends the screen is the player existing, not the connection.
+        if self.title.is_some() || self.player.is_some() {
             return None;
+        }
+        if self.remote.is_some() {
+            // The server has not placed the player yet: the world is still opening.
+            return Some(Reason::Other);
         }
         Some(
             if self.travelling.is_none() || self.respawn_travel.is_some() {
@@ -13188,6 +13200,12 @@ struct Loading {
     /// Whether a texture is in the overlay's slot at all.
     #[cfg(target_os = "android")]
     skin_uploaded: bool,
+    /// Where the Skins page's model is turned to, and how far it is tilted. The player
+    /// drags the figure; nothing moves it on its own.
+    #[cfg(target_os = "android")]
+    skin_yaw: f32,
+    #[cfg(target_os = "android")]
+    skin_pitch: f32,
     /// The address this device is hosting on, when it is.
     #[cfg(target_os = "android")]
     hosting: Option<String>,
@@ -13200,16 +13218,6 @@ struct Loading {
     /// The flag a running Microsoft sign-in checks so the player can stop waiting.
     #[cfg(target_os = "android")]
     sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Whether the Skins page turns its model. The page is a preview of a player, and
-    /// a player standing still is a picture of one.
-    #[cfg(target_os = "android")]
-    skin_turns: bool,
-    /// Where the Skins page's model is turned to, and when it last turned: the page
-    /// advances it so the player rotates rather than standing still.
-    #[cfg(target_os = "android")]
-    skin_yaw: f32,
-    #[cfg(target_os = "android")]
-    skin_turned: std::time::Instant,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
     started: Instant,
@@ -13634,6 +13642,10 @@ fn run_loading(
         #[cfg(target_os = "android")]
         skin_uploaded: false,
         #[cfg(target_os = "android")]
+        skin_yaw: 0.6,
+        #[cfg(target_os = "android")]
+        skin_pitch: 0.10,
+        #[cfg(target_os = "android")]
         hosting: None,
         #[cfg(target_os = "android")]
         sign_in: None,
@@ -13643,12 +13655,6 @@ fn run_loading(
         loading_since: None,
         #[cfg(target_os = "android")]
         sign_in_cancel: None,
-        #[cfg(target_os = "android")]
-        skin_turns: true,
-        #[cfg(target_os = "android")]
-        skin_yaw: 0.6,
-        #[cfg(target_os = "android")]
-        skin_turned: std::time::Instant::now(),
         vanilla_root,
         pack_error,
         started,
