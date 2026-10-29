@@ -121,10 +121,9 @@ pub struct Overlay {
     /// and to nothing else, and the only place to learn that from is the window
     /// imgui has just laid out.
     panel_rect: Option<Rect>,
-    /// The engine already drew the title panorama behind this overlay, and the
-    /// launcher's front page is meant to show it. The platform clears this when it
-    /// knows there is nothing back there — the bring-up card's black surface — so the
-    /// page falls back to its own background instead of showing a void.
+    /// The engine already drew the title panorama behind this overlay. The launcher
+    /// paints its own stone page over it, so this is kept only for the platform's
+    /// sake: `set_panorama` is part of the seam the client already calls.
     panorama: bool,
     pointer: Pointer,
     /// A finger lifted off an imgui widget, waiting for the release to be sent at the
@@ -551,7 +550,7 @@ impl Overlay {
                     *dpi,
                     width,
                     height,
-                    background,
+                    None,
                     elapsed,
                 );
             }
@@ -746,9 +745,8 @@ impl Overlay {
     }
 
     /// Tell the overlay whether the engine's title panorama is behind it. The
-    /// launcher's front page is drawn over that panorama and must not paint it out;
-    /// the bring-up card has no engine and passes `false`, so the page keeps its own
-    /// background there.
+    /// launcher paints its own page over the whole window, so nothing of it shows;
+    /// the flag is kept because the platform's bring-up path still reports it.
     pub fn set_panorama(&mut self, on: bool) {
         self.panorama = on;
     }
