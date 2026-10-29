@@ -419,8 +419,9 @@ impl Overlay {
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
         // The loading surface's own fade, read here and cleared at the end of the
-        // frame if it is spent.
-        let loading_fade = self.loading_fade;
+        // frame if it is spent. Borrowed rather than moved: the tuple owns the surface
+        // it is drawing, and the field is written back when the fade is over.
+        let loading_fade = self.loading_fade.as_ref();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -585,7 +586,7 @@ impl Overlay {
                 // And a surface on its way out, over the screen it was hiding. The
                 // menu behind it is already drawing; this is what makes it arrive
                 // instead of appearing between two frames.
-                if let Some((at, screen)) = loading_fade.as_ref()
+                if let Some((at, screen)) = loading_fade
                     && let Some(screen) = screen.as_ref()
                 {
                     let t = (at.elapsed().as_secs_f32() / LOADING_FADE).clamp(0.0, 1.0);
