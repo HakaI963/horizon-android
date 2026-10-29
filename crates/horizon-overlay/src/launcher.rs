@@ -3939,6 +3939,105 @@ fn skin_figure(
     }
 }
 
+/// The virtual mouse's cursor: a small arrow, drawn where the finger last put it.
+///
+/// A phone has no pointer, and every Minecraft screen that is not the world hit-tests
+/// a cursor position. The arrow is drawn by us rather than by the game so that it is
+/// the same shape over the world, over a menu and over a chest, and so that it is
+/// visibly *ours*: a player who cannot see a cursor has no way to know the mouse is
+/// on.
+pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
+    let draw = ui.get_window_draw_list();
+    // The arrow: a filled triangle with a tail, white with a black edge, which is the
+    // one pair of colours that reads on snow and on the Nether.
+    let s = 7.0 * dpi;
+    let [x, y] = at;
+    let points = [
+        [x, y],
+        [x, y + s * 2.0],
+        [x + s * 0.55, y + s * 1.45],
+        [x + s * 0.9, y + s * 2.0],
+        [x + s * 1.2, y + s * 1.85],
+        [x + s * 0.85, y + s * 1.3],
+        [x + s * 1.5, y + s * 1.3],
+    ];
+    // The outline first, as a slightly larger shape under the fill.
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba([0, 0, 0], 0.85))
+            .thickness(3.0 * dpi)
+            .build();
+    }
+    for i in 1..points.len() - 1 {
+        draw.add_triangle(points[0], points[i], points[i + 1], rgba([255, 255, 255], 1.0))
+            .filled(true)
+            .build();
+    }
+}
+
+/// The floating panel: the frame rate, the memory in use, and the way into the
+/// arrange mode.
+///
+/// It is a small window a player can drag by its title, not a full screen. That is the
+/// whole point of it: the numbers are worth glancing at while playing, and a screen
+/// that covers the game to show them is a screen nobody opens twice.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_info_panel(
+    ui: &Ui,
+    pos: &mut Option<[f32; 2]>,
+    dpi: f32,
+    width: f32,
+    height: f32,
+    status: &str,
+    edit: &mut bool,
+    close: &mut bool,
+    reset: &mut bool,
+    save: &mut bool,
+) {
+    let at = pos.get_or_insert([width - 232.0 * dpi, 64.0 * dpi]);
+    // Kept on the glass: a panel dragged past the edge can never be dragged back.
+    at[0] = at[0].clamp(0.0, (width - 120.0 * dpi).max(0.0));
+    at[1] = at[1].clamp(0.0, (height - 80.0 * dpi).max(0.0));
+    let mut moved = *at;
+    let _ = ui
+        .window("##info")
+        .flags(
+            WindowFlags::NO_RESIZE
+                | WindowFlags::NO_COLLAPSE
+                | WindowFlags::NO_SCROLLBAR
+                | WindowFlags::NO_SCROLL_WITH_MOUSE
+                | WindowFlags::ALWAYS_AUTO_RESIZE
+                | WindowFlags::NO_SAVED_SETTINGS,
+        )
+        .position([at[0], at[1]], Condition::Always)
+        .size([216.0 * dpi, 0.0], Condition::FirstUseEver)
+        .build(|| {
+            if let Some([x, y]) = ui.window_pos().into() {
+                moved = [x, y];
+            }
+            ui.text("Horizon");
+            ui.separator();
+            // The frame line the engine reports: frame rate, fingers, and whatever it
+            // put in front of them.
+            ui.text_wrapped(status);
+            ui.separator();
+            if ui.button(if *edit { "Done arranging" } else { "Move the buttons" }) {
+                *edit = !*edit;
+            }
+            if ui.button("Save layout") {
+                *save = true;
+            }
+            if ui.button("Reset layout") {
+                *reset = true;
+            }
+            if ui.button("Close") {
+                *close = true;
+            }
+        });
+    *pos = Some(moved);
+}
+
 /// The name field, on a pass of its own over the whole screen.
 #[allow(clippy::too_many_arguments)]
 fn rename_dialog(

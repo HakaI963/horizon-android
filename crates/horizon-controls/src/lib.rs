@@ -1160,6 +1160,25 @@ mod tests {
     }
 
     #[test]
+    fn the_default_pad_has_a_way_back_out_of_the_arranging() {
+        let mut hud = hud();
+        hud.edit = true;
+        let panel = hud
+            .buttons(WIDTH, HEIGHT)
+            .into_iter()
+            .find(|(action, _)| *action == Action::Panel)
+            .map(|(_, rect)| rect.center())
+            .expect("the default pad has a panel button");
+        assert!(hud.down(1, panel[0], panel[1], WIDTH, HEIGHT));
+        hud.up(1);
+        assert_eq!(
+            hud.take_edges(),
+            vec![(Action::Panel, true), (Action::Panel, false)],
+            "a pad with no MENU still needs a door out of the arranging"
+        );
+    }
+
+    #[test]
     fn a_drag_on_empty_glass_turns_the_camera() {
         let mut hud = hud();
         // The middle of the screen: nothing is there in the default layout.
@@ -1209,7 +1228,9 @@ mod tests {
 
     #[test]
     fn the_menu_button_answers_even_while_the_layout_is_being_arranged() {
-        let mut hud = hud();
+        // The panel button is the one the default pad has; a layout without a MENU
+        // still has to have a way back to the switch that ends the arranging.
+        let mut hud = Hud::new(Layout::java());
         hud.edit = true;
         let menu = hud
             .buttons(WIDTH, HEIGHT)
