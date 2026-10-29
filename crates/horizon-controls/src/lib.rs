@@ -154,26 +154,66 @@ impl Rect {
 
 /// One button: what it sends, where it sits, and how large it is relative to the
 /// screen it was placed on.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+///
+/// A button is a rectangle, not a square. Cubiq's layouts — the ones a player
+/// recognises from other launchers — are built out of wide tabs, tall D-pad arms and
+/// circles, and a square-only model cannot express any of them: the shape has to come
+/// from the layout, not from the button's own idea of what a button looks like.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Control {
     pub action: Action,
+    /// The button's rectangle as fractions of the screen: left, top, width, height.
+    ///
+    /// This is the shape a Cubiq layout gives, and it is the one that is used when it
+    /// is present. `center`/`size` below are what an older file carries, and are read
+    /// only when this is absent, so a layout written by a previous build still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[f32; 4]>,
     /// The middle of the button, as a fraction of the width and the height. A
     /// phone rotates and a virtual display is not the size of the next one, so
     /// nothing in a layout is stored in pixels.
+    #[serde(default)]
     pub center: [f32; 2],
     /// The side of the button as a fraction of the screen's shorter edge, so that
     /// the same layout keeps its proportions in both orientations.
+    #[serde(default = "default_size")]
     pub size: f32,
     /// This button's own opacity, or `None` to follow the layout's. A player who
     /// wants a barely-there movement pad and a solid mine button can have both.
     /// Absent from a file written before it existed, so the layout's opacity wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// The glyph drawn instead of the legend, named the way Cubiq names its icons:
+    /// `attack`, `jump`, `sneak`, `sprint`, `inventory`, `swap`, `chat`, `pause`,
+    /// `keyboard`, `perspective`, `forward`, `back`, `left`, `right`. A button with
+    /// none draws its text, which is what the Java-style preset wants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A circle rather than a rounded rectangle: Bedrock's own buttons are round.
+    #[serde(default)]
+    pub round: bool,
+}
+
+fn default_size() -> f32 {
+    0.1
 }
 
 impl Control {
     /// Where this button is on a `width`x`height` screen.
     pub fn rect(&self, width: f32, height: f32, scale: f32) -> Rect {
+        if let Some([left, top, w, h]) = self.bounds {
+            // A rectangle scales about its own middle, so a button keeps the place it
+            // was put at while it grows: scaling from the top-left corner would walk
+            // the whole pad across the screen as the player turned the size up.
+            let (cx, cy) = (left + w / 2.0, top + h / 2.0);
+            let (bw, bh) = (w * width * scale, h * height * scale);
+            return Rect {
+                x: cx * width - bw / 2.0,
+                y: cy * height - bh / 2.0,
+                width: bw,
+                height: bh,
+            };
+        }
         let side = width.min(height) * self.size * scale;
         Rect {
             x: self.center[0] * width - side / 2.0,
@@ -215,9 +255,31 @@ fn default_preset() -> String {
 fn control(action: Action, x: f32, y: f32, size: f32) -> Control {
     Control {
         action,
+        bounds: None,
         center: [x, y],
         size,
         opacity: None,
+        icon: None,
+        round: false,
+    }
+}
+
+/// A button from a Cubiq-shaped layout: a rectangle in fractions of the screen, an
+/// icon and a shape, with no centre or size of its own.
+fn shaped(
+    action: Action,
+    bounds: [f32; 4],
+    icon: Option<&str>,
+    round: bool,
+) -> Control {
+    Control {
+        action,
+        bounds: Some(bounds),
+        center: [bounds[0] + bounds[2] / 2.0, bounds[1] + bounds[3] / 2.0],
+        size: bounds[2].max(bounds[3]),
+        opacity: None,
+        icon: icon.map(str::to_owned),
+        round,
     }
 }
 
@@ -326,6 +388,16 @@ impl Layout {
             ];
             control.size = control.size.clamp(0.03, 0.4);
             control.opacity = control.opacity.map(|opacity| opacity.clamp(0.05, 1.0));
+            if let Some(bounds) = &mut control.bounds {
+                // A button has to keep its middle on the glass: a rectangle that has
+                // been pushed past the edge can still be dragged back, but one whose
+                // centre is gone cannot be seen to drag.
+                let (w, h) = (bounds[2].clamp(0.02, 1.0), bounds[3].clamp(0.02, 1.0));
+                let cx = (bounds[0] + bounds[2] / 2.0).clamp(0.01, 0.99);
+                let cy = (bounds[1] + bounds[3] / 2.0).clamp(0.01, 0.99);
+                *bounds = [cx - w / 2.0, cy - h / 2.0, w, h];
+                control.center = [cx, cy];
+            }
         }
     }
 
@@ -357,6 +429,14 @@ impl Layout {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         buttons
+    }
+
+    /// A button's icon and shape, when the layout gave it one.
+    pub fn control_look(&self, action: Action) -> Option<(Option<String>, bool)> {
+        self.controls
+            .iter()
+            .find(|control| control.action == action)
+            .map(|control| (control.icon.clone(), control.round))
     }
 
     /// The opacity a button is drawn at: its own, if it has one, else the layout's.
@@ -588,7 +668,13 @@ impl Hud {
             .iter_mut()
             .find(|control| control.action == action)
         {
-            control.center = [center[0] / width.max(1.0), center[1] / height.max(1.0)];
+            let at = [center[0] / width.max(1.0), center[1] / height.max(1.0)];
+            control.center = at;
+            // A shaped button moves as a rectangle: its own width and height are kept
+            // and only the middle is placed, or dragging one would also resize it.
+            if let Some([_, _, w, h]) = control.bounds {
+                control.bounds = Some([at[0] - w / 2.0, at[1] - h / 2.0, w, h]);
+            }
         }
         self.layout.clamp();
     }
@@ -609,7 +695,12 @@ impl Hud {
             .controls
             .iter()
             .find(|control| control.action == action)
-            .map(|control| control.size)
+            .map(|control| match control.bounds {
+                // A shaped button reports its longest side, which is the number the
+                // slider sets and the one a player sees it grow by.
+                Some([_, _, w, h]) => w.max(h),
+                None => control.size,
+            })
     }
 
     /// A button's own opacity, or the layout's when it has none of its own.
@@ -622,6 +713,10 @@ impl Hud {
     }
 
     /// Set a button's own size, clamped like every other edit.
+    ///
+    /// A shaped button is resized about its own middle and keeps its proportions: the
+    /// Cubiq layouts draw a wide tab and a tall D-pad arm on purpose, and a size slider
+    /// that squared them off would throw that away.
     pub fn set_control_size(&mut self, action: Action, size: f32) {
         if let Some(control) = self
             .layout
@@ -630,6 +725,13 @@ impl Hud {
             .find(|control| control.action == action)
         {
             control.size = size;
+            if let Some([left, top, w, h]) = control.bounds {
+                let (cx, cy) = (left + w / 2.0, top + h / 2.0);
+                let longest = w.max(h).max(0.0001);
+                let factor = (size / longest).clamp(0.05, 20.0);
+                let (nw, nh) = (w * factor, h * factor);
+                control.bounds = Some([cx - nw / 2.0, cy - nh / 2.0, nw, nh]);
+            }
         }
         self.layout.clamp();
     }

@@ -478,10 +478,19 @@ impl Overlay {
             .unwrap_or(opacity);
         // Whether the panel's per-button sliders actually moved this frame.
         let mut sel_touched = false;
-        let buttons: Vec<(Action, Rect, f32)> = hud
+        let buttons: Vec<(Action, Rect, f32, Option<String>, bool)> = hud
             .buttons(width, height)
             .into_iter()
-            .map(|(action, rect)| (action, rect, hud.layout.opacity_of(action)))
+            .map(|(action, rect)| {
+                let look = hud.layout.control_look(action);
+                (
+                    action,
+                    rect,
+                    hud.layout.opacity_of(action),
+                    look.map(|look| look.0),
+                    look.is_some_and(|look| look.1),
+                )
+            })
             .collect();
         // What is lit this frame: the buttons a finger holds while playing, and while
         // the layout is being arranged the one button a finger has picked up.
@@ -1223,20 +1232,30 @@ fn launcher_texture(
 /// One button: its body, its edge and its legend. The body exists to aim at and the
 /// legend to read, so the text keeps a floor of its own under the layout's opacity —
 /// a see-through "MINE" is a button you cannot find again.
+#[allow(clippy::too_many_arguments)]
 fn draw_button(
     draw: &DrawListMut<'_>,
     ui: &Ui,
     action: Action,
     rect: Rect,
-    pressed: bool,
     opacity: f32,
+    round: bool,
+    icon: Option<&str>,
+    pressed: bool,
     selected: bool,
 ) {
     let min = [rect.x, rect.y];
     let max = [rect.x + rect.width, rect.y + rect.height];
+    let [center_x, center_y] = rect.center();
+    // A round button is a circle, and a rectangle with a huge corner radius is not the
+    // same thing: imgui clamps the radius to half the shorter side, so this is exact.
+    let rounding = if round {
+        rect.width.min(rect.height) * 0.5
+    } else {
+        rect.rounding()
+    };
     let fill = if pressed { PRESSED } else { IDLE };
     let edge = if pressed { EDGE_ACTIVE } else { EDGE };
-    let rounding = rect.rounding();
     draw.add_rect(min, max, rgba(fill, opacity))
         .filled(true)
         .rounding(rounding)
@@ -1258,14 +1277,204 @@ fn draw_button(
         .thickness(2.0)
         .build();
     }
-    let text = action.text();
-    let [width, height] = ui.calc_text_size(&text);
-    let [center_x, center_y] = rect.center();
-    draw.add_text(
-        [center_x - width / 2.0, center_y - height / 2.0],
-        rgba(LEGEND, opacity + 0.35),
-        &text,
-    );
+    let color = rgba(LEGEND, opacity + 0.35);
+    if icon.is_none_or(|icon| !draw_icon(draw, icon, rect, color)) {
+        let text = action.text();
+        let [width, height] = ui.calc_text_size(&text);
+        draw.add_text(
+            [center_x - width / 2.0, center_y - height / 2.0],
+            color,
+            &text,
+        );
+    }
+}
+
+/// The glyph a Cubiq layout names, drawn as shapes.
+///
+/// These are not images: the buttons they go on are the ones a player's thumb rests
+/// on, and a glyph made of a few lines and triangles is crisp at every size and costs
+/// no texture, no atlas and no file in the APK. Each is drawn inside the button's own
+/// square, so it scales with the button and stays centred.
+fn draw_icon(draw: &DrawListMut<'_>, icon: &str, rect: Rect, color: ImColor32) -> bool {
+    let [cx, cy] = rect.center();
+    // The glyph's own square: a little smaller than the button, so a round button's
+    // edge does not cut into it.
+    let r = rect.width.min(rect.height) * 0.26;
+    let thickness = (r * 0.34).max(1.5);
+    let arrow = |dx: f32, dy: f32| {
+        // A filled triangle pointing along (dx, dy), drawn at the glyph's edge.
+        let (px, py) = (-dy, dx);
+        let tip = [cx + dx * r, cy + dy * r];
+        let a = [cx + dx * r * 0.15 + px * r * 0.72, cy + dy * r * 0.15 + py * r * 0.72];
+        let b = [cx + dx * r * 0.15 - px * r * 0.72, cy + dy * r * 0.15 - py * r * 0.72];
+        draw.add_triangle(tip, a, b, color).filled(true).build();
+    };
+    match icon {
+        // Movement: the four D-pad arms.
+        "forward" => arrow(0.0, -1.0),
+        "back" => arrow(0.0, 1.0),
+        "left" => arrow(-1.0, 0.0),
+        "right" => arrow(1.0, 0.0),
+        // Attack: a sword, as a blade and a crossguard.
+        "attack" => {
+            draw.add_line([cx - r * 0.7, cy + r * 0.7], [cx + r * 0.7, cy - r * 0.7], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx - r * 0.7, cy + r * 0.2], [cx - r * 0.2, cy + r * 0.7], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Use: a hand, as a filled palm with a thumb.
+        "use" => {
+            draw.add_circle([cx, cy + r * 0.15], r * 0.62, color).filled(true).build();
+            draw.add_line([cx - r * 0.5, cy - r * 0.1], [cx - r * 0.75, cy - r * 0.75], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Jump: an arrow leaving a floor.
+        "jump" => {
+            arrow(0.0, -1.0);
+            draw.add_line([cx - r * 0.8, cy + r * 0.85], [cx + r * 0.8, cy + r * 0.85], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Sneak: an arrow pressing down onto a floor.
+        "sneak" => {
+            arrow(0.0, 1.0);
+            draw.add_line([cx - r * 0.8, cy - r * 0.85], [cx + r * 0.8, cy - r * 0.85], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Sprint: two chevrons, the direction of travel.
+        "sprint" => {
+            for i in 0..2 {
+                let o = i as f32 * r * 0.55;
+                draw.add_line(
+                    [cx - r * 0.55 + o, cy - r * 0.7],
+                    [cx + r * 0.15 + o, cy],
+                    color,
+                )
+                .thickness(thickness)
+                .build();
+                draw.add_line(
+                    [cx + r * 0.15 + o, cy],
+                    [cx - r * 0.55 + o, cy + r * 0.7],
+                    color,
+                )
+                .thickness(thickness)
+                .build();
+            }
+        }
+        // Inventory: a bag, a rounded body with a handle.
+        "inventory" => {
+            draw.add_rect([cx - r * 0.7, cy - r * 0.25], [cx + r * 0.7, cy + r * 0.8], color)
+                .filled(true)
+                .rounding(r * 0.2)
+                .build();
+            draw.add_line([cx - r * 0.35, cy - r * 0.25], [cx - r * 0.35, cy - r * 0.7], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx + r * 0.35, cy - r * 0.25], [cx + r * 0.35, cy - r * 0.7], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx - r * 0.35, cy - r * 0.7], [cx + r * 0.35, cy - r * 0.7], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Swap hands: two arrows pointing opposite ways.
+        "swap" => {
+            draw.add_line([cx - r * 0.7, cy - r * 0.3], [cx + r * 0.7, cy - r * 0.3], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx + r * 0.7, cy + r * 0.3], [cx - r * 0.7, cy + r * 0.3], color)
+                .thickness(thickness)
+                .build();
+            draw.add_triangle(
+                [cx + r * 0.9, cy - r * 0.3],
+                [cx + r * 0.4, cy - r * 0.75],
+                [cx + r * 0.4, cy + r * 0.15],
+                color,
+            )
+            .filled(true)
+            .build();
+            draw.add_triangle(
+                [cx - r * 0.9, cy + r * 0.3],
+                [cx - r * 0.4, cy + r * 0.75],
+                [cx - r * 0.4, cy - r * 0.15],
+                color,
+            )
+            .filled(true)
+            .build();
+        }
+        // Chat: a speech bubble.
+        "chat" => {
+            draw.add_rect([cx - r * 0.8, cy - r * 0.65], [cx + r * 0.8, cy + r * 0.35], color)
+                .filled(true)
+                .rounding(r * 0.25)
+                .build();
+            draw.add_triangle(
+                [cx - r * 0.3, cy + r * 0.3],
+                [cx + r * 0.2, cy + r * 0.3],
+                [cx - r * 0.25, cy + r * 0.9],
+                color,
+            )
+            .filled(true)
+            .build();
+        }
+        // Pause: two bars.
+        "pause" => {
+            for side in [-1.0f32, 1.0] {
+                draw.add_rect(
+                    [cx + side * r * 0.5 - r * 0.16, cy - r * 0.75],
+                    [cx + side * r * 0.5 + r * 0.16, cy + r * 0.75],
+                    color,
+                )
+                .filled(true)
+                .build();
+            }
+        }
+        // Perspective: a box seen from a corner, which is what F5 switches.
+        "perspective" => {
+            draw.add_rect([cx - r * 0.8, cy - r * 0.8], [cx + r * 0.35, cy + r * 0.35], color)
+                .thickness(thickness)
+                .build();
+            draw.add_rect([cx - r * 0.35, cy - r * 0.35], [cx + r * 0.8, cy + r * 0.8], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Keyboard: a key grid.
+        "keyboard" => {
+            draw.add_rect([cx - r * 0.9, cy - r * 0.55], [cx + r * 0.9, cy + r * 0.55], color)
+                .thickness(thickness)
+                .rounding(r * 0.12)
+                .build();
+            for row in 0..2 {
+                for col in 0..3 {
+                    let x = cx - r * 0.55 + col as f32 * r * 0.55;
+                    let y = cy - r * 0.25 + row as f32 * r * 0.42;
+                    draw.add_rect([x - r * 0.1, y - r * 0.1], [x + r * 0.1, y + r * 0.1], color)
+                        .filled(true)
+                        .build();
+                }
+            }
+        }
+        // Debug: the F3 overlay, a chart line.
+        "debug" => {
+            draw.add_line([cx - r * 0.85, cy + r * 0.6], [cx - r * 0.3, cy - r * 0.5], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx - r * 0.3, cy - r * 0.5], [cx + r * 0.2, cy + r * 0.2], color)
+                .thickness(thickness)
+                .build();
+            draw.add_line([cx + r * 0.2, cy + r * 0.2], [cx + r * 0.85, cy - r * 0.7], color)
+                .thickness(thickness)
+                .build();
+        }
+        // Anything a layout names that this build does not know falls back to the
+        // legend, which is always readable.
+        _ => return false,
+    }
+    true
 }
 
 /// A style color at a fraction of its own strength. imgui's colors are bytes, so the
@@ -1281,7 +1490,7 @@ fn rgba(color: [u8; 3], alpha: f32) -> ImColor32 {
 /// which is why a small button on top of a big one is both visible and pressable.
 fn hud_buttons(
     ui: &Ui,
-    buttons: &[(Action, Rect, f32)],
+    buttons: &[(Action, Rect, f32, Option<String>, bool)],
     lit: &[Action],
     selected: Option<Action>,
     dpi: f32,
@@ -1307,14 +1516,16 @@ fn hud_buttons(
         .size([width, height], Condition::Always)
         .build(|| {
             let draw = ui.get_window_draw_list();
-            for (action, rect, opacity) in buttons.iter().rev() {
+            for (action, rect, opacity, icon, round) in buttons.iter().rev() {
                 draw_button(
                     &draw,
                     ui,
                     *action,
                     *rect,
-                    lit.contains(action),
                     *opacity,
+                    *round,
+                    icon.as_deref(),
+                    lit.contains(action),
                     selected == Some(*action),
                 );
             }
