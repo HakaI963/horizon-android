@@ -733,7 +733,12 @@ impl Loading {
                 .as_ref()
                 .and_then(|path| png_size(path))
                 .unwrap_or([64, 64]);
-            if path != self.uploaded_skin
+            // The comparison is not enough on its own: with nothing chosen, `path` and
+            // `uploaded_skin` are both `None`, so "unchanged" was true on the very first
+            // visit and the default player was never uploaded at all. The texture slot
+            // is the real answer to whether there is anything to draw.
+            let uploaded = self.uploaded_skin == path && self.skin_uploaded;
+            if !uploaded
                 && let Some(r) = &self.renderer
             {
                 // Nothing picked yet: the page shows the launcher's own default player,
@@ -745,6 +750,7 @@ impl Loading {
                     o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
                 });
                 self.uploaded_skin = path;
+                self.skin_uploaded = true;
             }
         }
         if page == LauncherPage::Mods {
@@ -990,6 +996,7 @@ impl Loading {
                     // was last shown, and it has to be forgotten or the page would keep
                     // drawing the old one.
                     self.uploaded_skin = None;
+                    self.skin_uploaded = false;
                     self.menu.launcher_notice = Some(format!("Skin set to {name}"));
                 }
                 LauncherEvent::RefreshMods => {
@@ -2555,6 +2562,7 @@ mod tests {
             launcher_skin: None,
             #[cfg(target_os = "android")]
             uploaded_skin: None,
+            skin_uploaded: false,
             #[cfg(target_os = "android")]
             hosting: None,
             #[cfg(target_os = "android")]
