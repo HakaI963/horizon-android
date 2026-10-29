@@ -485,7 +485,10 @@ impl Layout {
                 // A button has to keep its middle on the glass: a rectangle that has
                 // been pushed past the edge can still be dragged back, but one whose
                 // centre is gone cannot be seen to drag.
-                let (w, h) = (bounds[2].clamp(0.02, 1.0), bounds[3].clamp(0.02, 1.0));
+                // A side is bounded by the glass it is on, not by a minimum that would
+                // flatten the shape: a tab scaled right down is still a tab, and the
+                // minimum size is enforced on the longest side by `set_control_size`.
+                let (w, h) = (bounds[2].clamp(0.001, 1.0), bounds[3].clamp(0.001, 1.0));
                 let cx = (bounds[0] + bounds[2] / 2.0).clamp(0.01, 0.99);
                 let cy = (bounds[1] + bounds[3] / 2.0).clamp(0.01, 0.99);
                 *bounds = [cx - w / 2.0, cy - h / 2.0, w, h];
@@ -821,7 +824,11 @@ impl Hud {
             if let Some([left, top, w, h]) = control.bounds {
                 let (cx, cy) = (left + w / 2.0, top + h / 2.0);
                 let longest = w.max(h).max(0.0001);
-                let factor = (size / longest).clamp(0.05, 20.0);
+                // A shaped button is bounded by the same range as a square one: a
+                // button larger than the glass is not a control a player can use, and
+                // clamping the factor rather than the result keeps the shape.
+                let target = size.clamp(0.03, 0.4);
+                let factor = (target / longest).clamp(0.05, 20.0);
                 let (nw, nh) = (w * factor, h * factor);
                 control.bounds = Some([cx - nw / 2.0, cy - nh / 2.0, nw, nh]);
             }
@@ -1256,11 +1263,28 @@ mod tests {
 
     #[test]
     fn a_button_size_edit_is_clamped_like_every_other() {
-        let mut hud = hud();
+        let mut hud = Hud::new(Layout::java());
         hud.set_control_size(Action::Jump, 9.0);
         assert_eq!(hud.control_size(Action::Jump), Some(0.4));
         hud.set_control_size(Action::Jump, 0.0);
         assert_eq!(hud.control_size(Action::Jump), Some(0.03));
+    }
+
+    #[test]
+    fn a_shaped_button_is_clamped_without_losing_its_shape() {
+        let mut hud = Hud::new(Layout::bedrock());
+        let before = hud.control_size(Action::Jump).unwrap();
+        hud.set_control_size(Action::Jump, 9.0);
+        assert_eq!(hud.control_size(Action::Jump), Some(0.4));
+        hud.set_control_size(Action::Jump, 0.0);
+        assert_eq!(hud.control_size(Action::Jump), Some(0.03));
+        // And it is still round: the long and short sides keep the ratio they had.
+        hud.set_control_size(Action::Jump, before);
+        let [_, _, w, h] = hud.layout.controls.iter()
+            .find(|c| c.action == Action::Jump)
+            .and_then(|c| c.bounds)
+            .unwrap();
+        assert!((w / h - 9.0 / 16.0).abs() < 0.02, "{w} x {h}");
     }
 
     #[test]
