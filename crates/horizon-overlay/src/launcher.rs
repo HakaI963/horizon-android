@@ -3950,7 +3950,8 @@ pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
     let draw = ui.get_window_draw_list();
     // The arrow: a filled triangle with a tail, white with a black edge, which is the
     // one pair of colours that reads on snow and on the Nether.
-    let s = 7.0 * dpi;
+    // Big enough to find on a phone's glass, which is what a cursor is for.
+    let s = 11.0 * dpi;
     let [x, y] = at;
     let points = [
         [x, y],
@@ -3961,12 +3962,14 @@ pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
         [x + s * 0.85, y + s * 1.3],
         [x + s * 1.5, y + s * 1.3],
     ];
-    // The outline first, as a slightly larger shape under the fill.
+    // The outline first, as a slightly larger shape under the fill, and in the accent
+    // rather than black: the arrow is drawn over grass, stone, snow and the Nether, and
+    // a black arrow on a black menu is a cursor nobody can find.
     for i in 0..points.len() {
         let a = points[i];
         let b = points[(i + 1) % points.len()];
-        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba(0x000000, 0.85))
-            .thickness(3.0 * dpi)
+        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba(0xff8a22, 1.0))
+            .thickness(4.0 * dpi)
             .build();
     }
     for i in 1..points.len() - 1 {
