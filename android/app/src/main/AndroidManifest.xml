@@ -12,6 +12,11 @@
     <!-- Reading a resource set the user copied onto the device. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!--
+        Android 13 split the storage permission: a skin is an image, so the media index
+        is what the Download fallback reads it through.
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="true" />
 

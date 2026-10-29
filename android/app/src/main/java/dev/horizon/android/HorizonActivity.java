@@ -263,7 +263,9 @@ public class HorizonActivity extends NativeActivity {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType(type);
-            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            // A skin is exactly one PNG, so the picker closes on the tap. Mods and
+            // packs are worth picking several at a time.
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, !"skin".equals(kind));
             pendingKind = kind == null ? "mod" : kind;
             try {
                 startActivityForResult(intent, REQUEST_FILE);
@@ -274,21 +276,43 @@ public class HorizonActivity extends NativeActivity {
     }
 
     /**
+     * The folder inside `import/` a kind lands in.
+     *
+     * The picker hands back the same kind string it was given ("skin", "mod",
+     * "resourcepack"), and the two places that write a file used to spell the folder
+     * out for themselves: the result handler compared against "skins" while the picker
+     * sent "skin", so a picked skin was copied into `import/mods` and the Skins page
+     * never saw it. One function, so the two cannot drift apart again.
+     */
+    private static String folderFor(String kind) {
+        if ("skin".equals(kind)) {
+            return "skins";
+        }
+        if ("resourcepack".equals(kind)) {
+            return "resourcepacks";
+        }
+        if ("settings".equals(kind)) {
+            return "";
+        }
+        return "mods";
+    }
+
+    /**
      * Copy matching files out of the phone's Download folder into `import/<kind>`.
      *
-     * A file picker is a second activity, and a picker started from a native activity
-     * on a secondary display does not always come up. The Download folder is the one
-     * place a phone user already drops things, so this is the path that always works:
-     * no dialog, no second activity, just a copy of every file whose extension matches
-     * the kind.
+     * The fallback for a device where the picker never appears. A file picker is a
+     * second activity, and one started from a native activity on a secondary display
+     * does not always come up; the Download folder is the place a phone user already
+     * drops things, so it is what gets read when the dialog cannot be shown.
      *
      * Returns how many files were copied, or -1 when there is nothing to copy.
      */
     public int horizonImportFromDownload(String kind) {
-        String folder = "skin".equals(kind) ? "skins"
-                : "resourcepack".equals(kind) ? "resourcepacks"
-                : "settings".equals(kind) ? ""
-                : "mods";
+        String folder = folderFor(kind);
+        return importDownloadInto(kind, folder);
+    }
+
+    private int importDownloadInto(String kind, String folder) {
         String[] extensions;
         if ("skin".equals(kind)) {
             extensions = new String[] { ".png" };
@@ -299,31 +323,95 @@ public class HorizonActivity extends NativeActivity {
         } else {
             extensions = new String[] { ".json", ".txt", ".hmod", ".png", ".zip" };
         }
-        java.io.File downloads = new java.io.File(
-                android.os.Environment.getExternalStoragePublicDirectory(
-                        android.os.Environment.DIRECTORY_DOWNLOADS).getAbsolutePath());
         java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/" + folder);
         if (!dir.isDirectory() && !dir.mkdirs()) {
             return -1;
         }
+        // Scoped storage: since Android 11 a file path into Download is not readable
+        // at all, so `File.listFiles()` came back empty on every phone that ships this
+        // and the fallback never copied anything. MediaStore is the index the system
+        // keeps for exactly this, and it works without any storage permission for the
+        // app's own media and for images the player has granted.
+        int copied = copyFromMediaStore(dir, extensions);
+        if (copied < 0) {
+            // Android 10 and below still allow the direct read, and an emulator or a
+            // device with a permissive build may too.
+            copied = copyFromDownloadFolder(dir, extensions);
+        }
+        if (copied > 0) {
+            Toast.makeText(this, "Copied " + copied + " file(s) to import/" + folder,
+                    Toast.LENGTH_SHORT).show();
+        }
+        return copied > 0 ? copied : -1;
+    }
+
+    /** Copy every matching file the system's media index has in Download. */
+    private int copyFromMediaStore(java.io.File dir, String[] extensions) {
+        java.util.List<Uri> found = new java.util.ArrayList<>();
+        java.util.List<String> names = new java.util.ArrayList<>();
+        try (android.database.Cursor cursor = getContentResolver().query(
+                android.provider.MediaStore.Files.getContentUri("external"),
+                new String[] {
+                        android.provider.MediaStore.Files.FileColumns._ID,
+                        android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME
+                },
+                android.provider.MediaStore.Files.FileColumns.RELATIVE_PATH + " LIKE ?",
+                new String[] { "Download%" },
+                null)) {
+            if (cursor == null) {
+                return -1;
+            }
+            int idColumn = cursor.getColumnIndex(
+                    android.provider.MediaStore.Files.FileColumns._ID);
+            int nameColumn = cursor.getColumnIndex(
+                    android.provider.MediaStore.Files.FileColumns.DISPLAY_NAME);
+            while (cursor.moveToNext()) {
+                String name = nameColumn >= 0 ? cursor.getString(nameColumn) : null;
+                if (name == null || !matches(name, extensions)) {
+                    continue;
+                }
+                long id = cursor.getLong(idColumn);
+                found.add(android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Files.getContentUri("external"), id));
+                names.add(name);
+            }
+        } catch (Exception error) {
+            android.util.Log.i("HorizonActivity", "media index unreadable: " + error);
+            return -1;
+        }
+        int copied = 0;
+        for (int i = 0; i < found.size(); i++) {
+            try (java.io.InputStream in = getContentResolver().openInputStream(found.get(i))) {
+                if (in == null) {
+                    continue;
+                }
+                try (java.io.OutputStream out = new java.io.FileOutputStream(
+                        new java.io.File(dir, names.get(i)))) {
+                    byte[] buffer = new byte[1 << 16];
+                    int count;
+                    while ((count = in.read(buffer)) > 0) {
+                        out.write(buffer, 0, count);
+                    }
+                }
+                copied++;
+            } catch (Exception error) {
+                // One unreadable file must not stop the rest.
+            }
+        }
+        return copied;
+    }
+
+    /** Android 10 and below: Download is an ordinary readable folder. */
+    private int copyFromDownloadFolder(java.io.File dir, String[] extensions) {
+        java.io.File downloads = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS);
         java.io.File[] entries = downloads.listFiles();
         if (entries == null) {
             return -1;
         }
         int copied = 0;
         for (java.io.File entry : entries) {
-            if (!entry.isFile()) {
-                continue;
-            }
-            String name = entry.getName().toLowerCase();
-            boolean wanted = false;
-            for (String extension : extensions) {
-                if (name.endsWith(extension)) {
-                    wanted = true;
-                    break;
-                }
-            }
-            if (!wanted) {
+            if (!entry.isFile() || !matches(entry.getName(), extensions)) {
                 continue;
             }
             try {
@@ -333,11 +421,18 @@ public class HorizonActivity extends NativeActivity {
                 // One unreadable file must not stop the rest.
             }
         }
-        if (copied > 0) {
-            Toast.makeText(this, "Copied " + copied + " file(s) to import/" + folder,
-                    Toast.LENGTH_SHORT).show();
+        return copied;
+    }
+
+    /** Whether `name` ends in one of `extensions`. */
+    private static boolean matches(String name, String[] extensions) {
+        String lower = name.toLowerCase();
+        for (String extension : extensions) {
+            if (lower.endsWith(extension)) {
+                return true;
+            }
         }
-        return copied > 0 ? copied : -1;
+        return false;
     }
 
     /**
@@ -421,10 +516,7 @@ public class HorizonActivity extends NativeActivity {
         } else if (data.getData() != null) {
             picked.add(data.getData());
         }
-        String folder = "skins".equals(pendingKind) ? "skins"
-                : "resourcepack".equals(pendingKind) ? "resourcepacks"
-                : "settings".equals(pendingKind) ? ""
-                : "mods";
+        String folder = folderFor(pendingKind);
         java.io.File dir = new java.io.File(getExternalFilesDir(null), "import/" + folder);
         if (!dir.isDirectory() && !dir.mkdirs()) {
             Toast.makeText(this, "Could not create " + dir, Toast.LENGTH_LONG).show();
@@ -450,6 +542,8 @@ public class HorizonActivity extends NativeActivity {
                 Toast.makeText(this, "Could not read " + name + ": " + error, Toast.LENGTH_LONG).show();
             }
         }
+        android.util.Log.i("HorizonActivity", "import " + pendingKind + ": copied "
+                + copied + " file(s) into " + dir);
         if (copied > 0) {
             Toast.makeText(this, "Added " + copied + " file(s) to import/" + folder,
                     Toast.LENGTH_SHORT).show();

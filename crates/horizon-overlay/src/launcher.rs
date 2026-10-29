@@ -2022,6 +2022,20 @@ fn skins_page(
     sink: &mut Sink<'_>,
 ) {
     let mut y = page_header(ui, model, fonts, c, dpi, g, top);
+    // What the last import did, under the page's title: the picker is a second
+    // activity, so the tap that chose a file lands back here with no other sign that
+    // anything happened. Without this line an import that failed and one that worked
+    // looked exactly alike — a library that had not changed yet.
+    if !model.status.is_empty() {
+        let draw = ui.get_window_draw_list();
+        let _f = ui.push_font(fonts.small);
+        draw.add_text(
+            [g.x + g.pad, y - 4.0 * dpi],
+            rgba(c.muted, 1.0),
+            fit(ui, &model.status, g.w - g.pad * 2.0),
+        );
+        y += 22.0 * dpi;
+    }
     let x = g.x + g.pad;
     let avail_h = (height - y - g.pad).max(140.0 * dpi);
     let side_by_side = g.w > 760.0 * dpi;

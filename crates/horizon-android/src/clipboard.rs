@@ -90,19 +90,26 @@ fn call_with_string(method: &'static JNIStr, value: &str) -> bool {
 
 /// The picker, with the Download folder as the fallback.
 ///
-/// A picker is a second activity, and a picker started from a native activity on a
+/// The picker comes first: it is the one path that imports exactly the file the player
+/// chose. This used to be the other way round — Download was scanned and copied before
+/// the picker was ever offered — which on a phone with a few PNGs in Download silently
+/// imported all of them and never showed a dialog, so "Choose a skin" looked like it
+/// did nothing at all.
+///
+/// A picker is a second activity, though, and one started from a native activity on a
 /// secondary display does not always come up: the display the game draws on is not the
-/// one the picker wants. So the files are copied straight out of the phone's Download
-/// folder first — the place a phone user already drops things — and the picker is only
-/// offered when there is nothing there to copy. That makes Import work on a device
-/// where the dialog never appears.
+/// one the picker wants. Download is the place a phone user already drops things, so it
+/// is what the fallback reads when the dialog cannot be shown.
 fn pick(kind: &str) -> bool {
+    if call_with_string(jni_str!("horizonPickFile"), kind) {
+        return true;
+    }
     let copied = import_from_download(kind);
     if copied > 0 {
         log::info!("clipboard: copied {copied} file(s) from Download into import/{kind}");
         return true;
     }
-    call_with_string(jni_str!("horizonPickFile"), kind)
+    false
 }
 
 /// `horizonImportFromDownload`: copies matching files out of Download and answers how

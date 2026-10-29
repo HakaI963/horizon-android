@@ -862,6 +862,14 @@ impl Loading {
                     })
                     .collect();
             }
+            LauncherPage::Skins => {
+                // The library is re-read every frame, so a PNG the picker has just
+                // copied appears on the next one; what the page could not say before is
+                // whether the pick worked at all.
+                if let Some(notice) = self.menu.launcher_notice.clone() {
+                    model.status = notice;
+                }
+            }
             LauncherPage::Files => {
                 model.rows = files_rows();
             }
