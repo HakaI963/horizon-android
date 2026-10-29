@@ -636,9 +636,16 @@ impl Game<'_> {
 /// URL; this is a file the player dropped on the phone. The legacy 64x32 layout is
 /// converted the way vanilla converts it, so an old skin still wears correctly.
 pub(crate) fn decode_skin(path: &std::path::Path) -> Option<Vec<u8>> {
+    // A skin made in a pixel editor is very often an indexed PNG, and the palette has
+    // to be expanded here rather than skipped: returning `None` for it meant a skin
+    // the launcher had imported and shown on its own page could never be worn. The
+    // expansion is what `Transformations::EXPAND` is for, so the decoder does it and
+    // every arm below only has to widen to RGBA.
     let file = std::fs::File::open(path).ok()?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    decoder.set_transformations(
+        png::Transformations::normalize_to_color8() | png::Transformations::EXPAND,
+    );
     let mut reader = decoder.read_info().ok()?;
     let mut buffer = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buffer).ok()?;
@@ -656,6 +663,8 @@ pub(crate) fn decode_skin(path: &std::path::Path) -> Option<Vec<u8>> {
             .iter()
             .flat_map(|g| [*g, *g, *g, 255])
             .collect(),
+        // EXPAND turns an indexed image into RGB or RGBA before it reaches here; an
+        // arm is still needed for the match to be total.
         png::ColorType::Indexed => return None,
     };
     horizon_client::skins::process_legacy_skin(info.width, info.height, &rgba)
