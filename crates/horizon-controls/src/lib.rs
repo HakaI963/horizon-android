@@ -298,55 +298,6 @@ impl Default for Layout {
     fn default() -> Self {
         Self::bedrock()
     }
-
-    /// The Java-style pad: a cross of four keys, the mouse buttons, and the key row.
-    pub fn java() -> Self {
-        let mut controls = vec![
-            control(Action::Forward, 0.10, 0.70, 0.105),
-            control(Action::Left, 0.045, 0.815, 0.105),
-            control(Action::Right, 0.155, 0.815, 0.105),
-            control(Action::Back, 0.10, 0.93, 0.105),
-            control(Action::Sneak, 0.235, 0.93, 0.095),
-            control(Action::Sprint, 0.235, 0.80, 0.09),
-            control(Action::Mine, 0.855, 0.885, 0.155),
-            control(Action::Use, 0.70, 0.885, 0.125),
-            control(Action::Jump, 0.925, 0.72, 0.12),
-            control(Action::Up, 0.80, 0.66, 0.09),
-            control(Action::Down, 0.945, 0.60, 0.09),
-            control(Action::Fly, 0.675, 0.72, 0.09),
-            control(Action::Pick, 0.96, 0.47, 0.08),
-            control(Action::Menu, 0.045, 0.05, 0.075),
-            // The two keys that fit in the gap between the menu button and the
-            // hotbar: the off hand and a screenshot, which vanilla reaches with F
-            // and F2 and a finger would otherwise have no way to press.
-            control(Action::SwapOffhand, 0.18, 0.05, 0.05),
-            control(Action::Screenshot, 0.24, 0.05, 0.05),
-            control(Action::Pause, 0.045, 0.155, 0.075),
-            control(Action::Inventory, 0.55, 0.155, 0.08),
-            control(Action::Drop, 0.63, 0.155, 0.08),
-            control(Action::Chat, 0.71, 0.155, 0.08),
-            control(Action::Command, 0.79, 0.155, 0.08),
-            control(Action::TabList, 0.87, 0.155, 0.08),
-            control(Action::Debug, 0.95, 0.155, 0.08),
-            control(Action::View, 0.95, 0.05, 0.075),
-        ];
-        for slot in 1..=9u8 {
-            controls.push(control(
-                Action::Hotbar(slot),
-                0.30 + f32::from(slot - 1) * 0.05,
-                0.05,
-                0.05,
-            ));
-        }
-        Self {
-            scale: 1.0,
-            opacity: 0.42,
-            look_sensitivity: 6.0,
-            drag_to_look: true,
-            preset: "java".to_string(),
-            controls,
-        }
-    }
 }
 
 impl Layout {
@@ -429,6 +380,55 @@ impl Layout {
             look_sensitivity: 6.0,
             drag_to_look: true,
             preset: "bedrock".to_string(),
+            controls,
+        }
+    }
+
+    /// The Java-style pad: a cross of four keys, the mouse buttons, and the key row.
+    pub fn java() -> Self {
+        let mut controls = vec![
+            control(Action::Forward, 0.10, 0.70, 0.105),
+            control(Action::Left, 0.045, 0.815, 0.105),
+            control(Action::Right, 0.155, 0.815, 0.105),
+            control(Action::Back, 0.10, 0.93, 0.105),
+            control(Action::Sneak, 0.235, 0.93, 0.095),
+            control(Action::Sprint, 0.235, 0.80, 0.09),
+            control(Action::Mine, 0.855, 0.885, 0.155),
+            control(Action::Use, 0.70, 0.885, 0.125),
+            control(Action::Jump, 0.925, 0.72, 0.12),
+            control(Action::Up, 0.80, 0.66, 0.09),
+            control(Action::Down, 0.945, 0.60, 0.09),
+            control(Action::Fly, 0.675, 0.72, 0.09),
+            control(Action::Pick, 0.96, 0.47, 0.08),
+            control(Action::Menu, 0.045, 0.05, 0.075),
+            // The two keys that fit in the gap between the menu button and the
+            // hotbar: the off hand and a screenshot, which vanilla reaches with F
+            // and F2 and a finger would otherwise have no way to press.
+            control(Action::SwapOffhand, 0.18, 0.05, 0.05),
+            control(Action::Screenshot, 0.24, 0.05, 0.05),
+            control(Action::Pause, 0.045, 0.155, 0.075),
+            control(Action::Inventory, 0.55, 0.155, 0.08),
+            control(Action::Drop, 0.63, 0.155, 0.08),
+            control(Action::Chat, 0.71, 0.155, 0.08),
+            control(Action::Command, 0.79, 0.155, 0.08),
+            control(Action::TabList, 0.87, 0.155, 0.08),
+            control(Action::Debug, 0.95, 0.155, 0.08),
+            control(Action::View, 0.95, 0.05, 0.075),
+        ];
+        for slot in 1..=9u8 {
+            controls.push(control(
+                Action::Hotbar(slot),
+                0.30 + f32::from(slot - 1) * 0.05,
+                0.05,
+                0.05,
+            ));
+        }
+        Self {
+            scale: 1.0,
+            opacity: 0.42,
+            look_sensitivity: 6.0,
+            drag_to_look: true,
+            preset: "java".to_string(),
             controls,
         }
     }

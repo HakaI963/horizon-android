@@ -252,6 +252,11 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
+            // Vanilla's creative flight is a double tap of jump, and Cubiq's layout has
+            // no FLY button at all: a pad built from that layout would leave a creative
+            // player unable to leave the ground. The double tap is read here, before
+            // the key reaches the game, so the second tap does not also jump.
+            Action::Jump if down && self.touch_double_jump() => return Ok(()),
             _ => {}
         }
         let Some(name) = mapping(action) else {
@@ -271,6 +276,25 @@ impl Game<'_> {
             return Ok(());
         };
         self.mapped_key(key, down, false)
+    }
+
+    /// Whether this jump is the second of a double tap, and if so, the flight toggle.
+    ///
+    /// Vanilla's `Minecraft.handleKeybinds` gives 7 ticks between taps, which at 20
+    /// ticks a second is 350 ms. Measured from the previous press rather than from the
+    /// release, so a thumb that holds jump down and taps it again still counts.
+    fn touch_double_jump(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let double = self
+            .last_jump
+            .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_millis(350));
+        // The window is spent either way: three taps in a row is a flight toggle and
+        // then a jump, not two toggles.
+        self.last_jump = (!double).then_some(now);
+        if double {
+            self.touch_fly();
+        }
+        double
     }
 
     /// Creative flight, on and off. Vanilla reaches it by double-tapping jump, which

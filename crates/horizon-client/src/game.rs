@@ -1224,6 +1224,10 @@ struct Game<'a> {
     agent_pointer: bool,
     /// `Options.smoothCamera` (cinematic camera), not persisted.
     smooth_camera: bool,
+    /// When jump was last pressed on the touch layout, for the double tap that starts
+    /// creative flight. Vanilla's `handleKeybinds` gives 7 ticks between the two.
+    #[cfg(target_os = "android")]
+    last_jump: Option<std::time::Instant>,
     /// Sneak, sprint, attack and use as ToggleKeyMappings.
     toggles: horizon_client::keymapping::ToggleKeys,
     /// A world screen with the pointer captured was open last frame.
@@ -12060,6 +12064,8 @@ impl<'a> Game<'a> {
             mouse: MouseLook::default(),
             agent_pointer: false,
             smooth_camera: false,
+            #[cfg(target_os = "android")]
+            last_jump: None,
             toggles: Default::default(),
             was_playing: false,
             pause: false,
