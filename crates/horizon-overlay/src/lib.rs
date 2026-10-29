@@ -93,6 +93,10 @@ pub struct Overlay {
     /// The virtual mouse, as its toggle last left it. `paint` hands it to the layout,
     /// which is where the cursor itself lives.
     mouse_pending: bool,
+    /// Glass pixels per GUI pixel, as the platform last drew a HUD. The hotbar row is
+    /// the one part of the layout that follows the game's own bar rather than the
+    /// screen's edge, and this is what puts it there.
+    gui_scale: f32,
     /// The launcher's front page, drawn in place of the HUD at boot.
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
@@ -196,6 +200,7 @@ impl Overlay {
             info_open: false,
             info_pos: None,
             mouse_pending: false,
+            gui_scale: 0.0,
             launcher: false,
             launcher_since: None,
             background: None,
@@ -445,6 +450,10 @@ impl Overlay {
         width: f32,
         height: f32,
     ) -> Result<(), Box<dyn Error>> {
+        // The GUI scale the game drew this frame at. The overlay is the same crate
+        // tree but not the same crate, so the number is handed in rather than looked
+        // up: the hotbar row is placed from it.
+        let gui_scale = self.gui_scale;
         // Read before the destructure below: the opening needs `&self`, and that borrow
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
@@ -503,6 +512,10 @@ impl Overlay {
         // is where the frame's size is known: turning it on has to place the cursor
         // somewhere a player can see.
         let mouse_on = hud.set_mouse(*mouse_pending, width, height);
+        // And the hotbar row follows the game's own bar, which is drawn in GUI pixels:
+        // the layout needs the same scale the HUD was drawn at, which the platform
+        // knows and hands in before the frame.
+        hud.set_gui_scale(gui_scale);
         let cursor = hud.cursor();
         let mut edit = hud.edit;
         let mut opacity = hud.layout.opacity;
@@ -766,6 +779,28 @@ impl Overlay {
     /// been divided out, so what the game turns by is this and nothing else.
     pub fn look(&mut self) -> [f32; 2] {
         self.hud.take_look()
+    }
+
+    /// Pixels the virtual mouse has moved since the last call, in glass pixels.
+    pub fn take_cursor(&mut self) -> [f32; 2] {
+        self.hud.take_cursor()
+    }
+
+    /// Where the cursor is, for the overlay to draw.
+    pub fn cursor(&self) -> [f32; 2] {
+        self.hud.cursor()
+    }
+
+    /// Whether the virtual mouse is out.
+    pub fn mouse_on(&self) -> bool {
+        self.hud.mouse
+    }
+
+    /// Tell the overlay how many glass pixels one GUI pixel is worth. The hotbar row
+    /// is placed from it, so the taps land on the slots the game drew.
+    pub fn set_gui_scale(&mut self, scale: f32) {
+        self.gui_scale = scale.max(0.0);
+        self.hud.set_gui_scale(self.gui_scale);
     }
 
     /// The line in the corner. Empty turns the "Show the frame line" checkbox off

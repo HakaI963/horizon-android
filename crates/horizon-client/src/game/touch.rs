@@ -57,16 +57,40 @@ impl Game<'_> {
         if typing {
             self.ime_frame()?;
         }
-        let Some((edges, look)) =
-            horizon_overlay::with(|overlay| (overlay.presses(), overlay.look()))
-        else {
+        let Some((edges, look, cursor)) = horizon_overlay::with(|overlay| {
+            (
+                overlay.presses(),
+                overlay.look(),
+                overlay.take_cursor(),
+            )
+        }) else {
             return Ok(());
         };
         for (action, down) in edges {
             self.touch_action(action, down)?;
         }
         self.touch_look(look);
+        self.touch_cursor(cursor);
         Ok(())
+    }
+
+    /// Move the game's own pointer by what the virtual mouse has travelled.
+    ///
+    /// The overlay keeps the cursor in the glass's pixels and the game keeps its own in
+    /// GUI pixels, so the movement is converted by the GUI scale rather than sent as a
+    /// position: a screen that changes the scale (the inventory does, at large scales)
+    /// would otherwise put the pointer somewhere the player did not point.
+    fn touch_cursor(&mut self, moved: [f32; 2]) {
+        if moved[0] == 0.0 && moved[1] == 0.0 {
+            return;
+        }
+        let window = self
+            .renderer
+            .as_ref()
+            .map_or([1, 1], |r| [r.config.width, r.config.height]);
+        let scale = horizon_client::hud::gui_scale(window).max(1.0);
+        self.cursor.0 += moved[0] / scale;
+        self.cursor.1 += moved[1] / scale;
     }
 
     /// The words the phone's keyboard committed since the last frame, said as the
@@ -257,6 +281,31 @@ impl Game<'_> {
             // player unable to leave the ground. The double tap is read here, before
             // the key reaches the game, so the second tap does not also jump.
             Action::Jump if down && self.touch_double_jump() => return Ok(()),
+            // F1: the HUD and every overlay the game draws over the world.
+            Action::HideGui => {
+                if down {
+                    // F1 is a toggle in the game's own handler, so it is a whole press
+                    // and release here rather than a held key.
+                    self.mapped_key(KeyCode::F1, true, false)?;
+                    self.mapped_key(KeyCode::F1, false, false)?;
+                }
+                return Ok(());
+            }
+            // The phone's own keyboard, for the chat line: the same thing the screen
+            // does by itself when the chat screen opens.
+            Action::Keyboard => {
+                if down {
+                    soft_keyboard::show();
+                }
+                return Ok(());
+            }
+            // Back to the launcher, which is what leaving a world means on a phone.
+            Action::Back => {
+                if down {
+                    self.pad_back();
+                }
+                return Ok(());
+            }
             _ => {}
         }
         let Some(name) = mapping(action) else {
@@ -358,7 +407,14 @@ fn mapping(action: Action) -> Option<String> {
         Action::View => "key.togglePerspective",
         Action::Screenshot => "key.screenshot",
         Action::Hotbar(slot) => return Some(format!("key.hotbar.{slot}")),
-        Action::Fly | Action::Pause | Action::Menu => return None,
+        Action::Fly
+        | Action::Pause
+        | Action::Menu
+        | Action::Panel
+        | Action::Mouse
+        | Action::HideGui
+        | Action::Keyboard
+        | Action::Back => return None,
     };
     Some(name.to_owned())
 }

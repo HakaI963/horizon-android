@@ -381,25 +381,6 @@ impl Layout {
         // The menu button is Horizon's own: the launcher's overlay panel, which a
         // Cubiq layout has no equivalent of.
         put(Action::Menu, 44.0, 19.0, 1014.0, "keyboard", true);
-        // The hotbar is a row of taps rather than keys: it is the one row a thumb
-        // sweeps, and it has to be where the game draws its own bar.
-        for slot in 1..=9u8 {
-            let i = f32::from(slot - 1);
-            controls.push(Control {
-                action: Action::Hotbar(slot),
-                bounds: Some([
-                    0.345 + i * 0.0345,
-                    0.905,
-                    0.030,
-                    0.052,
-                ]),
-                center: [0.345 + i * 0.0345 + 0.015, 0.905 + 0.026],
-                size: 0.052,
-                opacity: Some(0.0),
-                icon: None,
-                round: false,
-            });
-        }
         Self {
             scale: 1.0,
             opacity: 0.42,
@@ -463,6 +444,21 @@ impl Layout {
         put(Action::HideGui, 345.0, 9854.0, 1800.0, Some("gui"), true);
         // The floating panel's handle, out of the way of every thumb.
         put(Action::Panel, 9100.0, 9700.0, 1200.0, Some("panel"), true);
+        // The hotbar: nine slots, invisible, placed by the GUI scale rather than by
+        // this file. They are in the list so the layout has them to place, and the
+        // rectangles below are only what a layout with no scale yet falls back to.
+        for slot in 1..=9u8 {
+            let i = f32::from(slot - 1);
+            controls.push(Control {
+                action: Action::Hotbar(slot),
+                bounds: Some([0.345 + i * 0.0345, 0.905, 0.030, 0.052]),
+                center: [0.345 + i * 0.0345 + 0.015, 0.905 + 0.026],
+                size: 0.052,
+                opacity: Some(0.0),
+                icon: None,
+                round: false,
+            });
+        }
         Self {
             scale: 1.0,
             opacity: 0.42,
@@ -667,6 +663,11 @@ pub struct Hud {
     /// ticks and a tap can begin and end inside one frame at 120 fps.
     edges: Vec<(Action, bool)>,
     look: [f32; 2],
+    /// The GUI scale in force, as the platform last drew a HUD. The hotbar row is
+    /// placed from it, because that is the one part of the layout that follows the
+    /// game's own bar rather than the screen's edge. `0` means the platform has not
+    /// said yet, and the row stays where the layout put it.
+    gui_scale: f32,
     /// The virtual mouse is out: a finger on bare glass moves a cursor instead of
     /// turning the camera, and the two mouse buttons click at it.
     ///
@@ -700,6 +701,7 @@ impl Hud {
             held: BTreeSet::new(),
             edges: Vec::new(),
             look: [0.0, 0.0],
+            gui_scale: 0.0,
             mouse: false,
             cursor: [0.0, 0.0],
             cursor_moved: [0.0, 0.0],
@@ -908,7 +910,63 @@ impl Hud {
     }
 
     pub fn buttons(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
+        if self.gui_scale > 0.0 {
+            return self
+                .layout
+                .buttons_with_hotbar(width, height, self.gui_scale);
+        }
         self.layout.front_to_back(width, height)
+    }
+
+    /// Tell the layout how many glass pixels one GUI pixel is worth this frame.
+    pub fn set_gui_scale(&mut self, scale: f32) {
+        self.gui_scale = scale.max(0.0);
+    }
+
+    /// The same list, with the hotbar row placed over the bar the game actually draws.
+    ///
+    /// The hotbar is the one part of the layout that cannot be a fixed fraction of the
+    /// screen: its position and size come from the GUI scale and the window, and both
+    /// are the player's to change. So its nine buttons are worked out from the same
+    /// numbers the HUD uses — a 182x22 bar centred at the bottom, one 20-pixel slot per
+    /// item — and converted back to glass pixels. Move the scale and the taps move with
+    /// the bar; there is no second layout to keep in step.
+    pub fn buttons_with_hotbar(&self, width: f32, height: f32, gui: f32) -> Vec<(Action, Rect)> {
+        let mut buttons = self.layout.front_to_back(width, height);
+        if gui <= 0.0 {
+            return buttons;
+        }
+        // `HudBatch` works in GUI pixels: the bar is 182 wide and 22 tall, its left
+        // edge is the centre minus 91, and the selection box starts one pixel out.
+        let (gw, gh) = (width / gui, height / gui);
+        let left = (gw / 2.0).floor() - 91.0;
+        let top = gh - 22.0;
+        for (action, rect) in &mut buttons {
+            let Action::Hotbar(slot) = action else {
+                continue;
+            };
+            let slot = f32::from(*slot);
+            if !(1.0..=9.0).contains(&slot) {
+                continue;
+            }
+            // Slot n covers the 20-pixel column the game draws it in, and the whole
+            // height of the bar so a thumb that lands high still selects it.
+            *rect = Rect {
+                x: (left + (slot - 1.0) * 20.0) * gui,
+                y: (top - 1.0) * gui,
+                width: 20.0 * gui,
+                height: 24.0 * gui,
+            };
+        }
+        // Smallest first, the same order `front_to_back` gives: the hotbar is the
+        // narrowest thing in its band, so it wins the taps meant for it and a wider
+        // button behind it cannot swallow them.
+        buttons.sort_by(|a, b| {
+            a.1.width
+                .partial_cmp(&b.1.width)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        buttons
     }
 
     /// The button the layout is being dragged by, if a finger has hold of one. The

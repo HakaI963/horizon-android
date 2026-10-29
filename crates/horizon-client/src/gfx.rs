@@ -2934,7 +2934,11 @@ impl Renderer {
         let device = &self.device;
         let queue = &self.queue;
         let (width, height) = (self.config.width as f32, self.config.height as f32);
+        // The scale the HUD was drawn at this frame: the touch hotbar is placed from
+        // the same numbers the game's own bar is, so the taps land on its slots.
+        let gui_scale = crate::hud::gui_scale([self.config.width, self.config.height]);
         if let Some(Err(error)) = horizon_overlay::with(|overlay| {
+            overlay.set_gui_scale(gui_scale);
             overlay.paint(device, queue, &mut pass, width, height)
         }) {
             log::warn!("gfx: no controls this frame: {error}");

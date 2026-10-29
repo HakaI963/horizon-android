@@ -552,6 +552,12 @@ pub struct HudVertex {
 }
 /// The GUI Scale option (0 = auto).
 pub static GUI_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The GUI scale in force for this frame's window: how many glass pixels one GUI pixel
+/// is worth. The virtual mouse converts between the two with it.
+pub fn gui_scale(window: [u32; 2]) -> f32 {
+    HudBatch::new(window).scale
+}
 /// One frame of overlay geometry in GUI pixels.
 pub struct HudBatch {
     pub vertices: Vec<HudVertex>,
