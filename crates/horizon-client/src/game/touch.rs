@@ -276,10 +276,10 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            // Vanilla's creative flight is a double tap of jump, and Cubiq's layout has
-            // no FLY button at all: a pad built from that layout would leave a creative
-            // player unable to leave the ground. The double tap is read here, before
-            // the key reaches the game, so the second tap does not also jump.
+            // Vanilla's creative flight is a double tap of jump, and the default pad has
+            // no FLY button: without this a creative player could not leave the ground.
+            // The double tap is read here, before the key reaches the game, so the
+            // second tap does not also jump.
             Action::Jump if down && self.touch_double_jump() => return Ok(()),
             // F1: the HUD and every overlay the game draws over the world.
             Action::HideGui => {
@@ -300,7 +300,7 @@ impl Game<'_> {
                 return Ok(());
             }
             // Back to the launcher, which is what leaving a world means on a phone.
-            Action::Back => {
+            Action::ExitWorld => {
                 if down {
                     self.pad_back();
                 }
@@ -413,8 +413,7 @@ fn mapping(action: Action) -> Option<String> {
         | Action::Panel
         | Action::Mouse
         | Action::HideGui
-        | Action::Keyboard
-        | Action::Back => return None,
+        | Action::ExitWorld => return None,
     };
     Some(name.to_owned())
 }

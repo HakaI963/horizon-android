@@ -1420,7 +1420,7 @@ fn draw_button(
     }
 }
 
-/// The glyph a Cubiq layout names, drawn as shapes.
+/// The glyph a layout names, drawn as shapes.
 ///
 /// These are not images: the buttons they go on are the ones a player's thumb rests
 /// on, and a glyph made of a few lines and triangles is crisp at every size and costs

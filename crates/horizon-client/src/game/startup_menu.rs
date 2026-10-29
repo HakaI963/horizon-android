@@ -2750,8 +2750,8 @@ fn java_layout() -> horizon_controls::Layout {
     horizon_controls::Layout::java()
 }
 
-/// Cubiq's Pocket Edition pad, which lives in the layout crate because it is a
-/// conversion of that format rather than a hand-placed arrangement.
+/// The Bedrock-style pad, which lives in the layout crate because it is a conversion
+/// of a documented format rather than a hand-placed arrangement.
 fn bedrock_layout() -> horizon_controls::Layout {
     horizon_controls::Layout::bedrock()
 }

@@ -66,7 +66,7 @@ pub enum Action {
     /// The phone's own keyboard, for the chat line and the command line.
     Keyboard,
     /// Leave the world and go back to the launcher.
-    Back,
+    ExitWorld,
     Hotbar(u8),
 }
 
@@ -103,7 +103,7 @@ impl Action {
             Action::Mouse => "MOUSE",
             Action::HideGui => "HIDE",
             Action::Keyboard => "KEY",
-            Action::Back => "BACK",
+            Action::ExitWorld => "BACK",
             Action::Hotbar(_) => "",
         }
     }
@@ -116,10 +116,7 @@ impl Action {
     /// game, it changes what a drag on the glass means, so the overlay reads it and
     /// the game never hears of it.
     pub fn is_overlay(self) -> bool {
-        matches!(
-            self,
-            Action::Menu | Action::Panel | Action::Mouse | Action::Keyboard
-        )
+        matches!(self, Action::Menu | Action::Panel | Action::Mouse)
     }
 
     /// The number on a hotbar button, or the legend of anything else.
@@ -181,18 +178,18 @@ impl Rect {
 /// One button: what it sends, where it sits, and how large it is relative to the
 /// screen it was placed on.
 ///
-/// A button is a rectangle, not a square. Cubiq's layouts — the ones a player
-/// recognises from other launchers — are built out of wide tabs, tall D-pad arms and
-/// circles, and a square-only model cannot express any of them: the shape has to come
-/// from the layout, not from the button's own idea of what a button looks like.
+/// A button is a rectangle, not a square. A touch pad is built out of wide tabs, tall
+/// D-pad arms and circles, and a square-only model cannot express any of them: the
+/// shape has to come from the layout, not from the button's own idea of what a button
+/// looks like.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Control {
     pub action: Action,
     /// The button's rectangle as fractions of the screen: left, top, width, height.
     ///
-    /// This is the shape a Cubiq layout gives, and it is the one that is used when it
-    /// is present. `center`/`size` below are what an older file carries, and are read
-    /// only when this is absent, so a layout written by a previous build still loads.
+    /// This is the shape a layout file gives, and it is the one that is used when it is
+    /// present. `center`/`size` below are what an older file carries, and are read only
+    /// when this is absent, so a layout written by a previous build still loads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bounds: Option<[f32; 4]>,
     /// The middle of the button, as a fraction of the width and the height. A
@@ -209,10 +206,10 @@ pub struct Control {
     /// Absent from a file written before it existed, so the layout's opacity wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// The glyph drawn instead of the legend, named the way Cubiq names its icons:
-    /// `attack`, `jump`, `sneak`, `sprint`, `inventory`, `swap`, `chat`, `pause`,
-    /// `keyboard`, `perspective`, `forward`, `back`, `left`, `right`. A button with
-    /// none draws its text, which is what the Java-style preset wants.
+    /// The glyph drawn instead of the legend: `attack`, `jump`, `sneak`, `sprint`,
+    /// `inventory`, `swap`, `chat`, `pause`, `keyboard`, `perspective`, `forward`,
+    /// `back`, `left`, `right`, `mouse`, `gui`, `panel`. A button with none draws its
+    /// text, which is what the Java-style preset wants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// A circle rather than a rounded rectangle: Bedrock's own buttons are round.
@@ -290,8 +287,8 @@ fn control(action: Action, x: f32, y: f32, size: f32) -> Control {
     }
 }
 
-/// A button from a Cubiq-shaped layout: a rectangle in fractions of the screen, an
-/// icon and a shape, with no centre or size of its own.
+/// A button from a shaped layout: a rectangle in fractions of the screen, an icon and
+/// a shape, with no centre or size of its own.
 fn shaped(
     action: Action,
     bounds: [f32; 4],
@@ -327,7 +324,7 @@ impl Default for Layout {
 }
 
 impl Layout {
-    /// Cubiq's Pocket Edition layout: the pad a Bedrock player recognises.
+    /// The Pocket Edition pad: round buttons with icons, and a tall D-pad.
     ///
     /// Converted from that layout file's own scale. It stores a position as a fraction
     /// of the space left over after the button — so `x = 0` is flush left and `10000`
@@ -375,11 +372,10 @@ impl Layout {
         put(Action::Jump, 9480.0, 2792.0, 1972.0, "jump", true);
         put(Action::Inventory, 6785.0, 10000.0, 1014.0, "inventory", true);
         put(Action::SwapOffhand, 7850.0, 9985.0, 1000.0, "swap", true);
-        // The pick button doubles as the debug overlay in Cubiq's file, which is the
-        // only way a phone reaches F3.
+        // The pick button doubles as the debug overlay, which is the only way a phone
+        // reaches F3.
         put(Action::Pick, 317.0, 25.0, 1028.0, "debug", true);
-        // The menu button is Horizon's own: the launcher's overlay panel, which a
-        // Cubiq layout has no equivalent of.
+        // The menu button is Horizon's own: the launcher's overlay panel.
         put(Action::Menu, 44.0, 19.0, 1014.0, "keyboard", true);
         Self {
             scale: 1.0,
@@ -391,17 +387,15 @@ impl Layout {
         }
     }
 
-    /// The Mojo pad: a D-pad, the two mouse buttons, and a GUI toggle that hides the
-    /// pad and brings up the key row.
+    /// The default pad: a D-pad, the two mouse buttons, and the key row.
     ///
-    /// Converted from that layout's own scale: a position is a fraction of the room the
-    /// button leaves behind (`0` flush left, `10000` flush right), and a size is a
+    /// Converted from a layout file's own scale: a position is a fraction of the room
+    /// the button leaves behind (`0` flush left, `10000` flush right), and a size is a
     /// fraction of the screen's short edge.
     ///
-    /// Its GUI button is the one a player presses to get the controls out of the way,
-    /// so it is `HideGui` here rather than a layer switch: this launcher has no layers,
-    /// and hiding everything the game draws over the world is what that button means
-    /// once there is nothing to switch to.
+    /// The GUI button is the one a player presses to get the controls out of the way,
+    /// so it is `HideGui` here: hiding everything the game draws over the world is what
+    /// that button means once there is nothing to switch to.
     pub fn mojo() -> Self {
         const ASPECT: f32 = 9.0 / 16.0;
         let mut controls = Vec::new();
@@ -604,6 +598,52 @@ impl Layout {
     /// the tap has to be the one drawn on top.
     pub fn front_to_back(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
         let mut buttons = self.buttons(width, height);
+        buttons.sort_by(|a, b| {
+            a.1.width
+                .partial_cmp(&b.1.width)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        buttons
+    }
+
+    /// The same list, with the hotbar row placed over the bar the game actually draws.
+    ///
+    /// The hotbar is the one part of the layout that cannot be a fixed fraction of the
+    /// screen: its position and size come from the GUI scale and the window, and both
+    /// are the player's to change. So its nine buttons are worked out from the same
+    /// numbers the HUD uses — a 182x22 bar centred at the bottom, one 20-pixel slot per
+    /// item — and converted back to glass pixels. Move the scale and the taps move with
+    /// the bar; there is no second layout to keep in step.
+    pub fn buttons_with_hotbar(&self, width: f32, height: f32, gui: f32) -> Vec<(Action, Rect)> {
+        let mut buttons = self.front_to_back(width, height);
+        if gui <= 0.0 {
+            return buttons;
+        }
+        // `HudBatch` works in GUI pixels: the bar is 182 wide and 22 tall, its left
+        // edge is the centre minus 91, and the selection box starts one pixel out.
+        let (gw, gh) = (width / gui, height / gui);
+        let left = (gw / 2.0).floor() - 91.0;
+        let top = gh - 22.0;
+        for (action, rect) in &mut buttons {
+            let Action::Hotbar(slot) = action else {
+                continue;
+            };
+            let slot = f32::from(*slot);
+            if !(1.0..=9.0).contains(&slot) {
+                continue;
+            }
+            // Slot n covers the 20-pixel column the game draws it in, and the whole
+            // height of the bar so a thumb that lands high still selects it.
+            *rect = Rect {
+                x: (left + (slot - 1.0) * 20.0) * gui,
+                y: (top - 1.0) * gui,
+                width: 20.0 * gui,
+                height: 24.0 * gui,
+            };
+        }
+        // Smallest first, the same order `front_to_back` gives: the hotbar is the
+        // narrowest thing in its band, so it wins the taps meant for it and a wider
+        // button behind it cannot swallow them.
         buttons.sort_by(|a, b| {
             a.1.width
                 .partial_cmp(&b.1.width)
@@ -923,52 +963,6 @@ impl Hud {
         self.gui_scale = scale.max(0.0);
     }
 
-    /// The same list, with the hotbar row placed over the bar the game actually draws.
-    ///
-    /// The hotbar is the one part of the layout that cannot be a fixed fraction of the
-    /// screen: its position and size come from the GUI scale and the window, and both
-    /// are the player's to change. So its nine buttons are worked out from the same
-    /// numbers the HUD uses — a 182x22 bar centred at the bottom, one 20-pixel slot per
-    /// item — and converted back to glass pixels. Move the scale and the taps move with
-    /// the bar; there is no second layout to keep in step.
-    pub fn buttons_with_hotbar(&self, width: f32, height: f32, gui: f32) -> Vec<(Action, Rect)> {
-        let mut buttons = self.layout.front_to_back(width, height);
-        if gui <= 0.0 {
-            return buttons;
-        }
-        // `HudBatch` works in GUI pixels: the bar is 182 wide and 22 tall, its left
-        // edge is the centre minus 91, and the selection box starts one pixel out.
-        let (gw, gh) = (width / gui, height / gui);
-        let left = (gw / 2.0).floor() - 91.0;
-        let top = gh - 22.0;
-        for (action, rect) in &mut buttons {
-            let Action::Hotbar(slot) = action else {
-                continue;
-            };
-            let slot = f32::from(*slot);
-            if !(1.0..=9.0).contains(&slot) {
-                continue;
-            }
-            // Slot n covers the 20-pixel column the game draws it in, and the whole
-            // height of the bar so a thumb that lands high still selects it.
-            *rect = Rect {
-                x: (left + (slot - 1.0) * 20.0) * gui,
-                y: (top - 1.0) * gui,
-                width: 20.0 * gui,
-                height: 24.0 * gui,
-            };
-        }
-        // Smallest first, the same order `front_to_back` gives: the hotbar is the
-        // narrowest thing in its band, so it wins the taps meant for it and a wider
-        // button behind it cannot swallow them.
-        buttons.sort_by(|a, b| {
-            a.1.width
-                .partial_cmp(&b.1.width)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        buttons
-    }
-
     /// The button the layout is being dragged by, if a finger has hold of one. The
     /// overlay draws that one brighter, because a picked-up button that looks like
     /// every other one reads as a control that is not answering.
@@ -1033,7 +1027,7 @@ impl Hud {
     /// Set a button's own size, clamped like every other edit.
     ///
     /// A shaped button is resized about its own middle and keeps its proportions: the
-    /// Cubiq layouts draw a wide tab and a tall D-pad arm on purpose, and a size slider
+    /// A layout draws a wide tab and a tall D-pad arm on purpose, and a size slider
     /// that squared them off would throw that away.
     pub fn set_control_size(&mut self, action: Action, size: f32) {
         if let Some(control) = self
