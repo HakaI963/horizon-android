@@ -704,11 +704,14 @@ impl Loading {
             patches: patch_stories(),
             ..Default::default()
         };
-        // The artwork behind the front page, uploaded once. It is an atlas of the
-        // pack's own frames, so this is one texture for the whole animation rather
-        // than one per frame.
+        // The landscape behind the front page: the launcher's own pixel art, made at
+        // the window's width. It is generated rather than shipped, so this is one
+        // texture and no asset.
         if let Some(r) = &self.renderer {
-            horizon_overlay::with(|o| o.set_launcher_background(&r.device, &r.queue));
+            let width = r.config.width as f32;
+            horizon_overlay::with(|o| {
+                o.set_launcher_background(&r.device, &r.queue, width);
+            });
         }
         // The Skins page needs the chosen PNG on the GPU to draw the player out of its
         // own pixels. This uploads only when the file changed, so it costs nothing on

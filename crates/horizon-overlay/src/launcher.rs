@@ -405,12 +405,6 @@ const PRESS_DROP: f32 = 1.0;
 const NAV_GLOW_ALPHA: f32 = 1.0;
 const NAV_GLOW_TAU: f32 = 0.09;
 
-/// The background's grid: 8 columns by 4 rows of 480x270 frames.
-pub const BG_COLS: u32 = 8;
-pub const BG_ROWS: u32 = 4;
-/// How long one full pass through the artwork takes, in seconds.
-pub const BG_PERIOD: f32 = 5.3;
-
 /// The one geometry every element is placed from.
 #[derive(Clone, Copy)]
 struct Grid {
@@ -727,7 +721,8 @@ pub fn draw(
     opening: Option<f32>,
     fade: f32,
     reduce_motion: bool,
-    background: Option<(TextureId, [u32; 2], f32)>,
+    background: Option<(TextureId, [u32; 2])>,
+    stone: Option<(TextureId, [u32; 2])>,
     skin: Option<TextureId>,
     out: &mut Vec<LauncherEvent>,
 ) {
@@ -783,10 +778,27 @@ pub fn draw(
                 SETTINGS_SCROLL.set(0.0);
                 SETTINGS_HELD.set(ui.io().mouse_down[0]);
             }
-            // The stone page behind everything.
+            // The stone page behind everything: the desktop's own texture, tiled.
             {
                 let draw = ui.get_window_draw_list();
                 fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+                if let Some((texture, size)) = stone {
+                    // The tile is one texture drawn repeatedly at its own size, which is
+                    // what `blocks::stone` does on the desktop.
+                    let tile = size[0] as f32;
+                    if tile > 0.0 {
+                        let cols = (width / tile).ceil() as usize;
+                        let rows = (height / tile).ceil() as usize;
+                        for row in 0..rows {
+                            for col in 0..cols {
+                                let x = col as f32 * tile;
+                                let y = row as f32 * tile;
+                                draw.add_image(texture, [x, y], [x + tile, y + tile])
+                                    .build();
+                            }
+                        }
+                    }
+                }
             }
             // The top bar spans the window; the sidebar starts under it.
             let bar = top_bar(ui, model, fonts, c, dpi, width, rise, &mut sink);
@@ -1285,7 +1297,7 @@ fn play_page(
     g: &Grid,
     height: f32,
     top: f32,
-    background: Option<(TextureId, [u32; 2], f32)>,
+    background: Option<(TextureId, [u32; 2])>,
     sink: &mut Sink<'_>,
 ) {
     let playable = model.playable && !model.instance.is_empty();
@@ -1298,8 +1310,8 @@ fn play_page(
     {
         let draw = ui.get_window_draw_list();
         fill(&draw, [g.x, top], [g.x + g.w, top + banner_h], c.page, 1.0, 0.0);
-        if let Some((texture, size, frame)) = background {
-            artwork(&draw, texture, size, frame, [g.x, top], [g.x + g.w, top + banner_h]);
+        if let Some((texture, size)) = background {
+            artwork(&draw, texture, size, [g.x, top], [g.x + g.w, top + banner_h]);
         }
         // The veils: one from the top so the hero reads, one from the bottom.
         draw.add_rect_filled_multicolor(
@@ -1556,69 +1568,33 @@ fn play_page(
     }
 }
 
-/// The landscape behind the hero, cover-cropped into the banner.
+/// The landscape behind the hero, drawn texel for texel.
+///
+/// The desktop bakes this at the window's scale so each texel is a whole block of
+/// device pixels, and draws it at exactly that size. The same guarantee here comes
+/// from the sampler: the texture is uploaded with nearest-neighbour filtering, and
+/// it is drawn at a whole multiple of its texel size, so no texel is ever half a
+/// pixel and the edges stay sharp.
 fn artwork(
     draw: &DrawListMut<'_>,
     texture: TextureId,
     size: [u32; 2],
-    frame: f32,
     min: [f32; 2],
     max: [f32; 2],
 ) {
-    let (aw, ah) = (size[0] as f32, size[1] as f32);
-    if aw <= 0.0 || ah <= 0.0 {
+    let (tw, th) = (size[0] as f32, size[1] as f32);
+    if tw <= 0.0 || th <= 0.0 {
         return;
     }
-    let cell_w = aw / BG_COLS as f32;
-    let cell_h = ah / BG_ROWS as f32;
-    let total = (BG_COLS * BG_ROWS) as usize;
-    if total == 0 || cell_w <= 0.0 || cell_h <= 0.0 {
-        return;
-    }
-    let at = frame.rem_euclid(total as f32);
-    let index = (at.floor() as usize) % total;
-    let next = (index + 1) % total;
-    let mix = (at - at.floor()).clamp(0.0, 1.0);
-    let cell = |i: usize| {
-        let col = (i % BG_COLS as usize) as f32;
-        let row = (i / BG_COLS as usize) as f32;
-        let u0 = col * cell_w / aw;
-        let v0 = row * cell_h / ah;
-        (
-            [u0, v0],
-            [(col + 1.0) * cell_w / aw, v0],
-            [(col + 1.0) * cell_w / aw, (row + 1.0) * cell_h / ah],
-            [u0, (row + 1.0) * cell_h / ah],
-        )
-    };
+    // The landscape is as tall as the banner and as wide as it needs to be; the
+    // banner clips what runs past its right edge, which is what the desktop does.
     let (bw, bh) = (max[0] - min[0], max[1] - min[1]);
-    let scale = (bw / cell_w).max(bh / cell_h);
-    let (dw, dh) = (cell_w * scale, cell_h * scale);
-    let x0 = min[0] + (bw - dw) / 2.0;
-    let y0 = min[1] + (bh - dh) / 2.0;
-    let (a, b, d, e) = cell(index);
-    draw.add_image_quad(
-        texture,
-        [x0, y0],
-        [x0 + dw, y0],
-        [x0 + dw, y0 + dh],
-        [x0, y0 + dh],
-    )
-    .uv(a, b, d, e)
-    .build();
-    if mix > 0.004 {
-        let (a, b, d, e) = cell(next);
-        draw.add_image_quad(
-            texture,
-            [x0, y0],
-            [x0 + dw, y0],
-            [x0 + dw, y0 + dh],
-            [x0, y0 + dh],
-        )
-        .uv(a, b, d, e)
-        .col(rgba(0xffffff, mix))
+    let scale = (bh / th).max(1.0);
+    let dw = tw * scale;
+    let dh = th * scale;
+    let _ = bw;
+    draw.add_image(texture, [min[0], max[1] - dh], [min[0] + dw, max[1]])
         .build();
-    }
 }
 /// A block button: a face, a two-pixel outline, a light top edge and a darker lip.
 /// `Primary` is the main action's violet; `Secondary` is the stone button; a press
@@ -3985,7 +3961,6 @@ pub fn draw_loading(
     dpi: f32,
     width: f32,
     height: f32,
-    _background: Option<(TextureId, [u32; 2], f32)>,
     elapsed: f32,
 ) {
     let c = &THEME;

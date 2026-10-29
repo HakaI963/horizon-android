@@ -26,6 +26,7 @@ use imgui::{
     Condition, ConfigFlags, Context, DrawListMut, ImColor32, MouseButton, Ui, WindowFlags,
 };
 
+mod art;
 mod launcher;
 pub use launcher::{
     LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
@@ -78,11 +79,12 @@ pub struct Overlay {
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
     launcher_since: Option<Instant>,
-    /// The pack's animated artwork, uploaded once: an atlas of frames, its size,
-    /// and the clock the frame is read from.
+    /// The Play page's landscape, and its size in texels.
     background: Option<imgui::TextureId>,
     background_size: [u32; 2],
-    background_since: Option<Instant>,
+    /// The page's stone texture, tiled behind everything, and its size in texels.
+    stone: Option<imgui::TextureId>,
+    stone_size: [u32; 2],
     /// The loading surface, drawn over everything between Play and the world. Its
     /// progress is the platform's, because only the platform knows how far the
     /// engine has got.
@@ -170,7 +172,8 @@ impl Overlay {
             launcher_since: None,
             background: None,
             background_size: [0, 0],
-            background_since: None,
+            stone: None,
+            stone_size: [0, 0],
             loading: None,
             loading_since: None,
             page_since: None,
@@ -394,9 +397,8 @@ impl Overlay {
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
         let fade = self.page_fade();
-        let background = self
-            .background
-            .map(|id| (id, self.background_size, self.background_frame()));
+        let background = self.background.map(|id| (id, self.background_size));
+        let stone = self.stone.map(|id| (id, self.stone_size));
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
         // One borrow of `self`, every field it needs: the renderer and the context are
@@ -486,6 +488,7 @@ impl Overlay {
                         fade,
                         *reduce_motion,
                         background,
+                        stone,
                         *skin_texture,
                         launcher_events,
                     );
@@ -543,16 +546,7 @@ impl Overlay {
                 let elapsed = loading_since
                     .map(|at| at.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
-                launcher::draw_loading(
-                    ui,
-                    screen,
-                    fonts,
-                    *dpi,
-                    width,
-                    height,
-                    None,
-                    elapsed,
-                );
+                launcher::draw_loading(ui, screen, fonts, *dpi, width, height, elapsed);
             }
         }
 
@@ -874,78 +868,57 @@ impl Overlay {
         self.launcher
     }
 
-    /// Where the artwork is in its own sequence, in frames. The pack's frames are
-    /// thinned to keyframes and cross-faded, so this is fractional: the whole part is
-    /// the frame and the fraction is how far the next one has come in.
+    /// Upload the launcher's landscape: the desktop launcher's own pixel art, made
+    /// here from its palette rather than shipped as an image.
     ///
-    /// A phone's launcher is looked at for seconds at a time, so the sequence loops on
-    /// its own clock rather than on the page's. `reduce_motion` freezes it on the
-    /// first frame, which is the still artwork the pack also ships.
-    fn background_frame(&self) -> f32 {
-        if self.reduce_motion {
-            return 0.0;
+    /// It is generated once, at the width the window happens to be. A resize makes it
+    /// again, which is cheap: it is a few thousand texels of arithmetic.
+    pub fn set_launcher_background(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: f32) {
+        let texels_wanted = (width / art::SCENE_TEXEL).ceil().max(1.0) as usize;
+        // A step of 64 texels, so a window that grows by a few pixels keeps its image.
+        let texels_wanted = texels_wanted.next_multiple_of(64);
+        // The stone tile, once: the same generated texture the desktop tiles behind
+        // every page.
+        if self.stone.is_none() {
+            let n = horizon_theme::TILE_TEXELS * 4;
+            let tile = art::stone(0x0f0d17, n);
+            let stone_pixels = art::rgba(&tile);
+            let id = self.renderer.as_mut().map(|renderer| {
+                launcher_texture_nearest(
+                    device,
+                    queue,
+                    renderer,
+                    "launcher stone",
+                    n as u32,
+                    n as u32,
+                    &stone_pixels,
+                )
+            });
+            self.stone = id;
+            self.stone_size = [n as u32, n as u32];
         }
-        let Some(since) = self.background_since else {
-            return 0.0;
-        };
-        let frames = (launcher::BG_COLS * launcher::BG_ROWS) as f32;
-        let at = since.elapsed().as_secs_f32() / launcher::BG_PERIOD;
-        (at * frames).rem_euclid(frames)
-    }
-
-    /// Upload the launcher's background: the pack's own artwork, as an atlas of
-    /// frames. Called once, when the device exists.
-    pub fn set_launcher_background(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.background.is_some() {
+        if self.background_size[0] as usize >= texels_wanted && self.background.is_some() {
             return;
         }
-        let bytes: &[u8] = include_bytes!("../art/background.png");
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-        decoder.set_transformations(png::Transformations::normalize_to_color8());
-        let Ok(mut reader) = decoder.read_info() else {
-            log::warn!("overlay: the launcher background is not a readable PNG");
-            return;
-        };
-        let Some(size) = reader.output_buffer_size() else {
-            return;
-        };
-        let mut buffer = vec![0; size];
-        let Ok(info) = reader.next_frame(&mut buffer) else {
-            log::warn!("overlay: the launcher background has no frame");
-            return;
-        };
-        // The renderer samples every imgui texture through one shader, so the
-        // background goes in the same unorm format the font atlas and the skin do.
-        let pixels = match info.color_type {
-            png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
-            png::ColorType::Rgb => buffer[..info.buffer_size()]
-                .chunks_exact(3)
-                .flat_map(|p| [p[0], p[1], p[2], 255])
-                .collect(),
-            _ => {
-                log::warn!("overlay: the launcher background must be RGB or RGBA");
-                return;
-            }
-        };
+        let texels = art::scene(&art::SUNSET, 3, texels_wanted, art::SCENE_HEIGHT);
+        let pixels = art::rgba(&texels);
         let id = self.renderer.as_mut().map(|renderer| {
-            launcher_texture(
+            launcher_texture_nearest(
                 device,
                 queue,
                 renderer,
-                "launcher background",
-                info.width,
-                info.height,
+                "launcher landscape",
+                texels_wanted as u32,
+                art::SCENE_HEIGHT as u32,
                 &pixels,
             )
         });
         self.background = id;
-        self.background_size = [info.width, info.height];
-        self.background_since = Some(Instant::now());
+        self.background_size = [texels_wanted as u32, art::SCENE_HEIGHT as u32];
         log::info!(
-            "overlay: launcher background {}x{}, {} frames",
-            info.width,
-            info.height,
-            launcher::BG_COLS * launcher::BG_ROWS
+            "overlay: launcher landscape {}x{} texels",
+            texels_wanted,
+            art::SCENE_HEIGHT
         );
     }
 
@@ -1033,6 +1006,46 @@ impl Overlay {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// The same, with nearest-neighbour sampling: for pixel art, where a texel must stay
+/// a block rather than blur into its neighbours.
+fn launcher_texture_nearest(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut horizon_imgui::Renderer,
+    label: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> imgui::TextureId {
+    let texture = horizon_imgui::Texture::new(
+        device,
+        renderer,
+        horizon_imgui::TextureConfig {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            sampler_desc: wgpu::SamplerDescriptor {
+                label: Some("launcher landscape sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    texture.write(queue, pixels, width, height);
+    renderer.textures.insert(texture)
 }
 
 /// Put RGBA pixels in a texture the launcher can draw with, and return its id.
