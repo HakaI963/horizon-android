@@ -1010,7 +1010,15 @@ mod tests {
             drag_to_look: true,
             preset: "bedrock".into(),
             controls: vec![
-                shaped(Action::Jump, [0.80, 0.20, 0.10, 0.10], Some("jump"), true),
+                // A square in pixels: the same fraction of the short edge in both
+                // axes is what a round button has to be, and the fractions differ
+                // because the screen's two edges do.
+                shaped(
+                    Action::Jump,
+                    [0.80, 0.20, 0.10 * 9.0 / 16.0, 0.10],
+                    Some("jump"),
+                    true,
+                ),
                 // A wide tab: the shape a square cannot be.
                 shaped(Action::Chat, [0.10, 0.02, 0.20, 0.05], Some("chat"), false),
             ],
@@ -1021,16 +1029,20 @@ mod tests {
             .find(|(action, _)| *action == Action::Jump)
             .map(|(_, rect)| *rect)
             .unwrap();
-        assert!((jump.width - 0.10 * WIDTH).abs() < 0.01, "{jump:?}");
-        assert!((jump.height - 0.10 * HEIGHT).abs() < 0.01, "{jump:?}");
+        assert!((jump.width - jump.height).abs() < 0.01, "{jump:?}");
         assert!((jump.x - 0.80 * WIDTH).abs() < 0.01, "{jump:?}");
+        assert!((jump.y - 0.20 * HEIGHT).abs() < 0.01, "{jump:?}");
         let chat = buttons
             .iter()
             .find(|(action, _)| *action == Action::Chat)
             .map(|(_, rect)| *rect)
             .unwrap();
-        // Four times as wide as it is tall, which is the whole point of a tab.
-        assert!((chat.width / chat.height - 4.0).abs() < 0.05, "{chat:?}");
+        // Four times as wide as it is tall in pixels, which is the whole point of a
+        // tab. The bounds are fractions of two different edges, so the ratio has to
+        // be taken after the conversion, not before it.
+        assert!((chat.width - 0.20 * WIDTH).abs() < 0.01, "{chat:?}");
+        assert!((chat.height - 0.05 * HEIGHT).abs() < 0.01, "{chat:?}");
+        assert!((chat.width / chat.height - 7.111).abs() < 0.05, "{chat:?}");
     }
 
     #[test]
@@ -1051,8 +1063,13 @@ mod tests {
         let before = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
         hud.set_control_size(Action::Chat, 0.30);
         let after = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
-        // A wide tab stays four times as wide, and grows about its own middle.
-        assert!((after.width / after.height - 4.0).abs() < 0.05, "{after:?}");
+        // The tab keeps the proportions it was drawn with: the slider changes how big
+        // it is, never what shape it is.
+        assert!(
+            (after.width / after.height - before.width / before.height).abs() < 0.05,
+            "{before:?} -> {after:?}"
+        );
+        // And it grows about its own middle, so it stays where the player put it.
         assert!((after.center()[0] - before.center()[0]).abs() < 0.5, "{after:?}");
         assert!((after.center()[1] - before.center()[1]).abs() < 0.5, "{after:?}");
         assert!(after.width > before.width, "{before:?} -> {after:?}");

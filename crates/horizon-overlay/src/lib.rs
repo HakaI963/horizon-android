@@ -483,13 +483,19 @@ impl Overlay {
             .buttons(width, height)
             .into_iter()
             .map(|(action, rect)| {
-                let look = hud.layout.control_look(action);
+                // `control_look` answers the icon and the shape together; the icon is
+                // already an `Option<String>`, so it is taken as it comes rather than
+                // wrapped again.
+                let (icon, round) = hud
+                    .layout
+                    .control_look(action)
+                    .unwrap_or((None, false));
                 (
                     action,
                     rect,
                     hud.layout.opacity_of(action),
-                    look.map(|look| look.0),
-                    look.is_some_and(|look| look.1),
+                    icon,
+                    round,
                 )
             })
             .collect();
