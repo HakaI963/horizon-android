@@ -375,14 +375,34 @@ mod skin_tests {
     use super::*;
 
     #[test]
-    fn the_default_skin_is_the_full_sixty_four_square() {
+    fn every_face_the_model_draws_is_painted() {
         let (w, h, px) = default_skin();
         assert_eq!((w, h), (64, 64));
         assert_eq!(px.len(), 64 * 64 * 4);
-        // Every texel of every body part is painted: an unpainted one would be a hole
-        // in the model rather than a colour.
-        for (i, chunk) in px.chunks_exact(4).enumerate() {
-            assert_eq!(chunk[3], 255, "texel {i} is transparent");
+        // The six faces of each part, as the model reads them. A 64x64 skin leaves
+        // padding around the head's top and bottom faces, so the whole square is not
+        // painted; these rectangles are what the figure actually samples.
+        let faces = [
+            (8, 0, 16, 8), (16, 0, 24, 8), (0, 8, 8, 16),
+            (8, 8, 16, 16), (16, 8, 24, 16), (24, 8, 32, 16),
+            (20, 16, 28, 20), (28, 16, 36, 20), (16, 20, 20, 32),
+            (20, 20, 28, 32), (28, 20, 32, 32), (32, 20, 40, 32),
+            (44, 16, 48, 20), (48, 16, 52, 20), (40, 20, 44, 32),
+            (44, 20, 48, 32), (48, 20, 52, 32), (52, 20, 56, 32),
+            (36, 48, 40, 52), (40, 48, 44, 52), (32, 52, 36, 64),
+            (36, 52, 40, 64), (40, 52, 44, 64), (44, 52, 48, 64),
+            (4, 16, 8, 20), (8, 16, 12, 20), (0, 20, 4, 32),
+            (4, 20, 8, 32), (8, 20, 12, 32), (12, 20, 16, 32),
+            (20, 48, 24, 52), (24, 48, 28, 52), (16, 52, 20, 64),
+            (20, 52, 24, 64), (24, 52, 28, 64), (28, 52, 32, 64),
+        ];
+        for (x0, y0, x1, y1) in faces {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let o = ((y * 64 + x) * 4) as usize;
+                    assert_eq!(px[o + 3], 255, "texel {x},{y} is transparent");
+                }
+            }
         }
     }
 }
