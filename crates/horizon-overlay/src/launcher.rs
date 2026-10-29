@@ -235,10 +235,6 @@ pub struct LauncherModel {
     pub accounts: Vec<LauncherAccount>,
     /// The chosen skin's pixel size.
     pub skin_size: [u32; 2],
-    /// Where the model is turned to, and how far it is tilted. The player drags the
-    /// figure; nothing moves it on its own.
-    pub skin_yaw: f32,
-    pub skin_pitch: f32,
     /// Which built-in touch layout is in force: `"java"` or `"bedrock"`.
     pub controls_preset: String,
     /// While a world is hosted: the address friends join on.
@@ -2038,23 +2034,15 @@ fn skins_page(
         let draw = ui.get_window_draw_list();
         panel(&draw, c, [x, y], [x + model_w, y + avail_h], c.panel, dpi);
     }
-    let figure_top = y + 28.0 * dpi;
-    // The figure is a preview, not the page: it takes most of the card but leaves the
-    // room a player needs to see it whole.
-    let figure_h = (avail_h - 96.0 * dpi).clamp(120.0 * dpi, 360.0 * dpi);
+    // The figure is a preview, not the page. A player model drawn to fill the card is
+    // a wall of pixels with no room around it to see the silhouette, so it takes a
+    // little over half the card and sits in the middle of the space above its name.
+    let label_h = 44.0 * dpi;
+    let figure_h = (avail_h - label_h - 24.0 * dpi).clamp(88.0 * dpi, 180.0 * dpi);
+    let figure_top = y + (avail_h - label_h - figure_h).max(0.0) * 0.5;
     // Dragging the figure turns it. The drag is read before the figure is drawn, so
     // this frame already shows the angle the finger asked for.
-    let (yaw, pitch) = drag_skin(
-        ui,
-        [x, y],
-        [x + model_w, y + avail_h],
-        model.skin_yaw,
-        model.skin_pitch,
-        dpi,
-    );
-    // The angle is the page's, not the model's: the platform rebuilds the model every
-    // frame, so the drag is kept in the page's own cell and handed back to the overlay
-    // at the end of the frame.
+    let (yaw, pitch) = drag_skin(ui, [x, y], [x + model_w, y + avail_h], dpi);
     match skin {
         Some(texture) => skin_figure(
             ui,
@@ -3570,47 +3558,43 @@ fn icon(draw: &DrawListMut<'_>, name: &str, x: f32, y: f32, s: f32, col: u32) {
     }
 }
 
-/// The Skins page's angle, as the overlay reads it after a frame: `(yaw, pitch)`.
-pub fn skin_angle() -> (f32, f32) {
-    SKIN_TURN.with(|t| t.get())
-}
-
 /// Read a drag on the figure and answer the angle to draw it at.
 ///
-/// The drag is the whole of the model's motion: a player turns it to see the back of a
-/// skin, and it stays where they left it. The angle is kept between frames because the
-/// model is rebuilt every frame from the platform's report.
+/// This cell is the only place the angle lives. It used to be copied into the platform's
+/// model every frame and back again, which cost a frame of lag on every move and — on the
+/// frame the finger lifted — replaced the angle the drag had just reached with the one
+/// from before it, so the figure sprang back as soon as it was let go.
 fn drag_skin(
     ui: &Ui,
     min: [f32; 2],
     max: [f32; 2],
-    yaw: f32,
-    pitch: f32,
     dpi: f32,
 ) -> (f32, f32) {
     let mouse = ui.io().mouse_pos;
+    let down = ui.io().mouse_down[0];
     let over = mouse[0] >= min[0] && mouse[0] <= max[0] && mouse[1] >= min[1] && mouse[1] <= max[1];
-    // A drag is anchored where the finger landed, and only a finger that landed on the
-    // figure turns it: a thumb scrolling the page must not spin the model.
-    let mut turning = SKIN_DRAG.with(|d| d.get());
-    if !ui.io().mouse_down[0] {
+    if !down {
+        // The lift ends the drag, and clears the flag that stopped a finger which was
+        // already down elsewhere from grabbing the model. Leaving that flag set is what
+        // let the figure be turned exactly once and never again.
         SKIN_DRAG.with(|d| d.set(None));
-        SKIN_TURN.with(|t| t.set((yaw, pitch)));
-        return (yaw, pitch);
+        SKIN_HELD.with(|h| h.set(false));
+        return SKIN_TURN.with(|t| t.get());
     }
+    let mut turning = SKIN_DRAG.with(|d| d.get());
     if turning.is_none() && over && !SKIN_HELD.with(|h| h.get()) {
         turning = Some(mouse);
         SKIN_DRAG.with(|d| d.set(turning));
     }
-    SKIN_HELD.with(|h| h.set(ui.io().mouse_down[0]));
+    SKIN_HELD.with(|h| h.set(true));
     let Some(last) = turning else {
-        return (yaw, pitch);
+        return SKIN_TURN.with(|t| t.get());
     };
-    // One finger width turns the figure a half turn, which is the range a hand has.
     let (yaw, pitch) = SKIN_TURN.with(|t| t.get());
     let dx = mouse[0] - last[0];
     let dy = mouse[1] - last[1];
-    let yaw = yaw + dx / (140.0 * dpi);
+    // One finger width turns the figure a half turn, which is the range a hand has.
+    let yaw = yaw + dx / (110.0 * dpi);
     // The tilt stops at straight up and straight down: past that the model is upside
     // down, which no skin was drawn for.
     let pitch = (pitch + dy / (220.0 * dpi)).clamp(-1.35, 1.35);
@@ -3647,13 +3631,18 @@ fn skin_figure(
     let u = height / 32.0;
     let (sy, cy_) = (yaw.sin(), yaw.cos());
     let (sp, cp) = (pitch.sin(), pitch.cos());
+    // The figure turns about the middle of the body, which is what a hand holding a
+    // figure does. Turning it about the feet (model y = 0) made the whole model swing
+    // away from the finger on a tilt, so the head travelled and the shoes stayed put.
+    let mid = top + 16.0 * u;
     let project = |p: [f32; 3]| -> ([f32; 2], f32) {
         let x1 = p[0] * cy_ + p[2] * sy;
         let z1 = -p[0] * sy + p[2] * cy_;
-        let y2 = p[1] * cp - z1 * sp;
-        let z2 = p[1] * sp + z1 * cp;
+        let y0 = p[1] - 16.0;
+        let y2 = y0 * cp - z1 * sp;
+        let z2 = y0 * sp + z1 * cp;
         let scale = 1.0 / (1.0 - z2 * 0.006);
-        ([cx + x1 * u * scale, top + (32.0 - y2) * u * scale], z2)
+        ([cx + x1 * u * scale, mid - y2 * u * scale], z2)
     };
     let facing = |n: [f32; 3]| -> f32 {
         let z1 = -n[0] * sy + n[2] * cy_;
@@ -3811,8 +3800,11 @@ fn skin_figure(
         },
     ];
     // The shadow the figure stands on, so the player is grounded rather than floating.
+    // It stays on the ground plane while the model tilts: the feet lift off it a little
+    // when the figure is tipped, and a shadow that followed them would slide up the
+    // card with them.
     {
-        let feet = project([0.0, 0.0, 0.0]).0;
+        let feet = [cx, mid + 16.0 * u];
         let rx = 7.0 * u;
         draw.add_circle([feet[0], feet[1]], rx, rgba(0x000000, 0.30))
             .filled(true)
@@ -3913,7 +3905,10 @@ fn skin_figure(
             [u1 / w, v1 / h],
             [u0 / w, v1 / h],
         )
-        .col(rgba(0xffffff, face.shade))
+        // A face turned away from the light is darker, not see-through: the shade
+        // used to be written into the alpha, which made three of the six faces of
+        // every part translucent and let the card show through the player.
+        .col([face.shade, face.shade, face.shade, 1.0])
         .build();
     }
 }

@@ -13206,12 +13206,6 @@ struct Loading {
     /// the page would keep showing the drawn one for the rest of the session.
     #[cfg(target_os = "android")]
     skin_from_pack: bool,
-    /// Where the Skins page's model is turned to, and how far it is tilted. The player
-    /// drags the figure; nothing moves it on its own.
-    #[cfg(target_os = "android")]
-    skin_yaw: f32,
-    #[cfg(target_os = "android")]
-    skin_pitch: f32,
     /// The address this device is hosting on, when it is.
     #[cfg(target_os = "android")]
     hosting: Option<String>,
@@ -13649,10 +13643,6 @@ fn run_loading(
         skin_uploaded: false,
         #[cfg(target_os = "android")]
         skin_from_pack: false,
-        #[cfg(target_os = "android")]
-        skin_yaw: 0.6,
-        #[cfg(target_os = "android")]
-        skin_pitch: 0.10,
         #[cfg(target_os = "android")]
         hosting: None,
         #[cfg(target_os = "android")]

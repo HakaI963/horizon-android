@@ -669,15 +669,6 @@ impl Loading {
         // Turn the Skins model before the model is built, so the frame drawn is the
         // frame the angle belongs to. A still figure reads as a drawing, and the point
         // of the page is that this is the player.
-        // The model does not turn by itself: a player who wants to see the back of a
-        // skin drags it. What the platform does here is only read the drag the launcher
-        // reported, so the angle survives the model being rebuilt every frame.
-        if page == LauncherPage::Skins {
-            let (yaw, pitch) = horizon_overlay::with(|o| o.launcher_skin_angle())
-                .unwrap_or((self.skin_yaw, self.skin_pitch));
-            self.skin_yaw = yaw;
-            self.skin_pitch = pitch;
-        }
         // A sign-in that is waiting on the browser says so above the account list; a
         // finished one has already moved the notice to "Signed in as ...".
         let sign_in_line = match &self.sign_in {
@@ -699,8 +690,6 @@ impl Loading {
             ],
             skins,
             chosen_skin: chosen_skin.clone(),
-            skin_yaw: self.skin_yaw,
-            skin_pitch: self.skin_pitch,
             accounts,
             controls_preset,
             hosting: self.hosting_address(),

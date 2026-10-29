@@ -121,10 +121,6 @@ pub struct Overlay {
     /// The chosen skin, uploaded as an imgui texture so the Skins page can draw the
     /// player from its own pixels instead of a stand-in.
     skin_texture: Option<imgui::TextureId>,
-    /// Where the Skins page's model is turned to, and how far it is tilted. The page
-    /// reports a drag here; nothing turns the model on its own.
-    skin_yaw: f32,
-    skin_pitch: f32,
     /// The PNG the texture was made from, so a new choice replaces it rather than
     /// uploading the same file every frame.
     skin_source: Option<String>,
@@ -193,8 +189,6 @@ impl Overlay {
             launcher_fonts: None,
             skin_texture: None,
             skin_source: None,
-            skin_yaw: 0.6,
-            skin_pitch: 0.10,
             panel_rect: None,
             panorama: true,
             pointer: Pointer::idle(),
@@ -412,9 +406,6 @@ impl Overlay {
         let stone = self.stone.map(|id| (id, self.stone_size));
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
-        // The Skins page turned its model under a finger last frame: take the angle
-        // before the fields are borrowed apart, so the next model report carries it.
-        let skin_angle = launcher::skin_angle();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -430,8 +421,6 @@ impl Overlay {
             launcher_events,
             launcher_fonts,
             skin_texture,
-            skin_yaw,
-            skin_pitch,
             panel_rect,
             panorama: _panorama,
             dpi,
@@ -442,8 +431,6 @@ impl Overlay {
             renderer,
             ..
         } = self;
-        *skin_yaw = skin_angle.0;
-        *skin_pitch = skin_angle.1;
         let Some(renderer) = renderer.as_mut() else {
             return Err("the overlay has no device to draw on".into());
         };
@@ -1055,15 +1042,6 @@ impl Overlay {
         self.launcher_model = model;
     }
 
-    /// Where the Skins page's model is turned to, and how far it is tilted.
-    ///
-    /// The figure is dragged rather than animated: a player looking at a skin wants to
-    /// see the back of it, and a model that turns on its own takes that away. The angle
-    /// lives here because the launcher's model is rebuilt every frame.
-    pub fn launcher_skin_angle(&self) -> (f32, f32) {
-        (self.skin_yaw, self.skin_pitch)
-    }
-
     /// Open the control editor: the arrange panel, over the HUD, with the launcher out
     /// of the way. This is the launcher's "Customise controls", and it is the game's
     /// own editor rather than a second one that would drift from it.
@@ -1169,6 +1147,19 @@ fn launcher_texture(
             // twice.
             format: Some(wgpu::TextureFormat::Rgba8Unorm),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // A skin is 64x64 pixel art drawn several times its size, and the default
+            // linear filter smears it into a blur. Nearest is what keeps the pixels
+            // square, which is the whole look of a Minecraft player.
+            sampler_desc: wgpu::SamplerDescriptor {
+                label: Some("launcher skin sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
