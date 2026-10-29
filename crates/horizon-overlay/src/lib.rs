@@ -418,8 +418,9 @@ impl Overlay {
         let stone = self.stone.map(|id| (id, self.stone_size));
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
-        // The fade is read here and cleared at the end of the frame if it is spent.
-        let fade = self.loading_fade;
+        // The loading surface's own fade, read here and cleared at the end of the
+        // frame if it is spent.
+        let loading_fade = self.loading_fade;
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -578,7 +579,7 @@ impl Overlay {
                 // And a surface on its way out, over the screen it was hiding. The
                 // menu behind it is already drawing; this is what makes it arrive
                 // instead of appearing between two frames.
-                if let Some((at, screen)) = fade.as_ref()
+                if let Some((at, screen)) = loading_fade.as_ref()
                     && let Some(screen) = screen.as_ref()
                 {
                     let t = (at.elapsed().as_secs_f32() / LOADING_FADE).clamp(0.0, 1.0);
@@ -590,12 +591,14 @@ impl Overlay {
         }
 
         // A fade that has run its course is dropped, so the next frame costs nothing
-        // and the platform stops being asked to redraw for it.
-        if loading_fade
+        // and the platform stops being asked to redraw for it. The field is written
+        // here rather than the local: the borrow above is over.
+        if self
+            .loading_fade
             .as_ref()
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= LOADING_FADE)
         {
-            *loading_fade = None;
+            self.loading_fade = None;
         }
 
         hud.layout.scale = scale;
