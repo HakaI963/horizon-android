@@ -733,30 +733,37 @@ impl Loading {
                 .map(|name| horizon_client::gfx::import_dir().join("skins").join(name))
                 .filter(|path| path.is_file());
             self.launcher_skin = path.clone();
+            // Nothing picked yet: the page shows the pack's own default player, which is
+            // the real Steve a Minecraft player recognises. The drawn skin is only the
+            // last resort, for the bring-up card where there is no pack at all. The pack
+            // loads after the launcher is up, so the stand-in can be in the slot before
+            // the real texture is readable, and this is what notices that.
+            let pack_skin = path.is_none().then(|| self.default_skin_pixels()).flatten();
+            let from_pack = pack_skin.is_some();
+            let fallback = pack_skin.or_else(|| path.is_none().then(horizon_overlay::default_skin));
+            // The model reads its UVs off this size, so it has to be the size of the
+            // texture actually uploaded, not a guess of 64x64.
             model.skin_size = path
                 .as_ref()
                 .and_then(|path| png_size(path))
+                .or_else(|| fallback.as_ref().map(|(w, h, _)| [*w, *h]))
                 .unwrap_or([64, 64]);
             // The comparison is not enough on its own: with nothing chosen, `path` and
             // `uploaded_skin` are both `None`, so "unchanged" was true on the very first
             // visit and the default player was never uploaded at all. The texture slot
             // is the real answer to whether there is anything to draw.
-            let uploaded = self.uploaded_skin == path && self.skin_uploaded;
+            let uploaded = self.uploaded_skin == path
+                && self.skin_uploaded
+                && (!from_pack || self.skin_from_pack);
             if !uploaded
                 && let Some(r) = &self.renderer
             {
-                // Nothing picked yet: the page shows the pack's own default player,
-                // which is the real Steve a Minecraft player recognises. The drawn skin
-                // is only the last resort, for the bring-up card where there is no pack.
-                let fallback = path.is_none().then(|| {
-                    self.default_skin_pixels()
-                        .unwrap_or_else(horizon_overlay::default_skin)
-                });
                 horizon_overlay::with(|o| {
                     o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
                 });
                 self.uploaded_skin = path;
                 self.skin_uploaded = true;
+                self.skin_from_pack = from_pack;
             }
         }
         if page == LauncherPage::Mods {
@@ -2028,13 +2035,30 @@ impl Loading {
         self.menu.launcher_notice = Some(format!("{label}: {shown}"));
     }
 
-    /// The pack's own default player skin as 64x64 RGBA, cut out of the menu atlas.
+    /// The pack's own default player skin as RGBA, read from the pack's textures.
     ///
     /// This is the real Steve: the texture the game itself wears when a player has no
-    /// skin, taken from the pack the player already installed. A drawn stand-in is
-    /// only for the bring-up card, which has no pack to read.
+    /// skin, taken from the pack the player already installed, so it is the player a
+    /// Minecraft player recognises rather than a stand-in drawn in code. A drawn skin
+    /// is only the last resort, for the bring-up card where there is no pack at all.
     #[cfg(target_os = "android")]
     fn default_skin_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        // The file first: a skin is a 64x64 texture, and reading it whole is both
+        // exact and independent of whether the atlas packed `entity` this time.
+        if let Some(options) = self.options.as_ref() {
+            let path = horizon_client::atlas_sources::texture_path(
+                &options.resources,
+                "entity/player/wide/steve",
+                "textures",
+            );
+            if let Ok((w, h, pixels)) = horizon_client::hud::decode(&path)
+                && w >= 64
+                && h >= 32
+            {
+                return Some((w, h, pixels));
+            }
+        }
+        // A pack that renames its player textures still has them in the atlas.
         let gui = self.gui.as_ref()?;
         let rect = gui.atlas.sprites.get("entity/player/wide/steve").copied()?;
         let (w, h) = (gui.atlas.width, gui.atlas.height);
@@ -2042,13 +2066,15 @@ impl Loading {
             (rect.u0 * w as f32).round() as u32,
             (rect.v0 * h as f32).round() as u32,
         );
-        let (sw, sh) = (rect.w, rect.h);
+        // The sprite's `w`/`h` are its GUI size, which is not always its texel size.
+        // The uv rectangle is, so the cut is taken from that.
+        let sw = ((rect.u1 - rect.u0) * w as f32).round() as u32;
+        let sh = ((rect.v1 - rect.v0) * h as f32).round() as u32;
         if sw < 64 || sh < 32 {
             return None;
         }
         let mut out = Vec::with_capacity((sw as usize) * (sh as usize) * 4);
         for y in 0..sh {
-            // The atlas is indexed in `u32` coordinates; the pixel buffer is `usize`.
             let row = (((y0 + y) * w + x0) * 4) as usize;
             let end = row + sw as usize * 4;
             if end > gui.atlas.pixels.len() {

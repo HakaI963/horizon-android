@@ -412,6 +412,9 @@ impl Overlay {
         let stone = self.stone.map(|id| (id, self.stone_size));
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
+        // The Skins page turned its model under a finger last frame: take the angle
+        // before the fields are borrowed apart, so the next model report carries it.
+        let skin_angle = launcher::skin_angle();
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -427,6 +430,8 @@ impl Overlay {
             launcher_events,
             launcher_fonts,
             skin_texture,
+            skin_yaw,
+            skin_pitch,
             panel_rect,
             panorama: _panorama,
             dpi,
@@ -437,6 +442,8 @@ impl Overlay {
             renderer,
             ..
         } = self;
+        *skin_yaw = skin_angle.0;
+        *skin_pitch = skin_angle.1;
         let Some(renderer) = renderer.as_mut() else {
             return Err("the overlay has no device to draw on".into());
         };
@@ -561,10 +568,6 @@ impl Overlay {
             }
         }
 
-        // The Skins page turned its model under a finger: keep the angle, so the next
-        // model report carries it and the figure does not snap back.
-        self.take_skin_angle();
-
         hud.layout.scale = scale;
         hud.layout.opacity = opacity;
         hud.layout.look_sensitivity = sensitivity;
@@ -681,9 +684,21 @@ impl Overlay {
         path: Option<&Path>,
         fallback: Option<(u32, u32, Vec<u8>)>,
     ) {
-        let key = path
-            .map(|p| p.display().to_string())
-            .or_else(|| fallback.as_ref().map(|_| "fallback".to_string()));
+        // The fallback is not one texture but two: the pack's own player, and the drawn
+        // stand-in the bring-up card shows before the pack has loaded. They have the
+        // same "no file" name, so a key of just "fallback" would keep the drawn one in
+        // the slot after the real skin became readable.
+        let key = path.map(|p| p.display().to_string()).or_else(|| {
+            fallback.as_ref().map(|(w, h, px)| {
+                // A cheap fingerprint of the pixels, not just their size: the drawn
+                // stand-in and the pack's player are both 64x64.
+                let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                for &b in px.iter().step_by(97) {
+                    hash = (hash ^ b as u64).wrapping_mul(0x100_0000_01b3);
+                }
+                format!("fallback:{w}x{h}:{hash:x}")
+            })
+        });
         if key == self.skin_source && self.skin_texture.is_some() {
             return;
         }
@@ -1047,14 +1062,6 @@ impl Overlay {
     /// lives here because the launcher's model is rebuilt every frame.
     pub fn launcher_skin_angle(&self) -> (f32, f32) {
         (self.skin_yaw, self.skin_pitch)
-    }
-
-    /// Take the angle the Skins page ended its frame at. Called from `paint`, because
-    /// the page is what knows where the finger left the model.
-    fn take_skin_angle(&mut self) {
-        let (yaw, pitch) = launcher::skin_angle();
-        self.skin_yaw = yaw;
-        self.skin_pitch = pitch;
     }
 
     /// Open the control editor: the arrange panel, over the HUD, with the launcher out

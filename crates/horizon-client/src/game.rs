@@ -13200,6 +13200,12 @@ struct Loading {
     /// Whether a texture is in the overlay's slot at all.
     #[cfg(target_os = "android")]
     skin_uploaded: bool,
+    /// Whether the texture in the slot is the pack's own player rather than the drawn
+    /// stand-in the bring-up card uses. The pack loads after the launcher opens, so the
+    /// stand-in can be in the slot when the real skin becomes available; without this
+    /// the page would keep showing the drawn one for the rest of the session.
+    #[cfg(target_os = "android")]
+    skin_from_pack: bool,
     /// Where the Skins page's model is turned to, and how far it is tilted. The player
     /// drags the figure; nothing moves it on its own.
     #[cfg(target_os = "android")]
@@ -13641,6 +13647,8 @@ fn run_loading(
         uploaded_skin: None,
         #[cfg(target_os = "android")]
         skin_uploaded: false,
+        #[cfg(target_os = "android")]
+        skin_from_pack: false,
         #[cfg(target_os = "android")]
         skin_yaw: 0.6,
         #[cfg(target_os = "android")]

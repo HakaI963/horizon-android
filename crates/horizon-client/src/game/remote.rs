@@ -2639,6 +2639,12 @@ impl Game<'_> {
                 if let Some(r) = self.remote.as_mut() {
                     r.chunk_center = (p.x, p.z);
                 }
+                // The streaming centre is where the chunks come from, and the server
+                // says so before it places the player. Without this the centre stayed at
+                // 0,0 until the first teleport, so the loading screen counted the chunks
+                // around the wrong column: none of them ever arrived, the bar sat at its
+                // floor and the chunk map stayed empty for the whole wait.
+                self.streaming.center = (p.x, p.z);
                 self.drop_remote_chunks_out_of_range();
             }
             C::BlockEntityData(p) => self.remote_block_entity_data(p.pos, p.kind, &p.tag),
