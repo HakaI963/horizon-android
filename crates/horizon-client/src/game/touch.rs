@@ -413,6 +413,7 @@ fn mapping(action: Action) -> Option<String> {
         | Action::Panel
         | Action::Mouse
         | Action::HideGui
+        | Action::Keyboard
         | Action::ExitWorld => return None,
     };
     Some(name.to_owned())
