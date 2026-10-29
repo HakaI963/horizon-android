@@ -198,6 +198,15 @@ pub fn rss_mib() -> Option<f64> {
     if !cfg!(target_os = "linux") {
         return None;
     }
+    // `/proc/self/status` is restricted on Android 12 and later — a normal app reads
+    // nothing from it — so the resident pages come from `statm`, which every app can
+    // still read for itself. Field 2 is the resident set in pages.
+    if let Some(pages) = read("/proc/self/statm")
+        .and_then(|text| text.split_whitespace().nth(1)?.parse::<u64>().ok())
+    {
+        let page = 4096.0;
+        return Some(pages as f64 * page / (1024.0 * 1024.0));
+    }
     let status = read("/proc/self/status")?;
     let kib: u64 = status
         .lines()
