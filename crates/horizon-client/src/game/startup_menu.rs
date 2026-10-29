@@ -1711,7 +1711,9 @@ impl Loading {
                 min,
                 max,
                 step,
-                percent: unit == "%",
+                // A device slider stores its number in the unit it is shown in, so it is
+                // never the 0..1 a `percent` row means.
+                percent: false,
                 toggle: false,
                 launcher: true,
             }
@@ -1756,10 +1758,12 @@ impl Loading {
             l("launcherControls", "Customise controls"),
             l("launcherSkinTurn", "Turn the player on the Skins page"),
             l("launcherBackground", "Animated launcher"),
+            l("launcherBattery", "Battery saver"),
             d("launcherResolution", "Render resolution", "DEVICE", "%", 50.0, 200.0, 5.0),
             d("launcherFps", "Frame limit", "DEVICE", "fps", 30.0, 120.0, 10.0),
-            l("launcherBattery", "Battery saver"),
             d("launcherScale", "Interface scale", "DEVICE", "%", 70.0, 140.0, 5.0),
+            // The launcher's own page is the end of the list, so the game's options are
+            // reached where they belong: in the game.
         ];
         #[allow(unused_variables)]
         let f = &self.settings.file;
