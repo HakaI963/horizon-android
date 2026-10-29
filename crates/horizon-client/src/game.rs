@@ -1337,8 +1337,10 @@ struct Game<'a> {
     /// The same for a world entered from the launcher.
     #[cfg(target_os = "android")]
     pub(super) world_ready: bool,
+    /// How many frames the world has drawn since it was entered. Separate from
+    /// `perf.world_frames`, which counts for `--world-frames` and never resets.
     #[cfg(target_os = "android")]
-    world_frames: u32,
+    world_surface_frames: u32,
     /// Armor slots: head, chest, legs, feet.
     armor: [Option<ItemStack>; 4],
     /// The off hand (Inventory slot 40, saved as slot 150; menu slot 504 here).
@@ -11562,8 +11564,8 @@ impl ApplicationHandler for Game<'_> {
                     // the world had finished opening.
                     #[cfg(target_os = "android")]
                     if self.world_ready {
-                        self.world_frames = self.world_frames.saturating_add(1);
-                        if self.world_frames >= 2 {
+                        self.world_surface_frames = self.world_surface_frames.saturating_add(1);
+                        if self.world_surface_frames >= 2 {
                             self.world_ready = false;
                             horizon_overlay::with(|o| o.set_loading(None));
                         }
@@ -12078,7 +12080,7 @@ impl<'a> Game<'a> {
             #[cfg(target_os = "android")]
             world_ready: false,
             #[cfg(target_os = "android")]
-            world_frames: 0,
+            world_surface_frames: 0,
             armor: [None, None, None, None],
             offhand: None,
             hand: Hand::Main,

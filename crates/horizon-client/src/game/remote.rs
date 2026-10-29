@@ -388,7 +388,7 @@ impl Game<'_> {
         #[cfg(target_os = "android")]
         {
             self.world_ready = true;
-            self.world_frames = 0;
+            self.world_surface_frames = 0;
         }
         self.remote = Some(Remote {
             session,
