@@ -2747,80 +2747,13 @@ fn local_address() -> Option<String> {
 /// before the choice existed.
 #[cfg(target_os = "android")]
 fn java_layout() -> horizon_controls::Layout {
-    horizon_controls::Layout::default()
+    horizon_controls::Layout::java()
 }
 
-/// The Bedrock PE touch layout: the same actions, arranged the way the phone version
-/// of the game puts them — the cross is a diamond rather than a cross, jump sits at
-/// the bottom right beside the two mouse buttons, and the hotbar is a row of nine at
-/// the bottom centre, where a thumb can sweep it.
-///
-/// The numbers are fractions of the glass, so they hold on any phone: no button's
-/// middle falls inside another's, which is the one mistake a HUD layout cannot
-/// recover from.
-#[cfg(target_os = "android")]
+/// Cubiq's Pocket Edition pad, which lives in the layout crate because it is a
+/// conversion of that format rather than a hand-placed arrangement.
 fn bedrock_layout() -> horizon_controls::Layout {
-    use horizon_controls::{Action, Layout};
-    let mut layout = Layout::default();
-    layout.controls.clear();
-    // Cubiq's Pocket Edition layout, converted from its own 0..10000 scale.
-    //
-    // That format stores a position as a fraction of the space left over after the
-    // button, so `x = 0` is flush left and `10000` flush right; a size is a fraction of
-    // the screen's short edge. Both are turned into the fractions this layout uses —
-    // `left = (screen - w) * x / 10000 / screen`, `w = pct / 10000 * short / screen` —
-    // with the phone's own aspect taken as 16:9, which is what the file was drawn on.
-    //
-    // The shape is the point. Bedrock's buttons are round and its D-pad arms are tall
-    // and narrow, and a square-only layout cannot look like it however the squares are
-    // placed. Each one keeps the icon Cubiq gives it, so a player recognises the pad
-    // before reading a single label.
-    const ASPECT: f32 = 9.0 / 16.0;
-    let mut put = |action: Action, x: f32, y: f32, pct: f32, icon: &str, round: bool| {
-        // `pct` is a fraction of the short edge; in screen fractions that is
-        // `pct * short`, and `short` is the height on a landscape phone.
-        // The file's `pct` is a fraction of the short edge, and its `x`/`y` are a
-        // fraction of the space left over after the button — so the size is one
-        // number in two units, and the position is computed in the axis's own.
-        let tall = pct / 10_000.0;
-        let wide = tall * ASPECT;
-        let left = (1.0 - wide) * (x / 10_000.0);
-        let top = (1.0 - tall) * (y / 10_000.0);
-        layout.controls.push(horizon_controls::Control {
-            action,
-            bounds: Some([left, top, wide, tall]),
-            center: [left + wide / 2.0, top + tall / 2.0],
-            size: wide.max(tall),
-            opacity: None,
-            icon: Some(icon.to_owned()),
-            round,
-        });
-    };
-    // The top bar: the four Bedrock keys, left to right, with the keyboard at the far
-    // left of the group.
-    put(Action::Screenshot, 0.0447, 0.0019, 0.1014, "perspective", true);
-    put(Action::Pause, 0.0554, 0.0019, 0.1083, "pause", true);
-    put(Action::Chat, 0.5000, 0.0019, 0.1083, "chat", true);
-    // The movement pad: a D-pad of four tall arms around a centre, with sneak under
-    // the thumb. This is the `move_dpad` layer, which is what Bedrock shows.
-    put(Action::Forward, 0.1467, 0.4684, 0.1708, "forward", true);
-    put(Action::Back, 0.1465, 0.8792, 0.1681, "back", true);
-    put(Action::Left, 0.0577, 0.6749, 0.1722, "left", true);
-    put(Action::Right, 0.2355, 0.6761, 0.1708, "right", true);
-    put(Action::Sneak, 0.1468, 0.6756, 0.1722, "sneak", true);
-    // The right thumb: attack and use under it, jump above, sprint between.
-    put(Action::Mine, 0.8219, 0.6884, 0.1903, "attack", true);
-    put(Action::Use, 0.9429, 0.8501, 0.1722, "use", true);
-    put(Action::Sprint, 0.8218, 0.4061, 0.1986, "sprint", true);
-    put(Action::Jump, 0.9480, 0.2792, 0.1972, "jump", true);
-    put(Action::Sneak, 0.9499, 0.5689, 0.1958, "sneak", true);
-    put(Action::Inventory, 0.6785, 1.0, 0.1014, "inventory", true);
-    put(Action::SwapOffhand, 0.7850, 0.9985, 0.1000, "swap", true);
-    // The pick button doubles as the debug overlay in Cubiq's file; a phone has no
-    // keyboard for F3, so the layout keeps it where the file puts it.
-    put(Action::Pick, 0.0317, 0.0025, 0.1028, "debug", true);
-    layout.preset = "bedrock".to_string();
-    layout
+    horizon_controls::Layout::bedrock()
 }
 
 /// The PNG's pixel size, read from its IHDR without decoding the pixels: the Skins

@@ -296,6 +296,11 @@ impl Default for Layout {
     /// is the one mistake a HUD layout cannot be recovered from by a player who
     /// cannot see why the bag will not open.
     fn default() -> Self {
+        Self::bedrock()
+    }
+
+    /// The Java-style pad: a cross of four keys, the mouse buttons, and the key row.
+    pub fn java() -> Self {
         let mut controls = vec![
             control(Action::Forward, 0.10, 0.70, 0.105),
             control(Action::Left, 0.045, 0.815, 0.105),
@@ -338,13 +343,96 @@ impl Default for Layout {
             opacity: 0.42,
             look_sensitivity: 6.0,
             drag_to_look: true,
-            preset: default_preset(),
+            preset: "java".to_string(),
             controls,
         }
     }
 }
 
 impl Layout {
+    /// Cubiq's Pocket Edition layout: the pad a Bedrock player recognises.
+    ///
+    /// Converted from that layout file's own scale. It stores a position as a fraction
+    /// of the space left over after the button — so `x = 0` is flush left and `10000`
+    /// flush right — and a size as a fraction of the screen's short edge. Both are
+    /// turned into the fractions this layout uses: `left = (1 - w) * x / 10000` and
+    /// `w = pct / 10000 * short / width`, with the phone's own 16:9 aspect taken as the
+    /// screen the file was drawn on.
+    ///
+    /// The shape is the point. Bedrock's buttons are round and its D-pad arms are tall,
+    /// and a square-only layout cannot look like it however the squares are placed.
+    pub fn bedrock() -> Self {
+        const ASPECT: f32 = 9.0 / 16.0;
+        let mut controls = Vec::new();
+        let mut put = |action: Action, x: f32, y: f32, pct: f32, icon: &str, round: bool| {
+            // `pct` is a fraction of the short edge, which on a landscape phone is the
+            // height; `x`/`y` are fractions of the room the button leaves behind.
+            let tall = pct / 10_000.0;
+            let wide = tall * ASPECT;
+            let left = (1.0 - wide) * (x / 10_000.0);
+            let top = (1.0 - tall) * (y / 10_000.0);
+            controls.push(Control {
+                action,
+                bounds: Some([left, top, wide, tall]),
+                center: [left + wide / 2.0, top + tall / 2.0],
+                size: wide.max(tall),
+                opacity: None,
+                icon: Some(icon.to_owned()),
+                round,
+            });
+        };
+        // The top bar: the Bedrock keys, and the keyboard on the far left.
+        put(Action::Screenshot, 447.0, 19.0, 1014.0, "perspective", true);
+        put(Action::Pause, 5541.0, 19.0, 1083.0, "pause", true);
+        put(Action::Chat, 5000.0, 19.0, 1083.0, "chat", true);
+        // The movement pad: four tall arms around a centre, sneak under the thumb.
+        put(Action::Forward, 1467.0, 4684.0, 1708.0, "forward", true);
+        put(Action::Back, 1465.0, 8792.0, 1681.0, "back", true);
+        put(Action::Left, 577.0, 6749.0, 1722.0, "left", true);
+        put(Action::Right, 2355.0, 6761.0, 1708.0, "right", true);
+        put(Action::Sneak, 1468.0, 6756.0, 1722.0, "sneak", true);
+        // The right thumb: attack and use under it, jump above, sprint between.
+        put(Action::Mine, 8219.0, 6884.0, 1903.0, "attack", true);
+        put(Action::Use, 9429.0, 8501.0, 1722.0, "use", true);
+        put(Action::Sprint, 8218.0, 4061.0, 1986.0, "sprint", true);
+        put(Action::Jump, 9480.0, 2792.0, 1972.0, "jump", true);
+        put(Action::Inventory, 6785.0, 10000.0, 1014.0, "inventory", true);
+        put(Action::SwapOffhand, 7850.0, 9985.0, 1000.0, "swap", true);
+        // The pick button doubles as the debug overlay in Cubiq's file, which is the
+        // only way a phone reaches F3.
+        put(Action::Pick, 317.0, 25.0, 1028.0, "debug", true);
+        // The menu button is Horizon's own: the launcher's overlay panel, which a
+        // Cubiq layout has no equivalent of.
+        put(Action::Menu, 44.0, 19.0, 1014.0, "keyboard", true);
+        // The hotbar is a row of taps rather than keys: it is the one row a thumb
+        // sweeps, and it has to be where the game draws its own bar.
+        for slot in 1..=9u8 {
+            let i = f32::from(slot - 1);
+            controls.push(Control {
+                action: Action::Hotbar(slot),
+                bounds: Some([
+                    0.345 + i * 0.0345,
+                    0.905,
+                    0.030,
+                    0.052,
+                ]),
+                center: [0.345 + i * 0.0345 + 0.015, 0.905 + 0.026],
+                size: 0.052,
+                opacity: Some(0.0),
+                icon: None,
+                round: false,
+            });
+        }
+        Self {
+            scale: 1.0,
+            opacity: 0.42,
+            look_sensitivity: 6.0,
+            drag_to_look: true,
+            preset: "bedrock".to_string(),
+            controls,
+        }
+    }
+
     /// The layout on disk, if there is one and it still has buttons in it. A file
     /// from an older build, or one a player dragged every button out of, is not a
     /// layout.
@@ -387,7 +475,12 @@ impl Layout {
                 control.center[1].clamp(0.02, 0.98),
             ];
             control.size = control.size.clamp(0.03, 0.4);
-            control.opacity = control.opacity.map(|opacity| opacity.clamp(0.05, 1.0));
+            // Zero is a real value, not a mistake: the hotbar row is invisible on
+            // purpose, because the game draws its own hotbar underneath it and the
+            // buttons only exist to make the slots tappable.
+            control.opacity = control
+                .opacity
+                .map(|opacity| if opacity <= 0.0 { 0.0 } else { opacity.clamp(0.05, 1.0) });
             if let Some(bounds) = &mut control.bounds {
                 // A button has to keep its middle on the glass: a rectangle that has
                 // been pushed past the edge can still be dragged back, but one whose
@@ -915,7 +1008,7 @@ mod tests {
         let dir = std::env::temp_dir().join("horizon-controls-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("controls.json");
-        let mut layout = Layout::default();
+        let mut layout = Layout::java();
         layout.scale = 1.4;
         layout.opacity = 0.2;
         layout.look_sensitivity = 9.5;
@@ -964,8 +1057,8 @@ mod tests {
     }
 
     #[test]
-    fn every_button_of_the_default_layout_is_reachable_and_labeled() {
-        let layout = Layout::default();
+    fn every_button_of_the_java_layout_is_reachable_and_labeled() {
+        let layout = Layout::java();
         let buttons = layout.buttons(WIDTH, HEIGHT);
         assert_eq!(buttons.len(), layout.controls.len(), "nothing off the screen");
         let mut actions: Vec<Action> = buttons.iter().map(|(action, _)| *action).collect();
@@ -1100,7 +1193,7 @@ mod tests {
 
     #[test]
     fn the_layout_reads_the_same_in_both_orientations() {
-        let layout = Layout::default();
+        let layout = Layout::java();
         let portrait = layout.buttons(720.0, 1280.0);
         assert_eq!(portrait.len(), layout.controls.len(), "rotating loses buttons");
         let jump = layout
@@ -1193,7 +1286,7 @@ mod tests {
         let dir = std::env::temp_dir().join("horizon-controls-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("per-button.json");
-        let mut layout = Layout::default();
+        let mut layout = Layout::java();
         layout.controls[0].opacity = Some(0.8);
         layout.save(&path).unwrap();
         let read = Layout::load(&path).expect("the file we just wrote reads back");

@@ -1527,6 +1527,11 @@ fn hud_buttons(
         .build(|| {
             let draw = ui.get_window_draw_list();
             for (action, rect, opacity, icon, round) in buttons.iter().rev() {
+                // A fully transparent button is not drawn at all: the hotbar row is
+                // there to be tapped, and the game draws the bar it sits on.
+                if *opacity <= 0.0 {
+                    continue;
+                }
                 draw_button(
                     &draw,
                     ui,
