@@ -1002,6 +1002,86 @@ mod tests {
     }
 
     #[test]
+    fn a_shaped_button_is_the_rectangle_the_file_asked_for() {
+        let layout = Layout {
+            scale: 1.0,
+            opacity: 0.5,
+            look_sensitivity: 6.0,
+            drag_to_look: true,
+            preset: "bedrock".into(),
+            controls: vec![
+                shaped(Action::Jump, [0.80, 0.20, 0.10, 0.10], Some("jump"), true),
+                // A wide tab: the shape a square cannot be.
+                shaped(Action::Chat, [0.10, 0.02, 0.20, 0.05], Some("chat"), false),
+            ],
+        };
+        let buttons = layout.buttons(WIDTH, HEIGHT);
+        let jump = buttons
+            .iter()
+            .find(|(action, _)| *action == Action::Jump)
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        assert!((jump.width - 0.10 * WIDTH).abs() < 0.01, "{jump:?}");
+        assert!((jump.height - 0.10 * HEIGHT).abs() < 0.01, "{jump:?}");
+        assert!((jump.x - 0.80 * WIDTH).abs() < 0.01, "{jump:?}");
+        let chat = buttons
+            .iter()
+            .find(|(action, _)| *action == Action::Chat)
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        // Four times as wide as it is tall, which is the whole point of a tab.
+        assert!((chat.width / chat.height - 4.0).abs() < 0.05, "{chat:?}");
+    }
+
+    #[test]
+    fn scaling_a_shaped_button_keeps_its_proportions_and_its_middle() {
+        let mut hud = Hud::new(Layout {
+            scale: 1.0,
+            opacity: 0.5,
+            look_sensitivity: 6.0,
+            drag_to_look: true,
+            preset: "bedrock".into(),
+            controls: vec![shaped(
+                Action::Chat,
+                [0.10, 0.10, 0.20, 0.05],
+                Some("chat"),
+                false,
+            )],
+        });
+        let before = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
+        hud.set_control_size(Action::Chat, 0.30);
+        let after = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
+        // A wide tab stays four times as wide, and grows about its own middle.
+        assert!((after.width / after.height - 4.0).abs() < 0.05, "{after:?}");
+        assert!((after.center()[0] - before.center()[0]).abs() < 0.5, "{after:?}");
+        assert!((after.center()[1] - before.center()[1]).abs() < 0.5, "{after:?}");
+        assert!(after.width > before.width, "{before:?} -> {after:?}");
+    }
+
+    #[test]
+    fn a_layout_written_before_shapes_still_loads() {
+        // The old file has no `bounds`, `icon` or `round`: it is centre-and-size only,
+        // and it must keep working rather than loading as an empty layout.
+        let dir = std::env::temp_dir().join("horizon-controls-legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.json");
+        std::fs::write(
+            &path,
+            r#"{"scale":1.0,"opacity":0.4,"look_sensitivity":6.0,"drag_to_look":true,
+               "controls":[{"action":"Jump","center":[0.9,0.7],"size":0.12}]}"#,
+        )
+        .unwrap();
+        let layout = Layout::load(&path).expect("an old layout is still a layout");
+        assert_eq!(layout.controls.len(), 1);
+        assert!(layout.controls[0].bounds.is_none());
+        assert!(layout.controls[0].icon.is_none());
+        assert!(!layout.controls[0].round);
+        let rect = layout.buttons(WIDTH, HEIGHT)[0].1;
+        assert!(rect.width > 0.0 && rect.contains(rect.center()[0], rect.center()[1]));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn the_layout_reads_the_same_in_both_orientations() {
         let layout = Layout::default();
         let portrait = layout.buttons(720.0, 1280.0);
