@@ -2752,6 +2752,7 @@ fn java_layout() -> horizon_controls::Layout {
 
 /// The Bedrock-style pad, which lives in the layout crate because it is a conversion
 /// of a documented format rather than a hand-placed arrangement.
+#[cfg(target_os = "android")]
 fn bedrock_layout() -> horizon_controls::Layout {
     horizon_controls::Layout::bedrock()
 }

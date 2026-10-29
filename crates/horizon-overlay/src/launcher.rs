@@ -3965,12 +3965,12 @@ pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
     for i in 0..points.len() {
         let a = points[i];
         let b = points[(i + 1) % points.len()];
-        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba([0, 0, 0], 0.85))
+        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba(0x000000, 0.85))
             .thickness(3.0 * dpi)
             .build();
     }
     for i in 1..points.len() - 1 {
-        draw.add_triangle(points[0], points[i], points[i + 1], rgba([255, 255, 255], 1.0))
+        draw.add_triangle(points[0], points[i], points[i + 1], rgba(0xffffff, 1.0))
             .filled(true)
             .build();
     }
