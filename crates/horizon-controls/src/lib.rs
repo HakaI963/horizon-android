@@ -399,9 +399,14 @@ impl Layout {
     pub fn mojo() -> Self {
         const ASPECT: f32 = 9.0 / 16.0;
         let mut controls = Vec::new();
-        let mut put = |action: Action, x: f32, y: f32, pct: f32, icon: Option<&str>, round: bool| {
-            let tall = pct / 10_000.0;
-            let wide = tall * ASPECT;
+        // A button is two percentages, not one: the width and the height are separate
+        // numbers in the file, and a tab is 2289 by 1100 of the short edge — wide and
+        // short, which one number cannot say.
+        let mut put = |action: Action, x: f32, y: f32, wpct: f32, hpct: f32, icon: Option<&str>, round: bool| {
+            // Both percentages are of the short edge, which on a landscape phone is the
+            // height. A width therefore has to be converted to a fraction of the width.
+            let tall = hpct / 10_000.0;
+            let wide = wpct / 10_000.0 * ASPECT;
             let left = (1.0 - wide) * (x / 10_000.0);
             let top = (1.0 - tall) * (y / 10_000.0);
             controls.push(Control {
@@ -414,30 +419,31 @@ impl Layout {
                 round,
             });
         };
-        // The key row along the top, left to right.
-        put(Action::Debug, 0.0, 0.0, 2289.0, Some("debug"), false);
-        put(Action::View, 0.0, 1293.0, 2289.0, Some("perspective"), false);
-        put(Action::Chat, 1174.0, 0.0, 2289.0, Some("chat"), false);
-        put(Action::Keyboard, 2348.0, 0.0, 2417.0, Some("keyboard"), false);
-        put(Action::TabList, 3522.0, 0.0, 2289.0, None, false);
+        // The key row along the top: wide, short tabs.
+        put(Action::Debug, 0.0, 0.0, 2289.0, 1100.0, Some("debug"), false);
+        put(Action::View, 0.0, 1293.0, 2289.0, 1100.0, Some("perspective"), false);
+        put(Action::Chat, 1174.0, 0.0, 2289.0, 1100.0, Some("chat"), false);
+        put(Action::Keyboard, 2348.0, 0.0, 2417.0, 1111.0, Some("keyboard"), false);
+        put(Action::TabList, 3522.0, 0.0, 2289.0, 1100.0, None, false);
         // The virtual mouse, top right, where the thumb that holds the phone rests.
-        put(Action::Mouse, 9912.0, 0.0, 2289.0, Some("mouse"), false);
-        // The movement cross.
-        put(Action::Forward, 1344.0, 5184.0, 1800.0, Some("forward"), false);
-        put(Action::Left, 438.0, 7441.0, 1800.0, Some("left"), false);
-        put(Action::Right, 2250.0, 7441.0, 1800.0, Some("right"), false);
-        put(Action::Back, 1344.0, 9698.0, 1800.0, Some("back"), false);
-        put(Action::Sneak, 1344.0, 7441.0, 1800.0, Some("sneak"), false);
-        // The two mouse buttons, on the right where the other thumb is.
-        put(Action::Mine, 438.0, 5184.0, 1800.0, Some("attack"), false);
-        put(Action::Use, 2250.0, 5184.0, 1800.0, Some("use"), false);
-        put(Action::Jump, 8071.0, 7098.0, 1800.0, Some("jump"), false);
-        // The bag, the inventory key, low on the right.
-        put(Action::Inventory, 2341.0, 9801.0, 1800.0, Some("inventory"), false);
+        put(Action::Mouse, 9912.0, 0.0, 2289.0, 1100.0, Some("mouse"), false);
+        // The movement cross, with sneak in its middle.
+        put(Action::Forward, 1344.0, 5184.0, 1800.0, 1800.0, Some("forward"), false);
+        put(Action::Left, 438.0, 7441.0, 1800.0, 1800.0, Some("left"), false);
+        put(Action::Right, 2250.0, 7441.0, 1800.0, 1800.0, Some("right"), false);
+        put(Action::Back, 1344.0, 9698.0, 1800.0, 1800.0, Some("back"), false);
+        put(Action::Sneak, 1344.0, 7441.0, 1800.0, 1800.0, Some("sneak"), false);
+        // The two mouse buttons flank the cross, where a thumb reaches them without
+        // leaving the D-pad.
+        put(Action::Mine, 438.0, 5184.0, 1800.0, 1800.0, Some("attack"), false);
+        put(Action::Use, 2250.0, 5184.0, 1800.0, 1800.0, Some("use"), false);
+        // Jump, out on the right where the other thumb rests.
+        put(Action::Jump, 8071.0, 7098.0, 1800.0, 1800.0, Some("jump"), false);
+        put(Action::Inventory, 2341.0, 9801.0, 1800.0, 1800.0, Some("inventory"), false);
         // GUI: everything the game draws goes away, and comes back.
-        put(Action::HideGui, 345.0, 9854.0, 1800.0, Some("gui"), true);
+        put(Action::HideGui, 345.0, 9854.0, 1800.0, 1800.0, Some("gui"), true);
         // The floating panel's handle, out of the way of every thumb.
-        put(Action::Panel, 9100.0, 9700.0, 1200.0, Some("panel"), true);
+        put(Action::Panel, 9100.0, 9700.0, 1200.0, 1200.0, Some("panel"), true);
         // The hotbar: nine slots, invisible, placed by the GUI scale rather than by
         // this file. They are in the list so the layout has them to place, and the
         // rectangles below are only what a layout with no scale yet falls back to.
