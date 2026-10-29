@@ -30,7 +30,7 @@ mod art;
 mod launcher;
 pub use launcher::{
     LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
-    LauncherSetting, LauncherStory, LoadingScreen,
+    LauncherSetting, LauncherStory, LoadingScreen, draw_cursor, draw_info_panel,
 };
 
 /// The default player skin: 64x64 RGBA, drawn from a palette rather than loaded.
@@ -84,6 +84,15 @@ pub struct Overlay {
     /// Where the layout is read from and written to.
     path: PathBuf,
     panel: bool,
+    /// The floating info panel is open: frame rate, memory, and the way into the
+    /// arrange mode. It sits over the world and is dragged by its own handle.
+    info_open: bool,
+    /// Where that panel's corner is, so a player can move it away from the thumb they
+    /// hold the phone with. `None` until it is first placed.
+    info_pos: Option<[f32; 2]>,
+    /// The virtual mouse, as its toggle last left it. `paint` hands it to the layout,
+    /// which is where the cursor itself lives.
+    mouse_pending: bool,
     /// The launcher's front page, drawn in place of the HUD at boot.
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
@@ -184,6 +193,9 @@ impl Overlay {
             hud: Hud::new(layout),
             path,
             panel: false,
+            info_open: false,
+            info_pos: None,
+            mouse_pending: false,
             launcher: false,
             launcher_since: None,
             background: None,
@@ -385,13 +397,36 @@ impl Overlay {
     /// press one frame late, and on a phone the player feels that in the first second.
     pub fn presses(&mut self) -> Vec<(Action, bool)> {
         let edges = self.hud.take_edges();
-        for (_, down) in edges.iter().filter(|(action, _)| *action == Action::Menu) {
-            if *down {
-                self.panel = !self.panel;
-                log::info!(
-                    "overlay: the settings panel is {}",
-                    if self.panel { "open" } else { "closed" }
-                );
+        for (action, down) in &edges {
+            if !*down {
+                continue;
+            }
+            match action {
+                Action::Menu => {
+                    self.panel = !self.panel;
+                    log::info!(
+                        "overlay: the settings panel is {}",
+                        if self.panel { "open" } else { "closed" }
+                    );
+                }
+                Action::Panel => {
+                    self.info_open = !self.info_open;
+                    log::info!(
+                        "overlay: the info panel is {}",
+                        if self.info_open { "open" } else { "closed" }
+                    );
+                }
+                Action::Mouse => {
+                    // The size is the last one drawn at: a toggle is read here, where
+                    // the frame's dimensions are not at hand, and the cursor is placed
+                    // by `paint` on the frame the toggle lands on.
+                    self.mouse_pending = !self.mouse_pending;
+                    log::info!(
+                        "overlay: the virtual mouse is {}",
+                        if self.mouse_pending { "on" } else { "off" }
+                    );
+                }
+                _ => {}
             }
         }
         edges
@@ -438,6 +473,9 @@ impl Overlay {
             launcher_fonts,
             skin_texture,
             panel_rect,
+            info_open,
+            info_pos,
+            mouse_pending,
             panorama: _panorama,
             dpi,
             show_status,
@@ -461,6 +499,11 @@ impl Overlay {
         // Everything the panel can change is taken out of the layout into a local
         // first: the closure that draws a window holds the borrow imgui just gave us,
         // and `self` is not in it to be borrowed twice.
+        // The virtual mouse is the layout's, and the toggle is read here because this
+        // is where the frame's size is known: turning it on has to place the cursor
+        // somewhere a player can see.
+        let mouse_on = hud.set_mouse(*mouse_pending, width, height);
+        let cursor = hud.cursor();
         let mut edit = hud.edit;
         let mut opacity = hud.layout.opacity;
         let mut scale = hud.layout.scale;
@@ -480,6 +523,11 @@ impl Overlay {
             .unwrap_or(opacity);
         // Whether the panel's per-button sliders actually moved this frame.
         let mut sel_touched = false;
+        // What the floating panel's own buttons asked for this frame.
+        let mut info_edit = edit;
+        let mut info_close = false;
+        let mut info_reset = false;
+        let mut info_save = false;
         let buttons: Vec<(Action, Rect, f32, Option<String>, bool)> = hud
             .buttons(width, height)
             .into_iter()
@@ -549,6 +597,28 @@ impl Overlay {
                     width,
                     height,
                 );
+                // The virtual mouse's cursor, over the world and over whatever screen
+                // is open: a pointer nobody can see is not a pointer.
+                if mouse_on {
+                    launcher::draw_cursor(ui, cursor, *dpi);
+                }
+                // The floating panel, when it is up. It is the only place a player can
+                // read the frame rate without a terminal, and the only way into the
+                // arrange mode without a menu button in the layout.
+                if *info_open {
+                    launcher::draw_info_panel(
+                        ui,
+                        info_pos,
+                        *dpi,
+                        width,
+                        height,
+                        status.as_str(),
+                        &mut info_edit,
+                        &mut info_close,
+                        &mut info_reset,
+                        &mut info_save,
+                    );
+                }
                 // The panel comes after the buttons, so it is drawn on top of them: a
                 // slider you cannot see because a "MINE" is over it is a slider you
                 // cannot find on a phone, where there is no hover to discover it with.
@@ -606,6 +676,22 @@ impl Overlay {
             .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= LOADING_FADE)
         {
             self.loading_fade = None;
+        }
+
+        // The floating panel's answers, applied after the imgui block for the same
+        // reason as the settings window's: the fields are borrowed apart in there.
+        if info_edit != edit {
+            edit = info_edit;
+        }
+        if info_close {
+            *info_open = false;
+        }
+        if info_reset {
+            hud.layout = Layout::default();
+            *info_open = false;
+        }
+        if info_save {
+            hud.save(path);
         }
 
         hud.layout.scale = scale;
@@ -1554,6 +1640,105 @@ fn hud_buttons(
                 );
             }
         });
+}
+
+/// The virtual mouse's cursor: a small arrow, drawn where the finger last put it.
+///
+/// A phone has no pointer, and every Minecraft screen that is not the world hit-tests
+/// a cursor position. The arrow is drawn by us rather than by the game so that it is
+/// the same shape over the world, over a menu and over a chest, and so that it is
+/// visibly *ours*: a player who cannot see a cursor has no way to know the mouse is
+/// on.
+pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
+    let draw = ui.get_window_draw_list();
+    // The arrow: a filled triangle with a tail, white with a black edge, which is the
+    // one pair of colours that reads on snow and on the Nether.
+    let s = 7.0 * dpi;
+    let [x, y] = at;
+    let points = [
+        [x, y],
+        [x, y + s * 2.0],
+        [x + s * 0.55, y + s * 1.45],
+        [x + s * 0.9, y + s * 2.0],
+        [x + s * 1.2, y + s * 1.85],
+        [x + s * 0.85, y + s * 1.3],
+        [x + s * 1.5, y + s * 1.3],
+    ];
+    // The outline first, as a slightly larger shape under the fill.
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba([0, 0, 0], 0.85))
+            .thickness(3.0 * dpi)
+            .build();
+    }
+    for i in 1..points.len() - 1 {
+        draw.add_triangle(points[0], points[i], points[i + 1], rgba([255, 255, 255], 1.0))
+            .filled(true)
+            .build();
+    }
+}
+
+/// The floating panel: the frame rate, the memory in use, and the way into the
+/// arrange mode.
+///
+/// It is a small window a player can drag by its title, not a full screen. That is the
+/// whole point of it: the numbers are worth glancing at while playing, and a screen
+/// that covers the game to show them is a screen nobody opens twice.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_info_panel(
+    ui: &Ui,
+    pos: &mut Option<[f32; 2]>,
+    dpi: f32,
+    width: f32,
+    height: f32,
+    status: &str,
+    edit: &mut bool,
+    close: &mut bool,
+    reset: &mut bool,
+    save: &mut bool,
+) {
+    let at = pos.get_or_insert([width - 232.0 * dpi, 64.0 * dpi]);
+    // Kept on the glass: a panel dragged past the edge can never be dragged back.
+    at[0] = at[0].clamp(0.0, (width - 120.0 * dpi).max(0.0));
+    at[1] = at[1].clamp(0.0, (height - 80.0 * dpi).max(0.0));
+    let mut moved = *at;
+    let _ = ui
+        .window("##info")
+        .flags(
+            WindowFlags::NO_RESIZE
+                | WindowFlags::NO_COLLAPSE
+                | WindowFlags::NO_SCROLLBAR
+                | WindowFlags::NO_SCROLL_WITH_MOUSE
+                | WindowFlags::ALWAYS_AUTO_RESIZE
+                | WindowFlags::NO_SAVED_SETTINGS,
+        )
+        .position([at[0], at[1]], Condition::Always)
+        .size([216.0 * dpi, 0.0], Condition::FirstUseEver)
+        .build(|| {
+            if let Some([x, y]) = ui.window_pos().into() {
+                moved = [x, y];
+            }
+            ui.text("Horizon");
+            ui.separator();
+            // The frame line the engine reports: frame rate, fingers, and whatever it
+            // put in front of them.
+            ui.text_wrapped(status);
+            ui.separator();
+            if ui.button(if *edit { "Done arranging" } else { "Move the buttons" }) {
+                *edit = !*edit;
+            }
+            if ui.button("Save layout") {
+                *save = true;
+            }
+            if ui.button("Reset layout") {
+                *reset = true;
+            }
+            if ui.button("Close") {
+                *close = true;
+            }
+        });
+    *pos = Some(moved);
 }
 
 /// The settings panel. Everything a player can reach without a file manager and

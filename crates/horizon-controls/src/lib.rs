@@ -53,6 +53,20 @@ pub enum Action {
     /// It is in the layout because it has to be draggable like everything else, and
     /// the overlay answers it instead of the game.
     Menu,
+    /// The floating panel that shows the frame rate and the memory in use, and holds
+    /// the way into the arrange mode. Its own button, apart from `Menu`, because a
+    /// player wants the panel while the pad is still out of the way.
+    Panel,
+    /// The virtual mouse: a cursor the player moves with a finger, which the two mouse
+    /// buttons then click at. A toggle rather than a hold, because a hand that has to
+    /// keep one finger on it has no thumb left for the click.
+    Mouse,
+    /// F1: everything the game draws over the world goes away and comes back.
+    HideGui,
+    /// The phone's own keyboard, for the chat line and the command line.
+    Keyboard,
+    /// Leave the world and go back to the launcher.
+    Back,
     Hotbar(u8),
 }
 
@@ -85,6 +99,11 @@ impl Action {
             Action::View => "F5",
             Action::Screenshot => "F2",
             Action::Menu => "MENU",
+            Action::Panel => "INFO",
+            Action::Mouse => "MOUSE",
+            Action::HideGui => "HIDE",
+            Action::Keyboard => "KEY",
+            Action::Back => "BACK",
             Action::Hotbar(_) => "",
         }
     }
@@ -92,8 +111,15 @@ impl Action {
     /// Whether the button is the overlay's own business rather than the game's.
     /// Handing these to the engine would be wrong twice over: there is no key for a
     /// settings panel, and a player who cannot close it has no way back out.
+    ///
+    /// The virtual mouse is not in this list: it does not stop a key reaching the
+    /// game, it changes what a drag on the glass means, so the overlay reads it and
+    /// the game never hears of it.
     pub fn is_overlay(self) -> bool {
-        matches!(self, Action::Menu)
+        matches!(
+            self,
+            Action::Menu | Action::Panel | Action::Mouse | Action::Keyboard
+        )
     }
 
     /// The number on a hotbar button, or the legend of anything else.
@@ -296,7 +322,7 @@ impl Default for Layout {
     /// is the one mistake a HUD layout cannot be recovered from by a player who
     /// cannot see why the bag will not open.
     fn default() -> Self {
-        Self::bedrock()
+        Self::mojo()
     }
 }
 
@@ -380,6 +406,69 @@ impl Layout {
             look_sensitivity: 6.0,
             drag_to_look: true,
             preset: "bedrock".to_string(),
+            controls,
+        }
+    }
+
+    /// The Mojo pad: a D-pad, the two mouse buttons, and a GUI toggle that hides the
+    /// pad and brings up the key row.
+    ///
+    /// Converted from that layout's own scale: a position is a fraction of the room the
+    /// button leaves behind (`0` flush left, `10000` flush right), and a size is a
+    /// fraction of the screen's short edge.
+    ///
+    /// Its GUI button is the one a player presses to get the controls out of the way,
+    /// so it is `HideGui` here rather than a layer switch: this launcher has no layers,
+    /// and hiding everything the game draws over the world is what that button means
+    /// once there is nothing to switch to.
+    pub fn mojo() -> Self {
+        const ASPECT: f32 = 9.0 / 16.0;
+        let mut controls = Vec::new();
+        let mut put = |action: Action, x: f32, y: f32, pct: f32, icon: Option<&str>, round: bool| {
+            let tall = pct / 10_000.0;
+            let wide = tall * ASPECT;
+            let left = (1.0 - wide) * (x / 10_000.0);
+            let top = (1.0 - tall) * (y / 10_000.0);
+            controls.push(Control {
+                action,
+                bounds: Some([left, top, wide, tall]),
+                center: [left + wide / 2.0, top + tall / 2.0],
+                size: wide.max(tall),
+                opacity: None,
+                icon: icon.map(str::to_owned),
+                round,
+            });
+        };
+        // The key row along the top, left to right.
+        put(Action::Debug, 0.0, 0.0, 2289.0, Some("debug"), false);
+        put(Action::View, 0.0, 1293.0, 2289.0, Some("perspective"), false);
+        put(Action::Chat, 1174.0, 0.0, 2289.0, Some("chat"), false);
+        put(Action::Keyboard, 2348.0, 0.0, 2417.0, Some("keyboard"), false);
+        put(Action::TabList, 3522.0, 0.0, 2289.0, None, false);
+        // The virtual mouse, top right, where the thumb that holds the phone rests.
+        put(Action::Mouse, 9912.0, 0.0, 2289.0, Some("mouse"), false);
+        // The movement cross.
+        put(Action::Forward, 1344.0, 5184.0, 1800.0, Some("forward"), false);
+        put(Action::Left, 438.0, 7441.0, 1800.0, Some("left"), false);
+        put(Action::Right, 2250.0, 7441.0, 1800.0, Some("right"), false);
+        put(Action::Back, 1344.0, 9698.0, 1800.0, Some("back"), false);
+        put(Action::Sneak, 1344.0, 7441.0, 1800.0, Some("sneak"), false);
+        // The two mouse buttons, on the right where the other thumb is.
+        put(Action::Mine, 438.0, 5184.0, 1800.0, Some("attack"), false);
+        put(Action::Use, 2250.0, 5184.0, 1800.0, Some("use"), false);
+        put(Action::Jump, 8071.0, 7098.0, 1800.0, Some("jump"), false);
+        // The bag, the inventory key, low on the right.
+        put(Action::Inventory, 2341.0, 9801.0, 1800.0, Some("inventory"), false);
+        // GUI: everything the game draws goes away, and comes back.
+        put(Action::HideGui, 345.0, 9854.0, 1800.0, Some("gui"), true);
+        // The floating panel's handle, out of the way of every thumb.
+        put(Action::Panel, 9100.0, 9700.0, 1200.0, Some("panel"), true);
+        Self {
+            scale: 1.0,
+            opacity: 0.42,
+            look_sensitivity: 6.0,
+            drag_to_look: true,
+            preset: "mojo".to_string(),
             controls,
         }
     }
@@ -557,6 +646,8 @@ struct Finger {
     control: Option<Action>,
     /// Whether it is turning the camera, and where the drag started.
     looking: bool,
+    /// Whether it is dragging the virtual mouse's cursor.
+    pointing: bool,
 }
 
 /// The touch state of one frame: which buttons are held, and how far the camera
@@ -576,6 +667,21 @@ pub struct Hud {
     /// ticks and a tap can begin and end inside one frame at 120 fps.
     edges: Vec<(Action, bool)>,
     look: [f32; 2],
+    /// The virtual mouse is out: a finger on bare glass moves a cursor instead of
+    /// turning the camera, and the two mouse buttons click at it.
+    ///
+    /// A phone has no pointer, and a game written for one puts its inventory, its
+    /// furnaces and its creative menu behind a cursor position. Without this, a player
+    /// can open the bag and then not press anything in it.
+    pub mouse: bool,
+    /// Where that cursor is, in the same pixels the buttons are in, and how far it has
+    /// moved since the game last read it. The engine adds the movement to its own
+    /// pointer, so the two cannot drift apart when a screen changes the GUI scale.
+    cursor: [f32; 2],
+    cursor_moved: [f32; 2],
+    /// Whether the cursor has been placed at all. The first drag of a fresh mouse
+    /// starts where the finger landed rather than sweeping in from the corner.
+    cursor_placed: bool,
 }
 
 impl Default for Hud {
@@ -594,6 +700,10 @@ impl Hud {
             held: BTreeSet::new(),
             edges: Vec::new(),
             look: [0.0, 0.0],
+            mouse: false,
+            cursor: [0.0, 0.0],
+            cursor_moved: [0.0, 0.0],
+            cursor_placed: false,
         }
     }
 
@@ -629,7 +739,18 @@ impl Hud {
         // that ends the arranging, and a MENU that can only be dragged puts the panel
         // behind a door with no handle.
         let editing = self.edit;
-        let looking = !editing && hit.is_none() && self.layout.drag_to_look;
+        // A finger on bare glass does one of two things, and which one is the mouse
+        // toggle's whole job: it turns the camera, or it drags the cursor.
+        let pointing = !editing && self.mouse && hit.is_none();
+        let looking = !editing && !self.mouse && hit.is_none() && self.layout.drag_to_look;
+        if pointing {
+            // The cursor starts under the finger that first drags it, and then follows
+            // the finger's own movement. It does not jump to where the finger landed:
+            // a player who taps a corner to move the cursor a little would otherwise
+            // send it across the screen.
+            self.cursor = [x, y];
+            self.cursor_placed = true;
+        }
         if editing {
             // The button a finger lands on becomes the one the panel edits; landing
             // on bare glass selects nothing.
@@ -646,6 +767,7 @@ impl Hud {
             y,
             control: hit,
             looking,
+            pointing,
         });
         log::info!(
             "controls: finger {id} down at {x:.0}x{y:.0} on {}",
@@ -681,7 +803,11 @@ impl Hud {
         let dy = y - finger.y;
         finger.x = x;
         finger.y = y;
-        if finger.looking {
+        if finger.pointing {
+            self.cursor = [x, y];
+            self.cursor_moved[0] += dx;
+            self.cursor_moved[1] += dy;
+        } else if finger.looking {
             let sensitivity = self.layout.look_sensitivity.max(0.01);
             self.look[0] += dx / sensitivity;
             self.look[1] += dy / sensitivity;
@@ -741,6 +867,44 @@ impl Hud {
     /// Degrees since the last call: x is a turn to the right, y a pitch down.
     pub fn take_look(&mut self) -> [f32; 2] {
         std::mem::replace(&mut self.look, [0.0, 0.0])
+    }
+
+    /// Where the virtual mouse's cursor is, in the glass's own pixels.
+    pub fn cursor(&self) -> [f32; 2] {
+        self.cursor
+    }
+
+    /// Pixels the cursor has moved since the last call.
+    pub fn take_cursor(&mut self) -> [f32; 2] {
+        std::mem::replace(&mut self.cursor_moved, [0.0, 0.0])
+    }
+
+    /// Turn the virtual mouse on or off, and say which it is now.
+    ///
+    /// Turning it on places the cursor where the screen's middle is, so the first
+    /// look at it is not a cursor in a corner the player has to find.
+    pub fn set_mouse(&mut self, on: bool, width: f32, height: f32) -> bool {
+        if on && !self.mouse {
+            if !self.cursor_placed {
+                self.cursor = [width / 2.0, height / 2.0];
+                self.cursor_placed = true;
+            }
+            // A finger that was turning the camera is not a finger on the cursor: it
+            // keeps doing what it started, and the next one points.
+            self.mouse = true;
+        } else if !on {
+            self.mouse = false;
+        }
+        self.mouse
+    }
+
+    /// Move the cursor from something other than a finger: the game's own menus read a
+    /// position, and a screen that has just opened wants the cursor inside it.
+    pub fn place_cursor(&mut self, x: f32, y: f32) {
+        self.cursor_moved[0] += x - self.cursor[0];
+        self.cursor_moved[1] += y - self.cursor[1];
+        self.cursor = [x, y];
+        self.cursor_placed = true;
     }
 
     pub fn buttons(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
