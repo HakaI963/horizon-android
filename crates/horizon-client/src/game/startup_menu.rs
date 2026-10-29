@@ -2562,7 +2562,6 @@ mod tests {
             launcher_skin: None,
             #[cfg(target_os = "android")]
             uploaded_skin: None,
-            skin_uploaded: false,
             #[cfg(target_os = "android")]
             hosting: None,
             #[cfg(target_os = "android")]

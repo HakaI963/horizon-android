@@ -13185,6 +13185,9 @@ struct Loading {
     /// choice actually changed.
     #[cfg(target_os = "android")]
     uploaded_skin: Option<std::path::PathBuf>,
+    /// Whether a texture is in the overlay's slot at all.
+    #[cfg(target_os = "android")]
+    skin_uploaded: bool,
     /// The address this device is hosting on, when it is.
     #[cfg(target_os = "android")]
     hosting: Option<String>,
@@ -13628,6 +13631,8 @@ fn run_loading(
         launcher_skin: None,
         #[cfg(target_os = "android")]
         uploaded_skin: None,
+        #[cfg(target_os = "android")]
+        skin_uploaded: false,
         #[cfg(target_os = "android")]
         hosting: None,
         #[cfg(target_os = "android")]
