@@ -571,34 +571,6 @@ impl Title {
         }
         folder
     }
-    /// Whether any `.hmod` is installed in a folder the game reads.
-    ///
-    /// A directory listing, and only asked on the main menu, which is a screen the
-    /// player sits on rather than one that redraws while playing. The cost is one
-    /// `read_dir` per frame of the title, which is why it is a count and not a parse.
-    fn mods_installed(&self) -> bool {
-        // `horizon-mods/` beside `options.txt` is the folder `start_mods` scans, which
-        // is `mod_list::DIR`. `mods/` was the old guess and the loader has never read
-        // it; it is kept because a player may still have dropped a file there, and
-        // `import/mods` is what the launcher downloads into.
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let folders = [
-            cwd.join(crate::mod_list::DIR),
-            cwd.join("mods"),
-            crate::gfx::import_dir().join("mods"),
-        ];
-        folders.iter().any(|dir| {
-            std::fs::read_dir(dir).is_ok_and(|entries| {
-                entries.flatten().any(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .is_some_and(|extension| extension == "hmod")
-                })
-            })
-        })
-    }
-
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
         let (w, h) = (w.ceil(), h.ceil());
         let b = |x: f32, y: f32, w: f32, label: &str, enabled: bool, id: u8| Button {
@@ -621,12 +593,10 @@ impl Title {
                     b(cx - 100.0, y + 96.0, 98.0, "Options...", true, 3),
                     b(cx + 2.0, y + 96.0, 98.0, "Quit Game", true, 2),
                 ];
-                // Mods, but only when there is something to manage: a button that
-                // opens an empty list on a fresh install is a button that teaches the
-                // player the menu does nothing.
-                if self.mods_installed() {
-                    buttons.push(b(cx - 100.0, y + 72.0, 200.0, "Mods", true, 8));
-                }
+                // No "Mods" row here. It sat at y + 72, which is the row vanilla gives
+                // to the three small icon buttons, so it was a full-width button drawn
+                // underneath them — unreachable, and not in vanilla's menu at all. Mods
+                // live on the launcher's own page, which is where a player manages them.
                 for (i, (label, enabled, id, icon, size)) in [
                     // Horizon's Join a Friend (an invite code) behind
                     // vanilla's Friends button.

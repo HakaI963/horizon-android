@@ -9939,50 +9939,89 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// The panorama's yaw for this frame, from the wall clock.
+    ///
+    /// Every screen that shows the panorama has to advance it, and this used to be
+    /// three copies of the same call with one of them missing: the "Opening world"
+    /// frames drew `loading_frame` as it comes, whose yaw is a constant 0.0. That is
+    /// the whole of "the panorama freezes while the world opens" — the frame was being
+    /// drawn, and drawn with a panorama that could not move.
+    fn panorama_yaw(&mut self) -> f32 {
+        self.panorama_rotation.update(
+            self.started.elapsed().as_secs_f32(),
+            self.settings.file.double("panoramaScrollSpeed") as f32,
+        )
+    }
+
     fn render(&mut self) -> Result<bool> {
         // The integrated server is opening the world on its own thread. The window is
         // not frozen — it draws this — and the join happens in `poll_integrated` the
         // moment the server is ready.
         if self.integrated_ready.is_some() {
-            if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+            if self.renderer.is_some() {
+                let (w, h) = {
+                    let r = self.renderer.as_ref().unwrap();
+                    (r.config.width, r.config.height)
+                };
+                let mut hud = HudBatch::new([w, h]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
                     "Opening world",
                     0.0,
                 );
-                return renderer.render(&loading_frame(&hud));
+                let yaw = self.panorama_yaw();
+                if let Some(renderer) = &mut self.renderer {
+                    return renderer.render(&loading_frame_at(&hud, yaw));
+                }
             }
             return Ok(false);
         }
-        if let Some(loader) = &self.world_loader {
-            if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+        if let Some(cancelled) = self.world_loader.as_ref().map(|l| l.cancelled) {
+            if self.renderer.is_some() {
+                let (w, h) = {
+                    let r = self.renderer.as_ref().unwrap();
+                    (r.config.width, r.config.height)
+                };
+                let mut hud = HudBatch::new([w, h]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    if loader.cancelled {
+                    if cancelled {
                         "Cancelling world"
                     } else {
                         "Opening world"
                     },
                     0.0,
                 );
-                return renderer.render(&loading_frame(&hud));
+                let yaw = self.panorama_yaw();
+                if let Some(renderer) = &mut self.renderer {
+                    return renderer.render(&loading_frame_at(&hud, yaw));
+                }
             }
             return Ok(false);
         }
         if self.pending_entry.is_some() {
-            if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+            if self.renderer.is_some() && self.rest_loader.is_some() {
+                let (w, h) = {
+                    let r = self.renderer.as_ref().unwrap();
+                    (r.config.width, r.config.height)
+                };
+                let (line, fraction) = {
+                    let loader = self.rest_loader.as_ref().unwrap();
+                    (loader.progress.line().to_string(), loader.progress.fraction())
+                };
+                let mut hud = HudBatch::new([w, h]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    loader.progress.line(),
-                    loader.progress.fraction(),
+                    &line,
+                    fraction,
                 );
-                return renderer.render(&loading_frame(&hud));
+                let yaw = self.panorama_yaw();
+                if let Some(renderer) = &mut self.renderer {
+                    return renderer.render(&loading_frame_at(&hud, yaw));
+                }
             }
             return Ok(false);
         }
@@ -10396,10 +10435,12 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         match reason {
-            // The panorama and its blur are drawn by the renderer.
-            Reason::Other => {
-                horizon_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false)
-            }
+            // The panorama and its blur are drawn by the renderer, and nothing is
+            // painted over them. This used to tile `gui/menu_background` — the dirt
+            // texture — across the whole screen, which hid the very panorama the
+            // player is meant to watch turning while the world opens. A world opening
+            // is not a menu, so the menu's backdrop has no business being here.
+            Reason::Other => {}
             Reason::NetherPortal => {
                 let overlay = hud_overlays::portal_overlay(w as i32, h as i32, 1.0);
                 hud_layout::paint(batch, atlas, &[overlay]);
@@ -12941,6 +12982,18 @@ fn loading_renderer(
     Ok(renderer)
 }
 
+/// A title-shaped frame at `yaw`: black clear and panorama, only the HUD is drawn.
+///
+/// The yaw is passed in rather than read from the frame the function builds, because
+/// the panorama has to keep turning while a world opens. It used to be left at the
+/// constant below, which is why the panorama stood still for the whole of "Opening
+/// world" and then jumped when the world finally drew.
+fn loading_frame_at(hud: &HudBatch, yaw: f32) -> Frame<'_> {
+    let mut frame = loading_frame(hud);
+    frame.yaw = yaw;
+    frame
+}
+
 /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
 fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
@@ -13579,11 +13632,23 @@ impl ApplicationHandler for App {
                 } {
                     None => Step::Waiting,
                     Some(Err(e)) => Step::Failed(e.into()),
-                    Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
-                        Ok(None) => Step::Done,
-                        Err(e) => Step::Failed(e),
-                    },
+                    Some(Ok(loaded)) => {
+                        // `finish` builds the renderer, opens the audio device and makes
+                        // the game, and it does all of it on this thread: nothing is
+                        // drawn until it returns. So the frame that was on the glass
+                        // when the player tapped Play is the frame they stare at for the
+                        // next two or three seconds — and that frame is the launcher.
+                        //
+                        // One loading frame first makes the wait the screen it belongs
+                        // to: "Starting Minecraft" is what is happening, and the player
+                        // reads a wait rather than a launcher that stopped answering.
+                        loading.draw();
+                        match loading.finish(loaded) {
+                            Ok(Some(game)) => Step::Ready(Box::new(game)),
+                            Ok(None) => Step::Done,
+                            Err(e) => Step::Failed(e),
+                        }
+                    }
                 }
             }
         };

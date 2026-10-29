@@ -50,6 +50,10 @@ const EDGE_ACTIVE: [u8; 3] = [255, 214, 150];
 /// The legend.
 const LEGEND: [u8; 3] = [238, 242, 248];
 
+/// How long the loading surface takes to fade away once the screen behind it is
+/// ready. Short enough not to be a wait, long enough that the menu is seen to arrive.
+const LOADING_FADE: f32 = 0.22;
+
 /// The finger imgui is seeing. It only exists while something on screen can be
 /// clicked: a pointer fed during play would report a hover nobody asked for.
 struct Pointer {
@@ -96,6 +100,13 @@ pub struct Overlay {
     loading: Option<LoadingScreen>,
     /// When the loading surface came up, so its spinner turns.
     loading_since: Option<Instant>,
+    /// When the loading surface started to go away, and the screen it was covering.
+    ///
+    /// The surface used to vanish between one frame and the next, which on a phone
+    /// reads as the menu popping into existence: the game's first frame is already
+    /// drawn behind it, and the two have nothing to do with each other. It fades over
+    /// a fifth of a second instead, so the menu arrives rather than appears.
+    loading_fade: Option<(Instant, Option<LoadingScreen>)>,
     /// When the launcher's page last changed, and which page it changed to. A tab tap
     /// is a page arriving rather than a page being swapped, so the content slides in
     /// over a fifth of a second; `None` means the page on the glass has already
@@ -181,6 +192,7 @@ impl Overlay {
             stone_size: [0, 0],
             loading: None,
             loading_since: None,
+            loading_fade: None,
             page_since: None,
             reduce_motion: false,
             launcher_model: LauncherModel::default(),
@@ -406,6 +418,8 @@ impl Overlay {
         let stone = self.stone.map(|id| (id, self.stone_size));
         let loading = self.loading.clone();
         let loading_since = self.loading_since;
+        // The fade is read here and cleared at the end of the frame if it is spent.
+        let fade = self.loading_fade;
         // One borrow of `self`, every field it needs: the renderer and the context are
         // two fields of the same struct, and imgui holds them both at once.
         let Overlay {
@@ -545,14 +559,34 @@ impl Overlay {
             // The loading surface is drawn last, over whichever of the two is up. Play
             // closes the launcher before the surface is cleared, so drawing it only
             // while the launcher is up would leave exactly the gap it exists to fill.
-            if let Some(screen) = &loading
-                && let Some(fonts) = launcher_fonts.as_ref()
-            {
-                let elapsed = loading_since
-                    .map(|at| at.elapsed().as_secs_f32())
-                    .unwrap_or(0.0);
-                launcher::draw_loading(ui, screen, fonts, *dpi, width, height, elapsed);
+            if let Some(fonts) = launcher_fonts.as_ref() {
+                if let Some(screen) = &loading {
+                    let elapsed = loading_since
+                        .map(|at| at.elapsed().as_secs_f32())
+                        .unwrap_or(0.0);
+                    launcher::draw_loading(ui, screen, fonts, *dpi, width, height, elapsed, 1.0);
+                }
+                // And a surface on its way out, over the screen it was hiding. The
+                // menu behind it is already drawing; this is what makes it arrive
+                // instead of appearing between two frames.
+                if let Some((at, screen)) = fade.as_ref()
+                    && let Some(screen) = screen.as_ref()
+                {
+                    let t = (at.elapsed().as_secs_f32() / LOADING_FADE).clamp(0.0, 1.0);
+                    if t < 1.0 {
+                        launcher::draw_loading(ui, screen, fonts, *dpi, width, height, 0.0, 1.0 - t);
+                    }
+                }
             }
+        }
+
+        // A fade that has run its course is dropped, so the next frame costs nothing
+        // and the platform stops being asked to redraw for it.
+        if loading_fade
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed().as_secs_f32() >= LOADING_FADE)
+        {
+            *loading_fade = None;
         }
 
         hud.layout.scale = scale;
@@ -987,13 +1021,32 @@ impl Overlay {
     /// and the first world frame are not a frozen picture. The launcher draws this
     /// instead, on its own clock, until the platform clears it.
     pub fn set_loading(&mut self, screen: Option<LoadingScreen>) {
-        if screen.is_some() && self.loading.is_none() {
-            self.loading_since = Some(Instant::now());
+        match &screen {
+            Some(_) => {
+                if self.loading.is_none() {
+                    self.loading_since = Some(Instant::now());
+                }
+                // A new surface cancels a fade still running: it is coming back up,
+                // not going away.
+                self.loading_fade = None;
+            }
+            None => {
+                if let Some(leaving) = self.loading.take() {
+                    // Remember what was on the glass so it can be drawn while it
+                    // fades, and start the clock.
+                    self.loading_fade = Some((Instant::now(), Some(leaving)));
+                }
+                self.loading_since = None;
+            }
         }
-        if screen.is_none() {
-            self.loading_since = None;
+        if screen.is_some() {
+            self.loading = screen;
         }
-        self.loading = screen;
+    }
+
+    /// Whether a surface is fading out, so the platform keeps asking for frames.
+    pub fn loading_fading(&self) -> bool {
+        self.loading_fade.is_some()
     }
 
     /// Whether the loading surface is up, so the platform can keep asking for frames

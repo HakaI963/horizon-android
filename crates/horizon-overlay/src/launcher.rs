@@ -622,15 +622,27 @@ fn panel(draw: &DrawListMut<'_>, c: &Css, min: [f32; 2], max: [f32; 2], face: u3
 /// A sunk well: a field, a track, the box a switch sits in. The inverse of a panel:
 /// its outline is inside, so it reads as cut into the page.
 fn well(draw: &DrawListMut<'_>, c: &Css, min: [f32; 2], max: [f32; 2], dpi: f32) {
+    well_alpha(draw, c, min, max, dpi, 1.0);
+}
+
+/// The same, at `alpha`: the loading surface's bar fades with the surface.
+fn well_alpha(
+    draw: &DrawListMut<'_>,
+    c: &Css,
+    min: [f32; 2],
+    max: [f32; 2],
+    dpi: f32,
+    alpha: f32,
+) {
     let o = OUTLINE * dpi;
-    fill(draw, min, max, c.well, 1.0, 0.0);
+    fill(draw, min, max, c.well, alpha, 0.0);
     // A dark edge on top and a light one below is what a hole in the page looks like.
     fill(
         draw,
         [min[0], min[1]],
         [max[0], min[1] + o],
         c.outline,
-        1.0,
+        alpha,
         0.0,
     );
     fill(
@@ -638,7 +650,7 @@ fn well(draw: &DrawListMut<'_>, c: &Css, min: [f32; 2], max: [f32; 2], dpi: f32)
         [min[0], max[1] - o],
         [max[0], max[1]],
         c.bevel,
-        0.35,
+        0.35 * alpha,
         0.0,
     );
 }
@@ -4041,6 +4053,7 @@ fn field(
 /// It is drawn over the launcher, so the page behind it cannot be tapped while the
 /// game is coming up. The spinner is a ring with an arc that turns: nothing that
 /// implies a percentage it does not have.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_loading(
     ui: &Ui,
     screen: &LoadingScreen,
@@ -4049,6 +4062,7 @@ pub fn draw_loading(
     width: f32,
     height: f32,
     elapsed: f32,
+    alpha: f32,
 ) {
     let c = &THEME;
     let _ = ui
@@ -4069,7 +4083,7 @@ pub fn draw_loading(
         .build(|| {
             {
                 let draw = ui.get_window_draw_list();
-                fill(&draw, [0.0, 0.0], [width, height], c.page, 1.0, 0.0);
+                fill(&draw, [0.0, 0.0], [width, height], c.page, alpha, 0.0);
             }
             let cx = width / 2.0;
             let cy = height / 2.0;
@@ -4077,7 +4091,7 @@ pub fn draw_loading(
             let ring_y = cy - 40.0 * dpi;
             {
                 let draw = ui.get_window_draw_list();
-                draw.add_circle([cx, ring_y], radius, rgba(c.outline, 1.0))
+                draw.add_circle([cx, ring_y], radius, rgba(c.outline, alpha))
                     .thickness(4.0 * dpi)
                     .num_segments(48)
                     .build();
@@ -4091,7 +4105,7 @@ pub fn draw_loading(
                     let a = start + span * (i as f32 / steps as f32);
                     let p = [cx + a.cos() * radius, ring_y + a.sin() * radius];
                     if let Some(from) = last {
-                        draw.add_line(from, p, rgba(c.accent, 1.0))
+                        draw.add_line(from, p, rgba(c.accent, alpha))
                             .thickness(4.0 * dpi)
                             .build();
                     }
@@ -4107,7 +4121,7 @@ pub fn draw_loading(
                     screen.title.as_str()
                 };
                 let [tw, th] = ui.calc_text_size(title);
-                draw.add_text([cx - tw / 2.0, cy + 4.0 * dpi], rgba(c.ink, 1.0), title);
+                draw.add_text([cx - tw / 2.0, cy + 4.0 * dpi], rgba(c.ink, alpha), title);
                 let _f = ui.push_font(fonts.small);
                 let detail = if screen.detail.is_empty() {
                     "This takes a moment on a phone."
@@ -4117,7 +4131,7 @@ pub fn draw_loading(
                 let [dw, _] = ui.calc_text_size(detail);
                 draw.add_text(
                     [cx - dw / 2.0, cy + 4.0 * dpi + th + 10.0 * dpi],
-                    rgba(c.muted, 1.0),
+                    rgba(c.muted, alpha),
                     detail,
                 );
             }
@@ -4127,14 +4141,14 @@ pub fn draw_loading(
                 let bx = cx - bw / 2.0;
                 let by = cy + 68.0 * dpi;
                 let draw = ui.get_window_draw_list();
-                well(&draw, c, [bx, by], [bx + bw, by + 8.0 * dpi], dpi);
+                well_alpha(&draw, c, [bx, by], [bx + bw, by + 8.0 * dpi], dpi, alpha);
                 if p > 0.0 {
                     fill(
                         &draw,
                         [bx + 2.0 * dpi, by + 2.0 * dpi],
                         [bx + 2.0 * dpi + (bw - 4.0 * dpi) * p, by + 6.0 * dpi],
                         c.accent,
-                        1.0,
+                        alpha,
                         0.0,
                     );
                 }
