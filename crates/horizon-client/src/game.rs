@@ -1324,6 +1324,21 @@ struct Game<'a> {
     /// launcher, so "Quit Game" means leaving Minecraft, not leaving Horizon.
     #[cfg(target_os = "android")]
     pub(super) back_to_launcher: bool,
+    /// The game came up behind the launcher's loading surface and has not yet cleared
+    /// it. `Loading` cannot do this for itself: handing the screen to `Game` replaces
+    /// the struct that owns `about_to_wait`, so the surface stayed up over a perfectly
+    /// good title screen.
+    #[cfg(target_os = "android")]
+    pub(super) title_ready: bool,
+    /// How many frames have been drawn since the game took the screen. The surface
+    /// comes down on the second, when the menu behind it is actually on the glass.
+    #[cfg(target_os = "android")]
+    title_frames: u32,
+    /// The same for a world entered from the launcher.
+    #[cfg(target_os = "android")]
+    pub(super) world_ready: bool,
+    #[cfg(target_os = "android")]
+    world_frames: u32,
     /// Armor slots: head, chest, legs, feet.
     armor: [Option<ItemStack>; 4],
     /// The off hand (Inventory slot 40, saved as slot 150; menu slot 504 here).
@@ -12056,6 +12071,14 @@ impl<'a> Game<'a> {
             title: None,
             #[cfg(target_os = "android")]
             back_to_launcher: false,
+            #[cfg(target_os = "android")]
+            title_ready: true,
+            #[cfg(target_os = "android")]
+            title_frames: 0,
+            #[cfg(target_os = "android")]
+            world_ready: false,
+            #[cfg(target_os = "android")]
+            world_frames: 0,
             armor: [None, None, None, None],
             offhand: None,
             hand: Hand::Main,
@@ -13146,6 +13169,12 @@ struct Loading {
     installing: Option<String>,
     #[cfg(target_os = "android")]
     install_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+    /// When the loading surface came up, so it can be taken down once the game behind
+    /// it has had a frame to draw. Without a floor the surface would be cleared in the
+    /// same frame it was raised, which is a flash rather than a screen.
+    #[cfg(target_os = "android")]
+    loading_since: Option<std::time::Instant>,
+
     /// Where the Skins page's PNG is read from, kept so the texture is uploaded once
     /// per choice rather than every frame.
     #[cfg(target_os = "android")]
@@ -13163,25 +13192,6 @@ struct Loading {
     /// The worker polling Microsoft while a sign-in runs.
     #[cfg(target_os = "android")]
     sign_in_rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
-    /// When the loading surface came up, so it can be taken down once the game behind
-    /// it has had a frame to draw. Without a floor the surface would be cleared in the
-    /// same frame it was raised, which is a flash rather than a screen.
-    #[cfg(target_os = "android")]
-    loading_since: Option<std::time::Instant>,
-    /// The game came up behind the launcher's loading surface and has not yet cleared
-    /// it. `Loading` cannot do this for itself: handing the screen to `Game` replaces
-    /// the struct that owns `about_to_wait`.
-    #[cfg(target_os = "android")]
-    title_ready: bool,
-    /// How many frames have been drawn since the game took the screen from the
-    /// launcher. The loading surface comes down on the second.
-    #[cfg(target_os = "android")]
-    title_frames: u32,
-    /// The same for a world that was entered from the launcher.
-    #[cfg(target_os = "android")]
-    world_ready: bool,
-    #[cfg(target_os = "android")]
-    world_frames: u32,
     /// The flag a running Microsoft sign-in checks so the player can stop waiting.
     #[cfg(target_os = "android")]
     sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -13624,14 +13634,6 @@ fn run_loading(
         sign_in_rx: None,
         #[cfg(target_os = "android")]
         loading_since: None,
-        #[cfg(target_os = "android")]
-        title_ready: true,
-        #[cfg(target_os = "android")]
-        title_frames: 0,
-        #[cfg(target_os = "android")]
-        world_ready: false,
-        #[cfg(target_os = "android")]
-        world_frames: 0,
         #[cfg(target_os = "android")]
         sign_in_cancel: None,
         #[cfg(target_os = "android")]
