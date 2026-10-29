@@ -389,64 +389,56 @@ impl Layout {
 
     /// The default pad: a D-pad, the two mouse buttons, and the key row.
     ///
-    /// Converted from a layout file's own scale: a position is a fraction of the room
-    /// the button leaves behind (`0` flush left, `10000` flush right), and a size is a
-    /// fraction of the screen's short edge.
-    ///
     /// The GUI button is the one a player presses to get the controls out of the way,
     /// so it is `HideGui` here: hiding everything the game draws over the world is what
     /// that button means once there is nothing to switch to.
     pub fn mojo() -> Self {
-        const ASPECT: f32 = 9.0 / 16.0;
         let mut controls = Vec::new();
-        // A button is two percentages, not one: the width and the height are separate
-        // numbers in the file, and a tab is 2289 by 1100 of the short edge — wide and
-        // short, which one number cannot say.
-        let mut put = |action: Action, x: f32, y: f32, wpct: f32, hpct: f32, icon: Option<&str>, round: bool| {
-            // Both percentages are of the short edge, which on a landscape phone is the
-            // height. A width therefore has to be converted to a fraction of the width.
-            let tall = hpct / 10_000.0;
-            let wide = wpct / 10_000.0 * ASPECT;
-            let left = (1.0 - wide) * (x / 10_000.0);
-            let top = (1.0 - tall) * (y / 10_000.0);
+        // A button in screen fractions, with its own icon and shape.
+        let mut put = |action: Action, bounds: [f32; 4], icon: Option<&str>, round: bool| {
             controls.push(Control {
                 action,
-                bounds: Some([left, top, wide, tall]),
-                center: [left + wide / 2.0, top + tall / 2.0],
-                size: wide.max(tall),
+                bounds: Some(bounds),
+                center: [bounds[0] + bounds[2] / 2.0, bounds[1] + bounds[3] / 2.0],
+                size: bounds[2].max(bounds[3]),
                 opacity: None,
                 icon: icon.map(str::to_owned),
                 round,
             });
         };
-        // The key row along the top: wide, short tabs.
-        put(Action::Debug, 0.0, 0.0, 2289.0, 1100.0, Some("debug"), false);
-        put(Action::View, 0.0, 1293.0, 2289.0, 1100.0, Some("perspective"), false);
-        put(Action::Chat, 1174.0, 0.0, 2289.0, 1100.0, Some("chat"), false);
-        put(Action::Keyboard, 2348.0, 0.0, 2417.0, 1111.0, Some("keyboard"), false);
-        put(Action::TabList, 3522.0, 0.0, 2289.0, 1100.0, None, false);
-        // The virtual mouse, top right, where the thumb that holds the phone rests.
-        put(Action::Mouse, 9912.0, 0.0, 2289.0, 1100.0, Some("mouse"), false);
-        // The movement cross, with sneak in its middle.
-        put(Action::Forward, 1344.0, 5184.0, 1800.0, 1800.0, Some("forward"), false);
-        put(Action::Left, 438.0, 7441.0, 1800.0, 1800.0, Some("left"), false);
-        put(Action::Right, 2250.0, 7441.0, 1800.0, 1800.0, Some("right"), false);
-        put(Action::Back, 1344.0, 9698.0, 1800.0, 1800.0, Some("back"), false);
-        put(Action::Sneak, 1344.0, 7441.0, 1800.0, 1800.0, Some("sneak"), false);
-        // The two mouse buttons flank the cross, where a thumb reaches them without
-        // leaving the D-pad.
-        put(Action::Mine, 438.0, 5184.0, 1800.0, 1800.0, Some("attack"), false);
-        put(Action::Use, 2250.0, 5184.0, 1800.0, 1800.0, Some("use"), false);
-        // Jump, out on the right where the other thumb rests.
-        put(Action::Jump, 8071.0, 7098.0, 1800.0, 1800.0, Some("jump"), false);
-        put(Action::Inventory, 2341.0, 9801.0, 1800.0, 1800.0, Some("inventory"), false);
+        // The top row: five wide tabs and the mouse, spread across the width. They are
+        // placed as fractions of the screen rather than copied from a layout drawn for
+        // a wider one, where the same numbers leave the tabs overlapping each other on
+        // a phone that is nearly square.
+        let tab = [0.0, 0.0, 0.115, 0.105];
+        put(Action::Debug, tab, Some("debug"), false);
+        put(Action::View, [0.118, 0.0, 0.115, 0.105], Some("perspective"), false);
+        put(Action::Chat, [0.236, 0.0, 0.115, 0.105], Some("chat"), false);
+        put(Action::Keyboard, [0.354, 0.0, 0.121, 0.105], Some("keyboard"), false);
+        put(Action::TabList, [0.478, 0.0, 0.115, 0.105], None, false);
+        put(Action::Mouse, [0.878, 0.0, 0.115, 0.105], Some("mouse"), false);
+        // The movement cross: four arms around a centre, on the left where a thumb
+        // rests. Sneak is the centre, which is where a thumb that is already on the
+        // pad can reach it without leaving the direction it is holding.
+        put(Action::Forward, [0.120, 0.400, 0.095, 0.165], Some("forward"), false);
+        put(Action::Left, [0.020, 0.570, 0.095, 0.165], Some("left"), false);
+        put(Action::Right, [0.220, 0.570, 0.095, 0.165], Some("right"), false);
+        put(Action::Back, [0.120, 0.740, 0.095, 0.165], Some("back"), false);
+        put(Action::Sneak, [0.120, 0.570, 0.095, 0.165], Some("sneak"), false);
+        // The two mouse buttons, out of the cross's way: mining above the pad and
+        // placing below it, so neither sits under a finger that is walking.
+        put(Action::Mine, [0.020, 0.400, 0.095, 0.165], Some("attack"), false);
+        put(Action::Use, [0.020, 0.740, 0.095, 0.165], Some("use"), false);
+        // The right thumb: jump and the bag.
+        put(Action::Jump, [0.870, 0.560, 0.105, 0.190], Some("jump"), false);
+        put(Action::Inventory, [0.870, 0.770, 0.095, 0.165], Some("inventory"), false);
         // GUI: everything the game draws goes away, and comes back.
-        put(Action::HideGui, 345.0, 9854.0, 1800.0, 1800.0, Some("gui"), true);
+        put(Action::HideGui, [0.330, 0.740, 0.085, 0.150], Some("gui"), true);
         // The floating panel's handle, out of the way of every thumb.
-        put(Action::Panel, 9100.0, 9700.0, 1200.0, 1200.0, Some("panel"), true);
+        put(Action::Panel, [0.905, 0.115, 0.040, 0.082], Some("panel"), true);
         // The hotbar: nine slots, invisible, placed by the GUI scale rather than by
-        // this file. They are in the list so the layout has them to place, and the
-        // rectangles below are only what a layout with no scale yet falls back to.
+        // this list. They are here so the layout has them to place; these rectangles
+        // are only what a frame with no scale yet falls back to.
         for slot in 1..=9u8 {
             let i = f32::from(slot - 1);
             controls.push(Control {
@@ -1163,6 +1155,47 @@ mod tests {
         assert_eq!(hud.take_look(), [0.0, 0.0]);
         hud.up(1);
         assert!(!hud.is_held(Action::Forward));
+    }
+
+    #[test]
+    fn no_two_buttons_of_the_default_pad_share_a_pixel() {
+        // Two buttons in the same band pass every other check and still steal each
+        // other's taps, and on a phone there is no right-click to find out which one a
+        // player pressed. This is the one mistake a pad cannot recover from.
+        let layout = Layout::mojo();
+        let buttons = layout.buttons(WIDTH, HEIGHT);
+        for (i, (a, ra)) in buttons.iter().enumerate() {
+            for (b, rb) in buttons.iter().skip(i + 1) {
+                // The hotbar row is deliberately invisible and sits over the game's own
+                // bar; it is the one row allowed to overlap nothing else but itself.
+                if matches!(a, Action::Hotbar(_)) || matches!(b, Action::Hotbar(_)) {
+                    continue;
+                }
+                let apart = ra.x + ra.width <= rb.x
+                    || rb.x + rb.width <= ra.x
+                    || ra.y + ra.height <= rb.y
+                    || rb.y + rb.height <= ra.y;
+                assert!(apart, "{a:?} {ra:?} overlaps {b:?} {rb:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_button_of_the_default_pad_is_on_the_glass() {
+        let layout = Layout::mojo();
+        for (action, rect) in layout.buttons(WIDTH, HEIGHT) {
+            assert!(
+                rect.x >= -1.0
+                    && rect.y >= -1.0
+                    && rect.x + rect.width <= WIDTH + 1.0
+                    && rect.y + rect.height <= HEIGHT + 1.0,
+                "{action:?} hangs off the screen: {rect:?}"
+            );
+            assert!(
+                rect.width >= 24.0 && rect.height >= 24.0,
+                "{action:?} is too small to press: {rect:?}"
+            );
+        }
     }
 
     #[test]
