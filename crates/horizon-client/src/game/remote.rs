@@ -383,6 +383,13 @@ impl Game<'_> {
         }
         self.apply_settings();
         self.clear_waypoints();
+        // The world is open and will draw on this frame: the launcher's loading surface
+        // is taken down over the next two frames, the same way the title's is.
+        #[cfg(target_os = "android")]
+        {
+            self.world_ready = true;
+            self.world_frames = 0;
+        }
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),

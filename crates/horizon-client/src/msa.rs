@@ -37,9 +37,16 @@ const CONSUMERS: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0
 ///
 /// Empty or unset everywhere means sign-in is not configured, and the launcher says so
 /// rather than starting a flow that cannot finish.
+/// Horizon's own Azure application. A client ID is public: it names the app, and the
+/// secret it would need for a confidential flow is not used by a device-code flow at
+/// all. This is what makes sign-in work on a build nobody configured.
+pub const BUILT_IN_CLIENT_ID: &str = "5a54e351-9a58-4ce0-a0af-7644982a9395";
+
 pub fn client_id() -> Option<String> {
     let from_env = std::env::var("HORIZON_MSA_CLIENT_ID").ok();
-    let from_build = option_env!("HORIZON_MSA_CLIENT_ID").map(str::to_owned);
+    let from_build = option_env!("HORIZON_MSA_CLIENT_ID")
+        .map(str::to_owned)
+        .or_else(|| Some(BUILT_IN_CLIENT_ID.to_string()));
     let from_file = std::fs::read_to_string(
         crate::gfx::import_dir().join("msa-client-id.txt"),
     )

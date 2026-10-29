@@ -33,6 +33,11 @@ pub use launcher::{
     LauncherSetting, LauncherStory, LoadingScreen,
 };
 
+/// The default player skin: 64x64 RGBA, drawn from a palette rather than loaded.
+pub fn default_skin() -> (u32, u32, Vec<u8>) {
+    art::default_skin()
+}
+
 /// The button at rest: dark enough to see through, bright enough to find.
 const IDLE: [u8; 3] = [12, 16, 24];
 /// The button a finger is on. Orange, because it has to read against a world that is
@@ -669,7 +674,7 @@ impl Overlay {
         let key = path
             .map(|p| p.display().to_string())
             .or_else(|| fallback.as_ref().map(|_| "fallback".to_string()));
-        if key == self.skin_source {
+        if key == self.skin_source && self.skin_texture.is_some() {
             return;
         }
         self.skin_source = key;
@@ -713,9 +718,11 @@ impl Overlay {
         let Ok(info) = reader.next_frame(&mut buffer) else {
             return;
         };
-        // The texture is RGBA8 whatever the PNG was: expand three channels, and add
-        // an opaque alpha to a greyscale or a two-channel image.
-        let pixels = match info.color_type {
+        // The texture is RGBA8 whatever the PNG was: expand three channels, add an
+        // opaque alpha to a greyscale image, and read an indexed one through its
+        // palette. An indexed PNG is the common case for a skin drawn in a pixel
+        // editor, and returning early on it is what left the page with no texture.
+        let pixels: Vec<u8> = match info.color_type {
             png::ColorType::Rgba => buffer[..info.buffer_size()].to_vec(),
             png::ColorType::Rgb => buffer[..info.buffer_size()]
                 .chunks_exact(3)
@@ -729,8 +736,46 @@ impl Overlay {
                 .iter()
                 .flat_map(|g| [*g, *g, *g, 255])
                 .collect(),
-            png::ColorType::Indexed => return,
+            png::ColorType::Indexed => {
+                let Some(palette) = reader.info().palette.as_ref() else {
+                    log::warn!("overlay: the skin is indexed but carries no palette");
+                    return;
+                };
+                // `normalize_to_color8` leaves an indexed image one byte per pixel and
+                // its palette as RGB triples, with an optional alpha table beside it.
+                let alpha = reader.info().trns.as_ref();
+                buffer[..info.buffer_size()]
+                    .iter()
+                    .flat_map(|&i| {
+                        let i = i as usize;
+                        let base = i * 3;
+                        let (r, g, b) = if base + 2 < palette.len() {
+                            (palette[base], palette[base + 1], palette[base + 2])
+                        } else {
+                            (0, 0, 0)
+                        };
+                        let a = alpha
+                            .and_then(|table| table.get(i).copied())
+                            .unwrap_or(255);
+                        [r, g, b, a]
+                    })
+                    .collect()
+            }
         };
+        // The upload is what panics a device: `write_texture` refuses a buffer that is
+        // not exactly `width * height * 4`. A malformed or oddly-encoded skin must not
+        // be able to take the launcher down with it.
+        let expected = (info.width as usize) * (info.height as usize) * 4;
+        if pixels.len() != expected {
+            log::warn!(
+                "overlay: the skin is {} bytes for {}x{}, expected {}",
+                pixels.len(),
+                info.width,
+                info.height,
+                expected
+            );
+            return;
+        }
         // The renderer is borrowed again here, and dropped before the slot is written.
         let id = self.renderer.as_mut().map(|renderer| {
             launcher_texture(device, queue, renderer, "launcher skin", info.width, info.height, &pixels)
@@ -983,6 +1028,20 @@ impl Overlay {
         model.page = self.launcher_page;
         model.editing = self.launcher_model.editing;
         self.launcher_model = model;
+    }
+
+    /// Open the control editor: the arrange panel, over the HUD, with the launcher out
+    /// of the way. This is the launcher's "Customise controls", and it is the game's
+    /// own editor rather than a second one that would drift from it.
+    pub fn open_controls_editor(&mut self) {
+        self.launcher = false;
+        self.panel = true;
+        self.hud.edit = true;
+        self.hud.set_selected(None);
+        self.panel_rect = None;
+        self.pointer = Pointer::idle();
+        self.pending_release = false;
+        log::info!("overlay: the control editor is open");
     }
 
     /// Whether the launcher has its name field open, which on a phone is the whole

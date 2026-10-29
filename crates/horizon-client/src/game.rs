@@ -11522,6 +11522,37 @@ impl ApplicationHandler for Game<'_> {
                     // ending the process: a phone boots into the launcher, so that is
                     // what leaving Minecraft means here. The overlay's opening runs
                     // again as it comes back, which is the zoom out.
+                    // The loading surface is the launcher's, and the launcher is gone:
+                    // the game that came up behind it is what the player is looking at
+                    // now. Nothing in `Loading` can do this, because `Loading` is the
+                    // struct that handed the screen over — its `about_to_wait` stopped
+                    // running the moment `App::Ready` replaced it. Without this the
+                    // surface stays up over a perfectly good title screen, which is
+                    // exactly what "Play hangs on a spinner" was.
+                    #[cfg(target_os = "android")]
+                    if self.title_ready {
+                        // Not on the first frame: the title is drawn by this frame's
+                        // render, and clearing the surface before that would show one
+                        // frame of the world's empty surface. Two frames is the point
+                        // where the menu is on the glass behind it.
+                        self.title_frames = self.title_frames.saturating_add(1);
+                        if self.title_frames >= 2 {
+                            self.title_ready = false;
+                            horizon_overlay::with(|o| o.set_loading(None));
+                        }
+                    }
+                    // The same for a world: the surface goes up when the player picks
+                    // one, and comes down when the world has drawn a frame. Without
+                    // this, entering a world sat on "Opening world" forever even though
+                    // the world had finished opening.
+                    #[cfg(target_os = "android")]
+                    if self.world_ready {
+                        self.world_frames = self.world_frames.saturating_add(1);
+                        if self.world_frames >= 2 {
+                            self.world_ready = false;
+                            horizon_overlay::with(|o| o.set_loading(None));
+                        }
+                    }
                     #[cfg(target_os = "android")]
                     if self.back_to_launcher {
                         // `Game` has no `StartupMenu`: that belongs to the loading
@@ -13137,6 +13168,20 @@ struct Loading {
     /// same frame it was raised, which is a flash rather than a screen.
     #[cfg(target_os = "android")]
     loading_since: Option<std::time::Instant>,
+    /// The game came up behind the launcher's loading surface and has not yet cleared
+    /// it. `Loading` cannot do this for itself: handing the screen to `Game` replaces
+    /// the struct that owns `about_to_wait`.
+    #[cfg(target_os = "android")]
+    title_ready: bool,
+    /// How many frames have been drawn since the game took the screen from the
+    /// launcher. The loading surface comes down on the second.
+    #[cfg(target_os = "android")]
+    title_frames: u32,
+    /// The same for a world that was entered from the launcher.
+    #[cfg(target_os = "android")]
+    world_ready: bool,
+    #[cfg(target_os = "android")]
+    world_frames: u32,
     /// The flag a running Microsoft sign-in checks so the player can stop waiting.
     #[cfg(target_os = "android")]
     sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -13579,6 +13624,14 @@ fn run_loading(
         sign_in_rx: None,
         #[cfg(target_os = "android")]
         loading_since: None,
+        #[cfg(target_os = "android")]
+        title_ready: true,
+        #[cfg(target_os = "android")]
+        title_frames: 0,
+        #[cfg(target_os = "android")]
+        world_ready: false,
+        #[cfg(target_os = "android")]
+        world_frames: 0,
         #[cfg(target_os = "android")]
         sign_in_cancel: None,
         #[cfg(target_os = "android")]

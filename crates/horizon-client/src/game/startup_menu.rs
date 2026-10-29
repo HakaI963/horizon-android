@@ -51,6 +51,10 @@ pub(super) struct StartupMenu {
     /// What the last export or import said, shown under the settings page.
     #[cfg(target_os = "android")]
     launcher_notice: Option<String>,
+    /// How large the launcher's own interface is drawn, 0.7 to 1.4. This is the
+    /// launcher's setting, not the game's: the game's GUI scale is the game's.
+    #[cfg(target_os = "android")]
+    launcher_scale: f32,
     /// Why the last mod install or uninstall failed. Kept apart from `launcher_notice`
     /// so the Mods page can draw it in the danger colour and so the error cannot leak
     /// onto another page's notice.
@@ -92,6 +96,8 @@ impl StartupMenu {
         };
         let mut menu = Self {
             pending,
+            #[cfg(target_os = "android")]
+            launcher_scale: 1.0,
             ..Default::default()
         };
         menu.root = options.resources.clone();
@@ -592,18 +598,13 @@ impl Loading {
         // So does a mod install: the download must not hold a frame.
         self.poll_install();
         if self.menu.launcher_page.is_none() {
-            // The page is closed and the game is what is on the glass. The loading
-            // surface stays over it until the thing behind it can draw, and it asks for
-            // frames of its own while it is up: an animation that only redraws when
-            // something else changes is a still picture.
-            let clear = match self.loading_since {
-                Some(at) => at.elapsed() >= std::time::Duration::from_millis(650),
-                None => false,
-            };
-            if clear {
-                self.loading_since = None;
-                horizon_overlay::with(|o| o.set_loading(None));
-            } else {
+            // The page is closed and the game is coming up behind the loading surface.
+            // This struct cannot take the surface down: `about_to_wait` stops running
+            // the moment the load finishes and `App::Ready` replaces it, which is why
+            // Play used to sit on a spinner forever. `Game` clears it on its first
+            // frame; all that is left to do here is keep asking for frames so the
+            // spinner turns while the load is still going.
+            if self.loading_since.is_some() {
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -704,6 +705,12 @@ impl Loading {
             patches: patch_stories(),
             ..Default::default()
         };
+        // The mod registry is fetched as soon as the launcher is up, not when the Mods
+        // page is first opened. The round trip then overlaps the player reading the
+        // front page, so the page is ready instead of showing a spinner.
+        if self.mod_registry.is_none() && self.mod_registry_rx.is_none() {
+            let _ = self.mod_registry();
+        }
         // The landscape behind the front page: the launcher's own pixel art, made at
         // the window's width. It is generated rather than shipped, so this is one
         // texture and no asset.
@@ -725,20 +732,15 @@ impl Loading {
             model.skin_size = path
                 .as_ref()
                 .and_then(|path| png_size(path))
-                .or_else(|| {
-                    // The fallback is the atlas sprite, whose size is known here.
-                    let gui = self.gui.as_ref()?;
-                    let rect = gui.atlas.sprites.get("entity/player/wide/steve")?;
-                    Some([rect.w, rect.h])
-                })
-                .unwrap_or([0, 0]);
+                .unwrap_or([64, 64]);
             if path != self.uploaded_skin
                 && let Some(r) = &self.renderer
             {
-                // Nothing picked yet: the page still shows a player, out of the pack's
-                // own default skin, rather than the flat figure that made it look like
-                // a drawing.
-                let fallback = path.is_none().then(|| self.default_skin_pixels()).flatten();
+                // Nothing picked yet: the page shows the launcher's own default player,
+                // which is drawn from a palette and so can never be missing. It used to
+                // come out of the pack's atlas, and when that sprite was absent the page
+                // had no texture at all and drew an empty card.
+                let fallback = path.is_none().then(horizon_overlay::default_skin);
                 horizon_overlay::with(|o| {
                     o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
                 });
@@ -1095,14 +1097,18 @@ impl Loading {
                     }
                 }
                 LauncherEvent::SetOption(key, value) => {
-                    if key.starts_with("launcher") {
+                    if self.device_setting(&key).is_some() {
+                        self.apply_device_setting(&key, value);
+                    } else if key.starts_with("launcher") {
                         self.apply_launcher_switch(&key, value >= 0.5);
                     } else {
                         self.apply_launcher_option(&key, value);
                     }
                 }
                 LauncherEvent::ToggleOption(key, on) => {
-                    if key.starts_with("launcher") {
+                    if self.device_setting(&key).is_some() {
+                        self.apply_device_setting(&key, if on { 100.0 } else { 50.0 });
+                    } else if key.starts_with("launcher") {
                         self.apply_launcher_switch(&key, on);
                     } else {
                         self.apply_launcher_option(&key, if on { 1.0 } else { 0.0 });
@@ -1654,7 +1660,9 @@ impl Loading {
             /// The key is the launcher's own, not an `options.txt` name.
             launcher: bool,
         }
-        // A slider: `options.txt` key, label, group, unit, min, max, step.
+        // A slider: `options.txt` key, label, group, unit, min, max, step. Kept for the
+        // pages that still write the game's options; this page is the launcher's own.
+        #[allow(dead_code)]
         fn s(
             key: &'static str,
             label: &'static str,
@@ -1678,7 +1686,31 @@ impl Loading {
                 launcher: false,
             }
         }
+        // A slider the launcher owns: a device setting, not an `options.txt` key.
+        fn d(
+            key: &'static str,
+            label: &'static str,
+            group: &'static str,
+            unit: &'static str,
+            min: f32,
+            max: f32,
+            step: f32,
+        ) -> Row {
+            Row {
+                key,
+                label,
+                group,
+                unit,
+                min,
+                max,
+                step,
+                percent: unit == "%",
+                toggle: false,
+                launcher: true,
+            }
+        }
         // A switch: the same, with no range of its own.
+        #[allow(dead_code)]
         fn t(key: &'static str, label: &'static str, group: &'static str) -> Row {
             Row {
                 key,
@@ -1709,47 +1741,20 @@ impl Loading {
                 launcher: true,
             }
         }
+        // The launcher's own settings, and nothing of the game's. A phone's launcher
+        // page is where a player changes how the launcher behaves and how it draws on
+        // this device; the game's options stay in the game, where the game's own
+        // Options screen is, exactly as they are on a desktop.
         let rows = [
-            // LAUNCHER. These are this program's, not the game's: the launcher owns how
-            // it looks, and the game's own options screen never sees them.
-            l("launcherBackground", "Animated background"),
+            l("launcherControls", "Customise controls"),
             l("launcherSkinTurn", "Turn the player on the Skins page"),
-            // GRAPHICS. renderDistance is 2..=64 in the file; the old 32 was half the
-            // range the game actually reads.
-            s("renderDistance", "Render distance", "GRAPHICS", "chunks", 2.0, 64.0, 1.0),
-            s("simulationDistance", "Simulation distance", "GRAPHICS", "chunks", 5.0, 32.0, 1.0),
-            s("guiScale", "GUI scale (0 = automatic)", "GRAPHICS", "", 0.0, 4.0, 1.0),
-            s("fov", "Field of view", "GRAPHICS", "°", 30.0, 110.0, 1.0),
-            // FrameLimit: multiples of ten, 10..=260.
-            s("maxFps", "Frame limit", "GRAPHICS", "fps", 10.0, 260.0, 10.0),
-            s("gamma", "Brightness", "GRAPHICS", "%", 0.0, 1.0, 0.01),
-            // Scaled(2, 20, 4.0, 0.5, 5.0): quarters between 0.5 and 5.
-            s("entityDistanceScaling", "Entity distance", "GRAPHICS", "x", 0.5, 5.0, 0.25),
-            t("enableVsync", "V-Sync", "GRAPHICS"),
-            t("bobView", "View bobbing", "GRAPHICS"),
-            t("ao", "Smooth lighting", "GRAPHICS"),
-            t("vignette", "Vignette", "GRAPHICS"),
-            // CONTROLS.
-            s("mouseSensitivity", "Look sensitivity", "CONTROLS", "%", 0.0, 1.0, 0.01),
-            t("autoJump", "Auto-jump", "CONTROLS"),
-            t("toggleCrouch", "Toggle crouch", "CONTROLS"),
-            t("toggleSprint", "Toggle sprint", "CONTROLS"),
-            t("invertYMouse", "Invert mouse Y", "CONTROLS"),
-            // SOUND. The keys are `soundCategory_<SoundSource>`: the source is
-            // `block`, not `blocks`, and a key one letter off is a slider that writes
-            // a line the game never reads.
-            s("soundCategory_master", "Master volume", "SOUND", "%", 0.0, 1.0, 0.01),
-            s("soundCategory_music", "Music", "SOUND", "%", 0.0, 1.0, 0.01),
-            s("soundCategory_block", "Blocks", "SOUND", "%", 0.0, 1.0, 0.01),
-            s("soundCategory_hostile", "Hostile mobs", "SOUND", "%", 0.0, 1.0, 0.01),
-            // INTERFACE.
-            s("chatOpacity", "Chat opacity", "INTERFACE", "%", 0.0, 1.0, 0.01),
-            s("chatScale", "Chat scale", "INTERFACE", "%", 0.0, 1.0, 0.01),
-            s("menuBackgroundBlurriness", "Menu blur", "INTERFACE", "", 0.0, 10.0, 1.0),
-            t("showSubtitles", "Subtitles", "INTERFACE"),
-            t("autoSuggestions", "Command suggestions", "INTERFACE"),
-            t("chatLinks", "Clickable chat links", "INTERFACE"),
+            l("launcherBackground", "Animated launcher"),
+            d("launcherResolution", "Render resolution", "DEVICE", "%", 50.0, 200.0, 5.0),
+            d("launcherFps", "Frame limit", "DEVICE", "fps", 30.0, 120.0, 10.0),
+            l("launcherBattery", "Battery saver"),
+            d("launcherScale", "Interface scale", "DEVICE", "%", 70.0, 140.0, 5.0),
         ];
+        #[allow(unused_variables)]
         let f = &self.settings.file;
         rows.iter()
             .map(|row| {
@@ -1757,10 +1762,10 @@ impl Loading {
                 // exception is GUI scale: the file may say 4 on a screen that can only
                 // fit 2, and `clamp_gui_scale` is what the game actually uses, so the
                 // page shows the number in force rather than one the window refused.
-                let value = if row.launcher {
+                let value = if let Some(value) = self.device_setting(row.key) {
+                    value
+                } else if row.launcher {
                     self.launcher_switch(row.key)
-                } else if row.key == "guiScale" {
-                    self.settings.gui_scale as f32
                 } else {
                     match f.get(row.key) {
                         Some(horizon_client::options_file::V::Int(i)) => *i as f32,
@@ -1789,6 +1794,51 @@ impl Loading {
             .collect()
     }
 
+    /// A device setting the launcher owns: the render resolution, the frame limit, the
+    /// battery mode and the interface scale. These live in the graphics settings file,
+    /// not in `options.txt`, because they are about how this device draws rather than
+    /// about what the world does.
+    #[cfg(target_os = "android")]
+    fn device_setting(&self, key: &str) -> Option<f32> {
+        let g = &self.settings.horizon;
+        match key {
+            "launcherResolution" => Some(g.resolution_scale as f32),
+            "launcherFps" => Some(self.settings.max_fps as f32),
+            "launcherScale" => Some(self.menu.launcher_scale * 100.0),
+            _ => None,
+        }
+    }
+
+    /// Write one of those settings and apply it.
+    #[cfg(target_os = "android")]
+    fn apply_device_setting(&mut self, key: &str, value: f32) {
+        match key {
+            "launcherResolution" => {
+                self.settings.horizon.resolution_scale = value.round().clamp(50.0, 200.0) as u32;
+                self.menu.launcher_notice =
+                    Some(format!("Render resolution: {}%", self.settings.horizon.resolution_scale));
+            }
+            "launcherFps" => {
+                // The frame limit is the game's own option, so it is written where the
+                // game reads it: a launcher slider that only changed a launcher number
+                // would be a control with nothing behind it.
+                self.settings.max_fps = value.round().clamp(30.0, 120.0) as u32;
+                self.apply_launcher_option("maxFps", self.settings.max_fps as f32);
+            }
+            "launcherScale" => {
+                self.menu.launcher_scale = (value / 100.0).clamp(0.7, 1.4);
+                self.menu.launcher_notice =
+                    Some(format!("Interface scale: {:.0}%", self.menu.launcher_scale * 100.0));
+            }
+            _ => {}
+        }
+        // The graphics file is the game's own record of how this device draws, so it is
+        // saved the moment one of these changes rather than at exit.
+        if let Some(dir) = Game::options_path().parent() {
+            self.settings.horizon.save(dir);
+        }
+    }
+
     /// A switch the launcher owns, as 1 or 0.
     ///
     /// These are not `options.txt` keys: they change how the launcher behaves, which
@@ -1798,7 +1848,11 @@ impl Loading {
     fn launcher_switch(&self, key: &str) -> f32 {
         let on = match key {
             "launcherBackground" => !horizon_overlay::with(|o| o.reduce_motion()).unwrap_or(false),
-            "launcherSkinTurn" => true,
+            "launcherSkinTurn" => self.skin_turns,
+            "launcherBattery" => self.settings.horizon.battery,
+            // "Customise controls" is a row that opens the editor, so its switch is
+            // always drawn off: it is an action, not a state.
+            "launcherControls" => false,
             _ => true,
         };
         if on { 1.0 } else { 0.0 }
@@ -1811,10 +1865,22 @@ impl Loading {
             // The background's animation is the system's "remove animations" setting
             // plus this one. Turning it off here parks the artwork on its first frame,
             // which is the still picture the pack also ships.
+            "launcherBattery" => {
+                self.settings.horizon.battery = on;
+                self.menu.launcher_notice =
+                    Some(if on { "Battery saver: on" } else { "Battery saver: off" }.to_string());
+            }
             "launcherBackground" => {
                 horizon_overlay::with(|o| o.set_reduce_motion(!on));
                 self.menu.launcher_notice =
                     Some(if on { "Background: animated" } else { "Background: still" }.to_string());
+            }
+            "launcherControls" => {
+                // The arrange panel is the game's own control editor, and on a phone it
+                // is reached from the launcher rather than from a pause menu.
+                horizon_overlay::with(|o| o.open_controls_editor());
+                self.menu.launcher_notice =
+                    Some("Drag a button to move it; the panel sets its size.".to_string());
             }
             "launcherSkinTurn" => {
                 self.skin_turns = on;
@@ -1950,34 +2016,6 @@ impl Loading {
             _ => String::new(),
         };
         self.menu.launcher_notice = Some(format!("{label}: {shown}"));
-    }
-
-    /// The pack's default player skin as 64x64 RGBA, cut out of the menu atlas.
-    ///
-    /// A skin is a sprite like any other in this build: `entity/player/wide/steve` is
-    /// a rect in the atlas the game already uploaded, so the Skins page can show the
-    /// real default player before the player has picked anything.
-    #[cfg(target_os = "android")]
-    fn default_skin_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
-        let gui = self.gui.as_ref()?;
-        let rect = gui.atlas.sprites.get("entity/player/wide/steve").copied()?;
-        let (w, h) = (gui.atlas.width, gui.atlas.height);
-        let (x0, y0) = (
-            (rect.u0 * w as f32).round() as u32,
-            (rect.v0 * h as f32).round() as u32,
-        );
-        let (sw, sh) = (rect.w, rect.h);
-        let mut out = Vec::with_capacity((sw as usize) * (sh as usize) * 4);
-        for y in 0..sh {
-            // The atlas is indexed in `u32` coordinates; the pixel buffer is `usize`.
-            let row = (((y0 + y) * w + x0) * 4) as usize;
-            let end = row + sw as usize * 4;
-            if end > gui.atlas.pixels.len() {
-                return None;
-            }
-            out.extend_from_slice(&gui.atlas.pixels[row..end]);
-        }
-        Some((sw, sh, out))
     }
 
     /// Re-read `options.txt` into the live settings.

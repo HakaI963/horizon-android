@@ -276,3 +276,113 @@ mod tests {
         }
     }
 }
+
+/// A 64x64 player skin, drawn here rather than taken from the pack.
+///
+/// The Skins page has to show a player before the player has picked one, and before
+/// the pack's atlas is even available on the bring-up card. Deriving it from the
+/// atlas meant that when the sprite was missing — or the atlas had not been built
+/// yet — there was no texture at all, and the page showed an empty card. This is the
+/// default skin as pixels: the same regions and the same colours as the game's own
+/// `steve`, laid out on Minecraft's 64x64 table.
+pub fn default_skin() -> (u32, u32, Vec<u8>) {
+    const W: usize = 64;
+    const H: usize = 64;
+    let mut px = vec![0u8; W * H * 4];
+    // The palette: skin, hair, shirt, trousers, shoes, and the face's two dark tones.
+    const SKIN: u32 = 0xc79a72;
+    const SKIN_SHADE: u32 = 0xb08462;
+    const HAIR: u32 = 0x3f2a1d;
+    const SHIRT: u32 = 0x2e9c9c;
+    const SHIRT_SHADE: u32 = 0x257f7f;
+    const TROUSERS: u32 = 0x3b3b8f;
+    const TROUSERS_SHADE: u32 = 0x30307a;
+    const SHOE: u32 = 0x4a4a4a;
+    const EYE: u32 = 0x2a2a2e;
+    const MOUTH: u32 = 0x8a5a44;
+    let mut rect = |x0: usize, y0: usize, x1: usize, y1: usize, c: u32| {
+        for y in y0..y1.min(H) {
+            for x in x0..x1.min(W) {
+                let o = (y * W + x) * 4;
+                px[o] = ((c >> 16) & 0xff) as u8;
+                px[o + 1] = ((c >> 8) & 0xff) as u8;
+                px[o + 2] = (c & 0xff) as u8;
+                px[o + 3] = 255;
+            }
+        }
+    };
+    // Head: base 8x8x8 at (0,0), so its six faces are the block from (0,0) to (32,16).
+    rect(8, 0, 16, 8, HAIR); // top
+    rect(16, 0, 24, 8, SKIN_SHADE); // bottom
+    rect(0, 8, 8, 16, HAIR); // right side
+    rect(8, 8, 16, 16, SKIN); // front
+    rect(16, 8, 24, 16, HAIR); // left side
+    rect(24, 8, 32, 16, HAIR); // back
+    // The face: hairline, two eyes, a mouth, on the front face at (8,8)-(16,16).
+    rect(8, 8, 16, 10, HAIR);
+    rect(9, 11, 11, 13, EYE);
+    rect(13, 11, 15, 13, EYE);
+    rect(10, 14, 14, 15, MOUTH);
+    // Body: 8x12x4 at (16,16), so (16,16) to (40,32).
+    rect(20, 16, 28, 20, SHIRT); // top
+    rect(28, 16, 36, 20, SHIRT_SHADE); // bottom
+    rect(16, 20, 20, 32, SHIRT_SHADE); // right
+    rect(20, 20, 28, 32, SHIRT); // front
+    rect(28, 20, 32, 32, SHIRT_SHADE); // left
+    rect(32, 20, 40, 32, SHIRT); // back
+    // Right arm: 4x12x4 at (40,16).
+    rect(44, 16, 48, 20, SKIN);
+    rect(48, 16, 52, 20, SKIN_SHADE);
+    rect(40, 20, 44, 32, SKIN_SHADE);
+    rect(44, 20, 48, 32, SKIN);
+    rect(48, 20, 52, 32, SKIN_SHADE);
+    rect(52, 20, 56, 32, SKIN);
+    // Left arm: 4x12x4 at (32,48).
+    rect(36, 48, 40, 52, SKIN);
+    rect(40, 48, 44, 52, SKIN_SHADE);
+    rect(32, 52, 36, 64, SKIN_SHADE);
+    rect(36, 52, 40, 64, SKIN);
+    rect(40, 52, 44, 64, SKIN_SHADE);
+    rect(44, 52, 48, 64, SKIN);
+    // Right leg: 4x12x4 at (0,16).
+    rect(4, 16, 8, 20, TROUSERS);
+    rect(8, 16, 12, 20, TROUSERS_SHADE);
+    rect(0, 20, 4, 32, TROUSERS_SHADE);
+    rect(4, 20, 8, 32, TROUSERS);
+    rect(8, 20, 12, 32, TROUSERS_SHADE);
+    rect(12, 20, 16, 32, TROUSERS);
+    // The shoes are the last two rows of each leg's side faces.
+    rect(0, 29, 4, 32, SHOE);
+    rect(4, 29, 8, 32, SHOE);
+    rect(8, 29, 12, 32, SHOE);
+    rect(12, 29, 16, 32, SHOE);
+    // Left leg: 4x12x4 at (16,48).
+    rect(20, 48, 24, 52, TROUSERS);
+    rect(24, 48, 28, 52, TROUSERS_SHADE);
+    rect(16, 52, 20, 64, TROUSERS_SHADE);
+    rect(20, 52, 24, 64, TROUSERS);
+    rect(24, 52, 28, 64, TROUSERS_SHADE);
+    rect(28, 52, 32, 64, TROUSERS);
+    rect(16, 61, 20, 64, SHOE);
+    rect(20, 61, 24, 64, SHOE);
+    rect(24, 61, 28, 64, SHOE);
+    rect(28, 61, 32, 64, SHOE);
+    (W as u32, H as u32, px)
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_skin_is_the_full_sixty_four_square() {
+        let (w, h, px) = default_skin();
+        assert_eq!((w, h), (64, 64));
+        assert_eq!(px.len(), 64 * 64 * 4);
+        // Every texel of every body part is painted: an unpainted one would be a hole
+        // in the model rather than a colour.
+        for (i, chunk) in px.chunks_exact(4).enumerate() {
+            assert_eq!(chunk[3], 255, "texel {i} is transparent");
+        }
+    }
+}
