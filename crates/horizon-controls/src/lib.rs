@@ -101,18 +101,32 @@ impl Layout {
     /// format's fields — and upgrading it would put that pad back on the glass, which
     /// is exactly what this launcher stopped shipping.
     pub fn load(path: &Path) -> Self {
+        // The pad is the build's, not a file left on the device by an older build of
+        // it. A saved layout is read only when the player arranged it themselves, which
+        // is what `edited` records; a file without that mark is a default pad from a
+        // build that no longer exists, and reading it is how a pad with a Debug button
+        // and glyph names kept coming back after every install.
         let file = LayoutFile::load(path).filter(LayoutFile::is_current);
-        if file.is_none() {
-            log::info!(
-                "controls: no layout of the shared format at {}, using the default pad",
+        match &file {
+            Some(file) if file.edited => log::info!(
+                "controls: reading the player's layout at {} ({} buttons)",
+                path.display(),
+                file.controls.len()
+            ),
+            _ => log::info!(
+                "controls: using the build's pad; {} is not a layout the player made",
                 path.display()
-            );
+            ),
         }
-        Self::new(file.unwrap_or_else(LayoutFile::default_pad))
+        Self::new(file.filter(|file| file.edited).unwrap_or_else(LayoutFile::default_pad))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        self.file.save(path)
+        let mut file = self.file.clone();
+        // Saved from the arrange mode, so this is the player's pad from now on and is
+        // read back on the next start.
+        file.edited = true;
+        file.save(path)
     }
 
     /// Where every button is on a `width`x`height` screen.

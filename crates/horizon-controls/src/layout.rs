@@ -185,6 +185,11 @@ pub struct LayoutFile {
     pub version: i32,
     #[serde(default = "default_scaled_at")]
     pub scaled_at: f32,
+    /// The player moved a button or changed a setting, so this file is theirs and is
+    /// read back. A file without it is the build's own pad, saved by a build that is
+    /// no longer installed.
+    #[serde(default)]
+    pub edited: bool,
     #[serde(rename = "mControlDataList", default)]
     pub controls: Vec<ControlData>,
 }
@@ -203,6 +208,7 @@ impl LayoutFile {
         Self::parse(DEFAULT_PAD).unwrap_or_else(|| Self {
             version: 9,
             scaled_at: 100.0,
+            edited: false,
             controls: Vec::new(),
         })
     }
@@ -388,6 +394,7 @@ fn upgrade_fractional(value: &serde_json::Value) -> LayoutFile {
     }
     LayoutFile {
         version: 9,
+        edited: false,
         scaled_at: value
             .get("scaledAt")
             .and_then(|v| v.as_f64())
