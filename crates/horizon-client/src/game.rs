@@ -11663,10 +11663,10 @@ impl Game<'_> {
                     #[cfg(target_os = "android")]
                     if self.frames < 3 {
                         log::info!(
-                            "Horizon: surface check frame {} title {} screen {:?} loading {}",
+                            "Horizon: surface check frame {} title {} playing {} loading {}",
                             self.frames,
                             self.title.is_some(),
-                            self.screen,
+                            self.screen == Screen::Playing,
                             horizon_overlay::with(|o| o.loading_active()).unwrap_or(false)
                         );
                     }
