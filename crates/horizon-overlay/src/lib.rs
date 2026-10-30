@@ -263,6 +263,17 @@ impl Overlay {
             self.launcher_fonts = Some(launcher::theme(&mut self.imgui, self.dpi));
             self.fonts_added = true;
         }
+        // A new renderer means a new texture registry, and every id this overlay holds
+        // belongs to the old one. `attach` can be called without `detach` — the loading
+        // screen builds a renderer, then the game builds another — and the ids kept
+        // across that are ids imgui cannot bind, which aborts the whole frame. Clearing
+        // them here means the page uploads its textures again instead.
+        self.skin_texture = None;
+        self.skin_source = None;
+        self.background = None;
+        self.background_size = [0, 0];
+        self.stone = None;
+        self.stone_size = [0, 0];
         let mut config = horizon_imgui::RendererConfig::new_srgb();
         // The colors imgui hands over are already in the space the game writes:
         // the swapchain is a non-sRGB target by design, so the shader must not
@@ -628,7 +639,7 @@ impl Overlay {
                     status.as_str(),
                     width,
                     height,
-                    launcher_fonts.as_ref().map(|fonts| fonts.label),
+                    launcher_fonts.as_ref().map(|fonts| fonts.body),
                 );
                 // The hotbar strip, drawn faintly only while arranging: a player who
                 // cannot see where the strip is cannot tell why a tap near the bottom
