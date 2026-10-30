@@ -598,17 +598,12 @@ impl Loading {
         // So does a mod install: the download must not hold a frame.
         self.poll_install();
         if self.menu.launcher_page.is_none() {
-            // The page is closed and the game is coming up behind the loading surface.
-            // This struct cannot take the surface down: `about_to_wait` stops running
-            // the moment the load finishes and `App::Ready` replaces it, which is why
-            // Play used to sit on a spinner forever. `Game` clears it on its first
-            // frame; all that is left to do here is keep asking for frames so the
-            // spinner turns while the load is still going.
-            if self.loading_since.is_some() {
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-                return;
+            // The page is closed and the game is coming up. There is no surface over
+            // it, so all this frame has to do is keep asking for redraws while the
+            // load runs: the last frame before the handover is the launcher, and a
+            // phone that stops drawing there looks frozen.
+            if let Some(window) = &self.window {
+                window.request_redraw();
             }
             let _ = horizon_overlay::with(|o| o.show_launcher(false));
             return;
@@ -929,37 +924,21 @@ impl Loading {
                     }
                 }
                 LauncherEvent::Play => {
-                    // Play does not animate the launcher away: the game is what opens,
-                    // and the two or three seconds its first frame costs are covered by
-                    // a loading surface that keeps drawing. The page closes at once so
-                    // the title can build behind it, and the surface stays up until the
-                    // title reports that it is ready.
-                    horizon_overlay::with(|o| {
-                        o.show_launcher(false);
-                        o.set_loading(Some(horizon_overlay::LoadingScreen {
-                            title: "Starting Minecraft".into(),
-                            detail: "Building the title screen.".into(),
-                            progress: None,
-                        }));
-                    });
+                    // Play goes straight to the game. There is no loading page between
+                    // them: the launcher closes, the title builds, and the first frame
+                    // the player sees is the game's own. A surface drawn over that wait
+                    // is the thing they ended up looking at instead of the game.
+                    horizon_overlay::with(|o| o.show_launcher(false));
                     self.menu.launcher_page = None;
-                    self.loading_since = Some(std::time::Instant::now());
                     if let Some(title) = &mut self.menu.title {
                         title.mode = horizon_client::title::Mode::Main;
                     }
                 }
                 LauncherEvent::PlayRow(id) => {
                     self.menu.launcher_page = None;
-                    // The world takes longer than the title does, and it is the one the
-                    // player is waiting for: name it, and let the surface keep drawing.
-                    horizon_overlay::with(|o| {
-                        o.set_loading(Some(horizon_overlay::LoadingScreen {
-                            title: "Opening world".into(),
-                            detail: "Reading the world and building its chunks.".into(),
-                            progress: None,
-                        }));
-                    });
-                    self.loading_since = Some(std::time::Instant::now());
+                    // Straight into the world, for the same reason: the world draws its
+                    // own first frame, and a page over it is a page in the way.
+
                     let saves = self
                         .menu
                         .title

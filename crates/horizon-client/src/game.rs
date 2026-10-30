@@ -1333,8 +1333,7 @@ struct Game<'a> {
     /// the struct that owns `about_to_wait`, so the surface stayed up over a perfectly
     /// good title screen.
     #[cfg(target_os = "android")]
-    /// Kept for the platform's own reporting; the surface itself is cleared on the
-    /// evidence in `window_event`.
+    /// Unused: there is no loading surface to take down.
     pub(super) title_ready: bool,
     /// How many frames have been drawn since the game took the screen. The surface
     /// comes down on the second, when the menu behind it is actually on the glass.
@@ -11043,16 +11042,6 @@ impl Game<'_> {
         id: WindowId,
         event: WindowEvent,
     ) {
-        #[cfg(target_os = "android")]
-        if matches!(event, WindowEvent::RedrawRequested) && self.frames < 3 {
-            log::info!(
-                "Horizon: game frame {} id matches {} window {} loading {}",
-                self.frames,
-                self.window.as_ref().is_some_and(|w| w.id() == id),
-                self.window.is_some(),
-                horizon_overlay::with(|o| o.loading_active()).unwrap_or(false)
-            );
-        }
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
@@ -11658,53 +11647,6 @@ impl Game<'_> {
                     // ending the process: a phone boots into the launcher, so that is
                     // what leaving Minecraft means here. The overlay's opening runs
                     // again as it comes back, which is the zoom out.
-                    // Nothing in `Loading` can do this, because `Loading` is the struct
-                    // that handed the screen over — its `about_to_wait` stopped running
-                    // the moment `App::Ready` replaced it.
-                    //
-                    // The loading surface belongs to the way in. It goes when the
-                    // thing it was hiding is on the glass, and the evidence is the
-                    // thing itself: a title screen that exists and has been drawn, or a
-                    // world that has drawn a frame. It used to go on a frame count that
-                    // started when `Game` was built — before the player had pressed
-                    // anything — so the count had already run out by the time Play put
-                    // the surface up, and the surface then sat over a working title
-                    // forever. This is the same check with the count in the right place.
-                    #[cfg(target_os = "android")]
-                    if self.frames < 3 {
-                        log::info!(
-                            "Horizon: surface check frame {} title {} playing {} loading {}",
-                            self.frames,
-                            self.title.is_some(),
-                            self.screen == Screen::Playing,
-                            horizon_overlay::with(|o| o.loading_active()).unwrap_or(false)
-                        );
-                    }
-                    #[cfg(target_os = "android")]
-                    if self.title.is_some() || self.screen == Screen::Playing {
-                        // One frame first: the surface is drawn over the frame the game
-                        // has just rendered, and taking it down before that frame is on
-                        // the glass shows the empty surface behind it.
-                        let ready = if self.title.is_some() {
-                            self.title_frames = self.title_frames.saturating_add(1);
-                            self.title_frames > 1
-                        } else {
-                            self.world_surface_frames =
-                                self.world_surface_frames.saturating_add(1);
-                            self.world_surface_frames > 1
-                        };
-                        if ready {
-                            horizon_overlay::with(|o| {
-                                if o.loading_active() {
-                                    log::info!("Horizon: loading surface cleared");
-                                    o.set_loading(None);
-                                }
-                            });
-                        }
-                    } else {
-                        self.title_frames = 0;
-                        self.world_surface_frames = 0;
-                    }
                     #[cfg(target_os = "android")]
                     if self.back_to_launcher {
                         // `Game` has no `StartupMenu`: that belongs to the loading
@@ -11713,12 +11655,7 @@ impl Game<'_> {
                         self.back_to_launcher = false;
                         self.title = None;
                         self.screen = Screen::Playing;
-                        horizon_overlay::with(|o| {
-                            // The loading surface belongs to the way in, not the way
-                            // out: leaving a world must not show "Opening world".
-                            o.set_loading(None);
-                            o.return_to_launcher();
-                        });
+                        horizon_overlay::with(|o| o.return_to_launcher());
                         // The launcher is the screen now. A world left drawing under it
                         // shows through every gap in the page — which is what "the game
                         // is still there behind the launcher" looked like.
@@ -13325,6 +13262,8 @@ struct Loading {
     /// it has had a frame to draw. Without a floor the surface would be cleared in the
     /// same frame it was raised, which is a flash rather than a screen.
     #[cfg(target_os = "android")]
+    /// Unused: there is no loading surface to time. Kept so the struct's shape does
+    /// not churn for a field the platform may still want.
     loading_since: Option<std::time::Instant>,
 
     /// Where the Skins page's PNG is read from, kept so the texture is uploaded once
@@ -13632,21 +13571,14 @@ impl Loading {
         self.menu.handoff(&mut game);
         game.apply_settings();
         game.previous = Instant::now();
-        // The surface comes down here, where the game is handed over, rather than on
-        // a later frame: the title is drawn by the next frame, and a surface waiting
-        // for a frame that never arrives is the spinner that never goes away. One
-        // frame of the title is behind it, which is the point of a fade.
+        // The game draws on the next redraw, and on Android a redraw only arrives when
+        // something asks for one. `about_to_wait` asks too, but it runs after this
+        // frame's event, and the last frame before the handover is the launcher: asking
+        // here puts the game's first frame on the glass immediately, so the player goes
+        // straight from the launcher to the title.
         #[cfg(target_os = "android")]
-        {
-            horizon_overlay::with(|o| o.set_loading(None));
-            // The game draws on the next redraw, and on Android a redraw only arrives
-            // when something asks for one. `about_to_wait` asks too, but it runs after
-            // this frame's event, and a surface waiting for it is the spinner the
-            // player sees over a game that has already loaded. Asking here puts the
-            // first frame on the glass immediately.
-            if let Some(window) = &game.window {
-                window.request_redraw();
-            }
+        if let Some(window) = &game.window {
+            window.request_redraw();
         }
         log::info!(
             "Horizon: startup handoff {} ms (renderer {} ms, start_game {} ms)",
