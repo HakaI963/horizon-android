@@ -1333,6 +1333,8 @@ struct Game<'a> {
     /// the struct that owns `about_to_wait`, so the surface stayed up over a perfectly
     /// good title screen.
     #[cfg(target_os = "android")]
+    /// Kept for the platform's own reporting; the surface itself is cleared on the
+    /// evidence in `window_event`.
     pub(super) title_ready: bool,
     /// How many frames have been drawn since the game took the screen. The surface
     /// comes down on the second, when the menu behind it is actually on the glass.
@@ -11646,36 +11648,41 @@ impl Game<'_> {
                     // ending the process: a phone boots into the launcher, so that is
                     // what leaving Minecraft means here. The overlay's opening runs
                     // again as it comes back, which is the zoom out.
-                    // The loading surface is the launcher's, and the launcher is gone:
-                    // the game that came up behind it is what the player is looking at
-                    // now. Nothing in `Loading` can do this, because `Loading` is the
-                    // struct that handed the screen over — its `about_to_wait` stopped
-                    // running the moment `App::Ready` replaced it. Without this the
-                    // surface stays up over a perfectly good title screen, which is
-                    // exactly what "Play hangs on a spinner" was.
+                    // Nothing in `Loading` can do this, because `Loading` is the struct
+                    // that handed the screen over — its `about_to_wait` stopped running
+                    // the moment `App::Ready` replaced it.
+                    //
+                    // The loading surface belongs to the way in. It goes when the
+                    // thing it was hiding is on the glass, and the evidence is the
+                    // thing itself: a title screen that exists and has been drawn, or a
+                    // world that has drawn a frame. It used to go on a frame count that
+                    // started when `Game` was built — before the player had pressed
+                    // anything — so the count had already run out by the time Play put
+                    // the surface up, and the surface then sat over a working title
+                    // forever. This is the same check with the count in the right place.
                     #[cfg(target_os = "android")]
-                    if self.title_ready {
-                        // Not on the first frame: the title is drawn by this frame's
-                        // render, and clearing the surface before that would show one
-                        // frame of the world's empty surface. Two frames is the point
-                        // where the menu is on the glass behind it.
-                        self.title_frames = self.title_frames.saturating_add(1);
-                        if self.title_frames >= 2 {
-                            self.title_ready = false;
-                            horizon_overlay::with(|o| o.set_loading(None));
+                    if self.title.is_some() || self.screen == Screen::Playing {
+                        // One frame first: the surface is drawn over the frame the game
+                        // has just rendered, and taking it down before that frame is on
+                        // the glass shows the empty surface behind it.
+                        let ready = if self.title.is_some() {
+                            self.title_frames = self.title_frames.saturating_add(1);
+                            self.title_frames > 1
+                        } else {
+                            self.world_surface_frames =
+                                self.world_surface_frames.saturating_add(1);
+                            self.world_surface_frames > 1
+                        };
+                        if ready {
+                            horizon_overlay::with(|o| {
+                                if o.loading_active() {
+                                    o.set_loading(None);
+                                }
+                            });
                         }
-                    }
-                    // The same for a world: the surface goes up when the player picks
-                    // one, and comes down when the world has drawn a frame. Without
-                    // this, entering a world sat on "Opening world" forever even though
-                    // the world had finished opening.
-                    #[cfg(target_os = "android")]
-                    if self.world_ready {
-                        self.world_surface_frames = self.world_surface_frames.saturating_add(1);
-                        if self.world_surface_frames >= 2 {
-                            self.world_ready = false;
-                            horizon_overlay::with(|o| o.set_loading(None));
-                        }
+                    } else {
+                        self.title_frames = 0;
+                        self.world_surface_frames = 0;
                     }
                     #[cfg(target_os = "android")]
                     if self.back_to_launcher {
@@ -12184,7 +12191,7 @@ impl<'a> Game<'a> {
             #[cfg(target_os = "android")]
             back_to_launcher: false,
             #[cfg(target_os = "android")]
-            title_ready: true,
+            title_ready: false,
             #[cfg(target_os = "android")]
             title_frames: 0,
             #[cfg(target_os = "android")]
