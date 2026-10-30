@@ -387,11 +387,18 @@ impl Hud {
             }
             self.remember_position(id, x, y);
         }
+        let looking = !pointing && self.layout.drag_to_look;
+        if looking {
+            // Where the drag starts. Without it the first move has nothing to be a
+            // movement from, and a drag would only turn the camera from its second
+            // frame onwards.
+            self.remember_position(id, x, y);
+        }
         self.fingers.push(Finger {
             id,
             control: None,
             index: None,
-            looking: !pointing && self.layout.drag_to_look,
+            looking,
             pointing,
             toggled: false,
             slipped: false,
