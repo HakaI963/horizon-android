@@ -13637,7 +13637,17 @@ impl Loading {
         // for a frame that never arrives is the spinner that never goes away. One
         // frame of the title is behind it, which is the point of a fade.
         #[cfg(target_os = "android")]
-        horizon_overlay::with(|o| o.set_loading(None));
+        {
+            horizon_overlay::with(|o| o.set_loading(None));
+            // The game draws on the next redraw, and on Android a redraw only arrives
+            // when something asks for one. `about_to_wait` asks too, but it runs after
+            // this frame's event, and a surface waiting for it is the spinner the
+            // player sees over a game that has already loaded. Asking here puts the
+            // first frame on the glass immediately.
+            if let Some(window) = &game.window {
+                window.request_redraw();
+            }
+        }
         log::info!(
             "Horizon: startup handoff {} ms (renderer {} ms, start_game {} ms)",
             handoff_at.elapsed().as_millis(),
