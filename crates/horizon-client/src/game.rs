@@ -11043,6 +11043,16 @@ impl Game<'_> {
         id: WindowId,
         event: WindowEvent,
     ) {
+        #[cfg(target_os = "android")]
+        if matches!(event, WindowEvent::RedrawRequested) && self.frames < 3 {
+            log::info!(
+                "Horizon: game frame {} id {} window {:?} loading {}",
+                self.frames,
+                id == self.window.as_ref().map(winit::window::Window::id).unwrap_or(id),
+                self.window.is_some(),
+                horizon_overlay::with(|o| o.loading_active()).unwrap_or(false)
+            );
+        }
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
