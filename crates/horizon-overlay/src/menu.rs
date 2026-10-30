@@ -77,6 +77,47 @@ pub fn draw(
     let mut choice = MenuChoice::Nothing;
     let tab = tab_rect(width, density);
 
+    // Everything here is one full-screen window with mouse input on: the gear is a
+    // button, and a button drawn outside a window is a picture of a button. The pad's
+    // own window turns input off because the pad is hit-tested by the platform, but
+    // the menu is imgui's, so it needs imgui's input.
+    let _ = ui
+        .window("##menu_root")
+        .flags(
+            WindowFlags::NO_BACKGROUND
+                | WindowFlags::NO_DECORATION
+                | WindowFlags::NO_MOVE
+                | WindowFlags::NO_NAV
+                | WindowFlags::NO_FOCUS_ON_APPEARING
+                | WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS
+                | WindowFlags::NO_SAVED_SETTINGS,
+        )
+        .position([0.0, 0.0], Condition::Always)
+        .size([width, height], Condition::Always)
+        .build(|| {
+            choice = menu_body(ui, open, mode, width, height, density, frame_line, fps, memory, mouse_speed, mouse_scale);
+        });
+    choice
+}
+
+/// The tab and the list, inside the window that owns their input.
+#[allow(clippy::too_many_arguments)]
+fn menu_body(
+    ui: &Ui,
+    open: &mut bool,
+    mode: MenuMode,
+    width: f32,
+    height: f32,
+    density: f32,
+    frame_line: bool,
+    fps: f32,
+    memory: Option<f64>,
+    mouse_speed: &mut f32,
+    mouse_scale: &mut f32,
+) -> MenuChoice {
+    let mut choice = MenuChoice::Nothing;
+    let tab = tab_rect(width, density);
+
     // The tab: a black half-circle hanging from the top edge, a white gear on it, at a
     // third of the screen's alpha so it does not fight the world behind it.
     {

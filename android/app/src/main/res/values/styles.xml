@@ -11,6 +11,16 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">@android:color/black</item>
+        <!--
+            The navigation bar stays hidden while the game is up. A three-button bar at
+            the bottom of the glass sits exactly where the hotbar and the pad's lower
+            row are, and a swipe to bring it back moves the player's item. The
+            activity asks for the same thing at runtime, because the theme is only a
+            request and some builds ignore it.
+        -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">false</item>
+        <item name="android:windowTranslucentNavigation">true</item>
     </style>
 
     <!--

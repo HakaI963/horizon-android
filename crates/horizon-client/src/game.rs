@@ -7573,19 +7573,20 @@ impl Game<'_> {
     /// player's own model — the identity is the file, so a new choice replaces it and
     /// an unchanged one costs a string compare per tick.
     fn tick_local_skin(&mut self) {
-        let Some(player) = self.player.as_ref() else {
-            return;
-        };
-        let _ = player;
+        // The chosen skin is read whatever the player is: a respawn or a dimension
+        // change rebuilds the model, and the choice has to be re-applied to it. The
+        // model is the thing that needs a player, not the file.
         let dir = horizon_client::gfx::skins_dir();
         let Some(name) = horizon_client::skin_choice::load(&dir) else {
             return;
         };
         if self.local_skin.as_deref() == Some(name.as_str()) {
-            // Already in an atlas slot: the model may have been rebuilt (respawn, a
-            // dimension change) and lost its skin, so put it back if it has none.
+            // Already in an atlas slot. The model is rebuilt on a respawn or a
+            // dimension change and comes back bare, and the frame the model first
+            // appears is one where it did not exist when this last ran, so the name is
+            // put back whenever it is missing rather than only when it is unchanged.
             if let Some(mob) = self.player_model.as_mut()
-                && mob.skin.is_none()
+                && mob.skin.as_deref() != Some("skins/local")
             {
                 mob.skin = Some("skins/local".to_string());
             }

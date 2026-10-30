@@ -3039,6 +3039,11 @@ fn setting_text(setting: &LauncherSetting, value: f32) -> String {
             number.pop();
         }
     }
+    // The frame limit's top end is "no cap", not a number: 260 is what the file stores
+    // for unlimited, and a player reading "260 fps" would think it was a ceiling.
+    if setting.unit == "fps" && value >= 260.0 {
+        return "Unlimited".to_string();
+    }
     match setting.unit.as_str() {
         "" => number,
         "%" => format!("{number}%"),

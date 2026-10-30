@@ -63,6 +63,7 @@ public class HorizonActivity extends NativeActivity {
         // NativeActivity loads the engine library and starts android_main in here, so
         // the view has to be added after: setContentView would lose it.
         super.onCreate(savedInstanceState);
+        hideSystemBars();
 
         keyboard = new KeyboardField(this);
         keyboard.setImeOptions(
@@ -103,6 +104,47 @@ public class HorizonActivity extends NativeActivity {
             return false;
         });
         addContentView(keyboard, new ViewGroup.LayoutParams(1, 1));
+    }
+
+    /**
+     * The navigation bar and the status bar, gone, and kept gone.
+     *
+     * The theme asks for it, but a theme is only a request: on Android 11 and later the
+     * system re-shows the bars whenever it likes, and a three-button bar sits exactly
+     * where the hotbar and the pad's bottom row are. So the window is put into the
+     * same immersive mode the game expects, and every time the system takes the bars
+     * back this puts them away again.
+     */
+    private void hideSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            android.view.Window window = getWindow();
+            if (window != null) {
+                window.setDecorFitsSystemWindows(false);
+                android.view.WindowInsetsController controller = window.getInsetsController();
+                if (controller != null) {
+                    controller.hide(android.view.WindowInsets.Type.systemBars());
+                    controller.setSystemBarsBehavior(
+                            android.view.WindowInsetsController
+                                    .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                }
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            hideSystemBars();
+        }
     }
 
     /** The keyboard coming up over a game field, with an empty field of its own. */
