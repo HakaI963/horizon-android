@@ -1498,9 +1498,9 @@ struct DrawButton {
     rect: Rect,
     label: String,
     opacity: f32,
-    /// ARGB, as the layout file stores it.
-    bg: u32,
-    stroke: u32,
+    /// ARGB, as the layout file stores it: signed, so -1 is opaque white.
+    bg: i32,
+    stroke: i32,
     stroke_width: f32,
     corner: f32,
     toggle: bool,
@@ -1508,7 +1508,8 @@ struct DrawButton {
 
 /// An ARGB colour with a separate alpha, for a pad whose buttons are drawn at a
 /// layout-wide opacity.
-fn argb(color: u32, alpha: f32) -> ImColor32 {
+fn argb(color: i32, alpha: f32) -> ImColor32 {
+    let color = color as u32;
     let a = ((color >> 24) & 0xff) as f32 / 255.0 * alpha.clamp(0.0, 1.0);
     let r = ((color >> 16) & 0xff) as f32 / 255.0;
     let g = ((color >> 8) & 0xff) as f32 / 255.0;
@@ -1517,12 +1518,13 @@ fn argb(color: u32, alpha: f32) -> ImColor32 {
 }
 
 /// The same colour, a little lighter: a pressed button keeps its own palette.
-fn lighten(color: u32, amount: f32) -> u32 {
+fn lighten(color: i32, amount: f32) -> i32 {
+    let color = color as u32;
     let channel = |shift: u32| {
         let value = ((color >> shift) & 0xff) as f32;
         (value + (255.0 - value) * amount).round() as u32
     };
-    (color & 0xff00_0000) | (channel(16) << 16) | (channel(8) << 8) | channel(0)
+    ((color & 0xff00_0000) | (channel(16) << 16) | (channel(8) << 8) | channel(0)) as i32
 }
 
 /// The glyph a layout names, drawn as shapes.

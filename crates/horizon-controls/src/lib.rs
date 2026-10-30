@@ -722,7 +722,9 @@ mod tests {
     const H: f32 = 953.0;
 
     fn hud() -> Hud {
-        let mut layout = Layout::default();
+        // The device's own density, so a 50 dp button is 66 pixels: the numbers the
+        // tests aim at are the numbers a finger would land on.
+        let mut layout = Layout::default_pad();
         layout.density = 1.3236;
         Hud::new(layout)
     }
@@ -786,10 +788,27 @@ mod tests {
     fn the_virtual_mouse_moves_the_cursor_instead_of_the_camera() {
         let mut hud = hud();
         hud.set_mouse(true, W, H);
+        // It starts where the toggle put it, not under the finger: a tap on a corner
+        // must not send the cursor across the screen.
+        let start = hud.cursor();
         assert!(!hud.down(1, 1000.0, 400.0, W, H));
         hud.drag(1, 1040.0, 430.0, W, H);
-        assert_eq!(hud.take_look(), [0.0, 0.0]);
-        assert_eq!(hud.cursor(), [1040.0, 430.0]);
+        assert_eq!(hud.take_look(), [0.0, 0.0], "the camera must not turn");
+        assert_eq!(hud.cursor(), [start[0] + 40.0, start[1] + 30.0]);
+        assert_eq!(hud.take_cursor(), [40.0, 30.0]);
+    }
+
+    #[test]
+    fn the_cursor_follows_its_own_drag_rather_than_the_finger() {
+        let mut hud = hud();
+        hud.set_mouse(true, W, H);
+        hud.down(1, 200.0, 200.0, W, H);
+        hud.drag(1, 260.0, 200.0, W, H);
+        let first = hud.cursor();
+        hud.drag(1, 320.0, 200.0, W, H);
+        // Each drag moves the cursor by its own delta: two 60-pixel drags are 120
+        // pixels of cursor, not a jump to the finger's position.
+        assert!((hud.cursor()[0] - first[0] - 60.0).abs() < 0.5, "{:?}", hud.cursor());
     }
 
     #[test]

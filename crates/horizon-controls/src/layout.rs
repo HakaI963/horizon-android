@@ -58,11 +58,12 @@ pub struct ControlData {
     pub is_toggle: bool,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
-    /// ARGB, as Android stores a colour.
+    /// ARGB, as Android stores a colour: signed, so -1 is opaque white and a file
+    /// that says -1 is not a file that failed to load.
     #[serde(rename = "bgColor", default = "default_bg")]
-    pub bg_color: u32,
+    pub bg_color: i32,
     #[serde(rename = "strokeColor", default = "default_stroke")]
-    pub stroke_color: u32,
+    pub stroke_color: i32,
     /// In density-independent pixels.
     #[serde(rename = "strokeWidth", default)]
     pub stroke_width: f32,
@@ -89,11 +90,11 @@ fn default_side() -> f32 {
 fn default_opacity() -> f32 {
     1.0
 }
-fn default_bg() -> u32 {
-    0x4d00_0000
+fn default_bg() -> i32 {
+    0x4d00_0000u32 as i32
 }
-fn default_stroke() -> u32 {
-    0xffff_ffff
+fn default_stroke() -> i32 {
+    -1
 }
 fn default_true() -> bool {
     true
@@ -318,11 +319,11 @@ fn upgrade_fractional(value: &serde_json::Value) -> LayoutFile {
                 bg_color: object
                     .get("bgColor")
                     .and_then(|v| v.as_i64())
-                    .map_or(default_bg(), |v| v as u32),
+                    .map_or(default_bg(), |v| v as i32),
                 stroke_color: object
                     .get("strokeColor")
                     .and_then(|v| v.as_i64())
-                    .map_or(default_stroke(), |v| v as u32),
+                    .map_or(default_stroke(), |v| v as i32),
                 stroke_width: object
                     .get("strokeWidth")
                     .and_then(|v| v.as_f64())
