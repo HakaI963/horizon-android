@@ -11661,6 +11661,16 @@ impl Game<'_> {
                     // the surface up, and the surface then sat over a working title
                     // forever. This is the same check with the count in the right place.
                     #[cfg(target_os = "android")]
+                    if self.frames < 3 {
+                        log::info!(
+                            "Horizon: surface check frame {} title {} screen {:?} loading {}",
+                            self.frames,
+                            self.title.is_some(),
+                            self.screen,
+                            horizon_overlay::with(|o| o.loading_active()).unwrap_or(false)
+                        );
+                    }
+                    #[cfg(target_os = "android")]
                     if self.title.is_some() || self.screen == Screen::Playing {
                         // One frame first: the surface is drawn over the frame the game
                         // has just rendered, and taking it down before that frame is on
@@ -11676,6 +11686,7 @@ impl Game<'_> {
                         if ready {
                             horizon_overlay::with(|o| {
                                 if o.loading_active() {
+                                    log::info!("Horizon: loading surface cleared");
                                     o.set_loading(None);
                                 }
                             });
