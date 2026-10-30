@@ -78,6 +78,11 @@ impl Default for Layout {
 }
 
 impl Layout {
+    /// The pad the build ships with, for a platform that has never saved one.
+    pub fn default_pad() -> Self {
+        Self::new(LayoutFile::default_pad())
+    }
+
     pub fn new(file: LayoutFile) -> Self {
         Self {
             file,

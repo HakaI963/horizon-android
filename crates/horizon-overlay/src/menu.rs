@@ -202,8 +202,9 @@ pub fn draw(
                 }
             }
         });
-    // A tap outside the list closes it, the way a drawer does.
-    if ui.io().mouse_clicked[0] && !ui.is_mouse_pos_valid([width / 2.0, height / 2.0]) {
+    // A tap on the world outside the list closes it, the way a drawer does. The tap
+    // that opened it lands on the tab, which is above the list, so it is not this.
+    if ui.is_mouse_clicked(imgui::MouseButton::Left) && ui.io().mouse_pos[0] < x {
         *open = false;
     }
     choice

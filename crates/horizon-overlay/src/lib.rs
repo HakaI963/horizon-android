@@ -252,7 +252,7 @@ impl Overlay {
 
     /// The same, with the layout read from disk if someone has saved one.
     pub fn load(path: PathBuf) -> Self {
-        let layout = Layout::load(&path).unwrap_or_default();
+        let layout = Layout::load(&path);
         Self::new(layout, path)
     }
 
@@ -558,7 +558,7 @@ impl Overlay {
         // The layout's own sizes are in dp, so it needs the screen's density: 50 dp is
         // the same physical button on a phone and on a tablet, which is what makes a
         // pad a player arranged stay arranged on the next device.
-        hud.layout.density = *density;
+        hud.layout.density = density;
         let cursor = hud.cursor();
         let mut edit = hud.edit;
         let mut opacity = hud.layout.opacity;
@@ -735,7 +735,7 @@ impl Overlay {
                 log::info!("overlay: the pad is saved");
             }
             menu::MenuChoice::ResetLayout => {
-                hud.layout = Layout::default();
+                hud.layout = Layout::default_pad();
                 log::info!("overlay: the pad is the one the build ships with");
             }
             menu::MenuChoice::CloseEditor => {
@@ -1046,7 +1046,7 @@ impl Overlay {
     /// outside the game. A preset chosen in the launcher is the same file written by
     /// this program, so the HUD has to pick it up.
     pub fn reload_layout(&mut self) {
-        self.hud.layout = Layout::load(&self.path).unwrap_or_default();
+        self.hud.layout = Layout::load(&self.path);
         log::info!(
             "overlay: the touch layout is now {} buttons",
             self.hud.layout.file.controls.len()
@@ -1472,29 +1472,20 @@ fn draw_button(draw: &DrawListMut<'_>, ui: &Ui, button: &DrawButton, pressed: bo
     }
     let color = rgba(LEGEND, (alpha + 0.35).min(1.0));
     let [width, height] = ui.calc_text_size(&button.label);
-    // A long name is drawn smaller rather than spilling out of its button: a pad's
-    // buttons are as small as a thumb allows.
-    let scale = if width > rect.width - 8.0 {
-        ((rect.width - 8.0) / width).clamp(0.35, 1.0)
-    } else {
-        1.0
-    };
-    if scale < 1.0 {
-        let size = ui.current_font_size() * scale;
-        draw.add_text(
-            [center_x - width * scale / 2.0, center_y - height * scale / 2.0],
-            color,
-            &button.label,
-        )
-        .build();
-        let _ = size;
-    } else {
-        draw.add_text(
-            [center_x - width / 2.0, center_y - height / 2.0],
-            color,
-            &button.label,
-        );
-    }
+    // A long name is clipped to its button rather than spilling over its neighbours:
+    // the pad's buttons are as small as a thumb allows, and a name that runs into the
+    // next button is worse than one that stops short. The font this imgui build offers
+    // has one size, so the label is centred and the overflow simply not drawn.
+    let _clip = draw.push_clip_rect(
+        [rect.x + 2.0, rect.y + 1.0],
+        [rect.x + rect.width - 2.0, rect.y + rect.height - 1.0],
+        true,
+    );
+    draw.add_text(
+        [center_x - width / 2.0, center_y - height / 2.0],
+        color,
+        &button.label,
+    );
 }
 
 /// One button, as the pad is showing it this frame.
