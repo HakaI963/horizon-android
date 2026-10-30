@@ -2945,7 +2945,7 @@ impl Renderer {
         // And the density, for the layout's own sizes in dp. It is the display's, not
         // the GUI scale's: a pad is as big as a thumb, and a thumb does not care what
         // the game's GUI scale is set to.
-        let density = self.window.as_ref().map_or(1.0, |window| window.scale_factor() as f32);
+        let density = self.window.scale_factor() as f32;
         if let Some(Err(error)) = horizon_overlay::with(|overlay| {
             overlay.set_gui_scale(gui_scale);
             overlay.set_density(density);

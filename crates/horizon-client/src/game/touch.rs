@@ -39,7 +39,7 @@ impl Game<'_> {
     /// What the fingers did since the last frame. Called where the game reads its
     /// keyboard, before anything moves, so a press is in the simulation the frame it
     /// was made and not one after it.
-    pub(super) fn touch_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> Result<()> {
+    pub(super) fn touch_frame(&mut self) -> Result<()> {
         // The keyboard before anything else: the screen has just changed, and nobody
         // should wait a frame for the keys to come up when they have opened chat.
         let typing = typing(self);
@@ -67,7 +67,7 @@ impl Game<'_> {
             return Ok(());
         };
         for (action, down) in edges {
-            self.touch_action(action, down, event_loop)?;
+            self.touch_action(action, down)?;
         }
         self.touch_look(look);
         self.touch_cursor(cursor);
@@ -268,12 +268,7 @@ impl Game<'_> {
     }
 
     /// One button of the layout, as the mapping the player bound to it.
-    fn touch_action(
-        &mut self,
-        action: Action,
-        down: bool,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-    ) -> Result<()> {
+    fn touch_action(&mut self, action: Action, down: bool) -> Result<()> {
         match action {
             // Escape, with the same care the controller's B takes: a screen has to close
             // before the game does.
@@ -314,7 +309,7 @@ impl Game<'_> {
                     // implementation of one: a menu scrolls, a list moves, and the
                     // hotbar steps exactly as they do for a real mouse.
                     let lines = if action == Action::ScrollUp { 1.0 } else { -1.0 };
-                    self.wheel(lines, event_loop)?;
+                    self.wheel(lines)?;
                 }
                 return Ok(());
             }
@@ -346,20 +341,34 @@ impl Game<'_> {
     /// game is already handled: a second implementation of scrolling would drift from
     /// the first the moment either changed, and the hotbar, the creative menu and the
     /// chat all scroll differently.
-    fn wheel(
-        &mut self,
-        lines: f32,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-    ) -> Result<()> {
-        let Some(window) = self.window.as_ref().map(|w| w.id()) else {
+    fn wheel(&mut self, lines: f32) -> Result<()> {
+        // The same path a real wheel takes, without synthesising a window event: the
+        // engine's own scroll handler is reached from `window_event`, and calling it
+        // from here would mean handing a `Game` the event loop it does not own. What a
+        // wheel does is small enough to say directly.
+        let d = lines * self.settings.mouse_wheel_sensitivity;
+        if self.title.is_some() && self.screen != Screen::Win {
             return Ok(());
-        };
-        let event = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        self.window_event(event_loop, window, event)
+        }
+        if self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && self.player.is_some()
+            && !self.extras_scroll(d)
+        {
+            if self.spectator() {
+                if let Some(player) = &mut self.player {
+                    player.flying_speed =
+                        horizon_client::mouse::spectator_flying_speed(player.flying_speed, lines as i32);
+                }
+            } else {
+                self.selected = horizon_client::mouse::ScrollWheelHandler::next_selection(
+                    f64::from(lines),
+                    self.selected as i32,
+                    9,
+                ) as usize;
+            }
+        }
+        Ok(())
     }
 
     /// Whether this jump is the second of a double tap, and if so, the flight toggle.
