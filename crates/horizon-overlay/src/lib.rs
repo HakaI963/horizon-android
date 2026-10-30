@@ -1476,15 +1476,16 @@ fn draw_button(draw: &DrawListMut<'_>, ui: &Ui, button: &DrawButton, pressed: bo
     // the pad's buttons are as small as a thumb allows, and a name that runs into the
     // next button is worse than one that stops short. The font this imgui build offers
     // has one size, so the label is centred and the overflow simply not drawn.
-    let _clip = draw.push_clip_rect(
+    draw.with_clip_rect(
         [rect.x + 2.0, rect.y + 1.0],
         [rect.x + rect.width - 2.0, rect.y + rect.height - 1.0],
-        true,
-    );
-    draw.add_text(
-        [center_x - width / 2.0, center_y - height / 2.0],
-        color,
-        &button.label,
+        || {
+            draw.add_text(
+                [center_x - width / 2.0, center_y - height / 2.0],
+                color,
+                &button.label,
+            );
+        },
     );
 }
 
