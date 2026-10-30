@@ -13632,6 +13632,12 @@ impl Loading {
         self.menu.handoff(&mut game);
         game.apply_settings();
         game.previous = Instant::now();
+        // The surface comes down here, where the game is handed over, rather than on
+        // a later frame: the title is drawn by the next frame, and a surface waiting
+        // for a frame that never arrives is the spinner that never goes away. One
+        // frame of the title is behind it, which is the point of a fade.
+        #[cfg(target_os = "android")]
+        horizon_overlay::with(|o| o.set_loading(None));
         log::info!(
             "Horizon: startup handoff {} ms (renderer {} ms, start_game {} ms)",
             handoff_at.elapsed().as_millis(),
