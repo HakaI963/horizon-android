@@ -511,12 +511,12 @@ pub fn action_for_key(code: i32) -> Action {
         33 => Action::Inventory,    // KEYCODE_E
         48 => Action::Chat,         // KEYCODE_T
         61 => Action::TabList,      // KEYCODE_TAB
-        131 => Action::Debug,       // KEYCODE_F3
-        133 => Action::View,        // KEYCODE_F5
+        133 => Action::Debug,       // KEYCODE_F3
+        135 => Action::View,        // KEYCODE_F5
         45 => Action::Drop,         // KEYCODE_Q
         42 => Action::SwapOffhand,  // KEYCODE_F
         76 => Action::Command,      // KEYCODE_SLASH
-        141 => Action::Screenshot,  // KEYCODE_F2
+        132 => Action::Screenshot,  // KEYCODE_F2
         111 => Action::Pause,       // KEYCODE_ESCAPE
         8..=16 => Action::Hotbar((code - 7) as u8), // KEYCODE_1..KEYCODE_9
         other => Action::Raw(other),
@@ -536,12 +536,12 @@ pub fn key_for_action(action: Action) -> Option<i32> {
         Action::Inventory => 33,
         Action::Chat => 48,
         Action::TabList => 61,
-        Action::Debug => 131,
-        Action::View => 133,
+        Action::Debug => 133,
+        Action::View => 135,
         Action::Drop => 45,
         Action::SwapOffhand => 42,
         Action::Command => 76,
-        Action::Screenshot => 141,
+        Action::Screenshot => 132,
         Action::Pause => 111,
         Action::Hotbar(slot) => 7 + i32::from(slot),
         Action::Raw(code) => code,

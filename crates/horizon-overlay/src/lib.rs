@@ -644,6 +644,7 @@ impl Overlay {
                     status.as_str(),
                     width,
                     height,
+                    launcher_fonts.as_ref().map(|fonts| fonts.label),
                 );
                 // The hotbar strip, drawn faintly only while arranging: a player who
                 // cannot see where the strip is cannot tell why a tap near the bottom
@@ -1738,6 +1739,7 @@ fn hud_buttons(
     status: &str,
     width: f32,
     height: f32,
+    font: Option<imgui::FontId>,
 ) {
     // A window with no decoration cannot be collapsed, so its contents always run;
     // the `Option` imgui hands back is only that promise, and there is nothing to do
@@ -1756,6 +1758,10 @@ fn hud_buttons(
         .position([0.0, 0.0], Condition::Always)
         .size([width, height], Condition::Always)
         .build(|| {
+            // The pad's own font: the interface adds no built-in bitmap font, so a
+            // label drawn without a pushed font has no glyphs at all and comes out as
+            // a row of question marks.
+            let _font = font.map(|font| ui.push_font(font));
             let draw = ui.get_window_draw_list();
             for button in buttons.iter().rev() {
                 draw_button(
