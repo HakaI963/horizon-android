@@ -289,18 +289,18 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            // The three mouse buttons are clicks, not keys.
+            // The three mouse buttons are clicks, not keys. Over the world they are
+            // mining and placing; over a screen the game draws, they are the click that
+            // screen is hit-tested for. Both go through the engine's own mouse, so a
+            // chest, a furnace and the creative menu all answer the same way a real
+            // mouse would.
             Action::MousePrimary | Action::MouseSecondary | Action::MouseMiddle => {
                 let button = match action {
                     Action::MousePrimary => MouseButton::Left,
                     Action::MouseSecondary => MouseButton::Right,
                     _ => MouseButton::Middle,
                 };
-                // A click only exists in the world or over a screen that hit-tests a
-                // cursor, which is the same rule the engine's own mouse follows.
-                if self.title.is_none() && self.screen == Screen::Playing {
-                    self.play_mouse(button, down)?;
-                }
+                self.click(button, down, event_loop)?;
                 return Ok(());
             }
             Action::ScrollUp | Action::ScrollDown => {
@@ -341,6 +341,27 @@ impl Game<'_> {
     /// game is already handled: a second implementation of scrolling would drift from
     /// the first the moment either changed, and the hotbar, the creative menu and the
     /// chat all scroll differently.
+    /// A click of one of the pad's mouse buttons, wherever the player is.
+    ///
+    /// Over the world it is mining or placing, through `play_mouse`. Over a screen the
+    /// game draws for itself it is a `MouseInput` event, because that is what those
+    /// screens are hit-tested from and a phone has no other way to press them.
+    fn click(
+        &mut self,
+        button: MouseButton,
+        down: bool,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<()> {
+        let over_a_screen = self.title.is_some() || self.screen != Screen::Playing;
+        if !over_a_screen {
+            return self.play_mouse(button, down);
+        }
+        let Some(id) = self.window.as_ref().map(|window| window.id()) else {
+            return Ok(());
+        };
+        self.menu_mouse(event_loop, id, button, down)
+    }
+
     fn wheel(&mut self, lines: f32) -> Result<()> {
         // The same path a real wheel takes, without synthesising a window event: the
         // engine's own scroll handler is reached from `window_event`, and calling it

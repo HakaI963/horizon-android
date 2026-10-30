@@ -467,12 +467,20 @@ impl ReducedColumns {
         Self { columns, levels }
     }
     fn get(&self, x: usize, z: usize, width: usize) -> &Column {
-        if width == 1 {
-            &self.columns[z * 16 + x]
-        } else {
-            &self.levels[width.trailing_zeros() as usize - 1]
-                [(z / width) * (16 / width) + x / width]
+        // A width that is not a power of two between 2 and 16 has no level here: the
+        // mesh's stride can come from a neighbour tile at any distance, and a short
+        // LOD range makes that stride small enough that `trailing_zeros() - 1`
+        // underflowed and took the whole game down. The finest samples are the honest
+        // answer for anything this table does not hold.
+        if width <= 1 {
+            return &self.columns[(z * 16 + x).min(255)];
         }
+        let level = width.trailing_zeros() as usize;
+        if level == 0 || level > 4 || !width.is_power_of_two() {
+            return &self.columns[(z * 16 + x).min(255)];
+        }
+        let index = (z / width) * (16 / width) + x / width;
+        self.levels[level - 1].get(index).unwrap_or(&self.columns[0])
     }
 }
 enum Job {
@@ -1417,8 +1425,12 @@ impl Snapshot {
                     .neighbor(wx, wz)
                     .unwrap_or_else(|| (Column::default(), stride));
                 let coordinate = if direction < 2 { wz } else { wx };
-                let width = (neighbor_stride - coordinate.rem_euclid(neighbor_stride))
-                    .min(key.size() - offset);
+                // A stride of zero would make the whole edge one zero-width column,
+                // and the reduction table has no entry for that.
+                let stride = neighbor_stride.max(1);
+                let width = (stride - coordinate.rem_euclid(stride))
+                    .min(key.size() - offset)
+                    .max(1);
                 edge.push(mesh::EdgeColumn {
                     start: offset,
                     end: offset + width,

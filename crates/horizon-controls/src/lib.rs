@@ -774,7 +774,7 @@ mod tests {
     fn a_toggle_stays_on_after_the_finger_lifts() {
         let mut hud = hud();
         // The default pad's sneak is the only toggle in it.
-        let sneak = at(&hud, "◇");
+        let sneak = at(&hud, "SNEAK");
         hud.down(1, sneak[0], sneak[1], W, H);
         assert_eq!(hud.take_edges(), vec![(Action::Sneak, true)]);
         hud.up(1);

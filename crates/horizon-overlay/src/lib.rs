@@ -244,7 +244,7 @@ impl Overlay {
             game_pointer: None,
             dpi: 1.0,
             fonts_added: false,
-            show_status: true,
+            show_status: false,
             status: String::new(),
             frame_started: Instant::now(),
         }
@@ -1480,6 +1480,9 @@ fn draw_button(draw: &DrawListMut<'_>, ui: &Ui, button: &DrawButton, pressed: bo
         [rect.x + 2.0, rect.y + 1.0],
         [rect.x + rect.width - 2.0, rect.y + rect.height - 1.0],
         || {
+            // The label is drawn with the window's current font, which the overlay's
+            // theme set to Geist. A button's name is a word, and the built-in bitmap
+            // font is the one thing this interface does not use.
             draw.add_text(
                 [center_x - width / 2.0, center_y - height / 2.0],
                 color,
@@ -1763,15 +1766,10 @@ fn hud_buttons(
                     selected == Some(button.index),
                 );
             }
-            if show_status {
-                // The line a frame dump reads instead of logcat: what the loop is
-                // doing, and what the screen is answering.
-                draw.add_text(
-                    [8.0 * dpi, (height - 26.0 * dpi).max(0.0)],
-                    rgba(LEGEND, 1.0),
-                    status,
-                );
-            }
+            // The frame line is gone from the glass. It was a debugging aid, and a
+            // number in the corner of a game is not something a player asked for. The
+            // menu shows the frame rate when it is open, which is where it belongs.
+            let _ = (show_status, status);
         });
 }
 
