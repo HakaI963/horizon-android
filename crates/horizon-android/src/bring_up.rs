@@ -165,6 +165,9 @@ struct Screen {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// Glass pixels per dp, so the touch pad on the card is the same physical size as
+    /// the one over the world.
+    density: f32,
     card: Card,
 }
 
@@ -297,6 +300,7 @@ fn open_screen(window: &Arc<Window>, app: &AndroidApp) -> Result<Screen, Box<dyn
         device,
         queue,
         config,
+        density: window.scale_factor() as f32,
         card,
     })
 }
@@ -466,11 +470,9 @@ impl Screen {
             // the display's own: the pad on the card is the same size as the pad in the
             // world, which is the point of showing it here at all.
             overlay.set_gui_scale(1.0);
-            overlay.set_density(
-                self.window
-                    .as_ref()
-                    .map_or(1.0, |window| window.scale_factor() as f32),
-            );
+            // The screen's own density: `config` is in physical pixels, and the pad's
+            // sizes are dp, so the two are related by this.
+            overlay.set_density(self.density);
             edges = overlay.frame(
                 &self.device,
                 &self.queue,
