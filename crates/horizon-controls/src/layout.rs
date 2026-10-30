@@ -266,6 +266,20 @@ impl LayoutFile {
     /// private layout has none, because its buttons were actions and not keys. A file
     /// that cannot say which button is the virtual mouse is not a file this launcher
     /// can draw.
+    /// Whether this file was written by a build that draws the pad this one draws.
+    ///
+    /// The format is shared, but a file this launcher saved in an earlier build is not
+    /// interchangeable with the current one: an early build named the D-pad's buttons
+    /// with the glyphs a different font had, and those names are question marks here.
+    /// The marker is the pad's own name for itself, which only this launcher writes.
+    pub fn is_current(&self) -> bool {
+        self.is_the_shared_format()
+            && self
+                .controls
+                .iter()
+                .all(|control| control.name.is_ascii())
+    }
+
     pub fn is_the_shared_format(&self) -> bool {
         self.controls.iter().any(|control| {
             control.keycodes.iter().any(|code| {

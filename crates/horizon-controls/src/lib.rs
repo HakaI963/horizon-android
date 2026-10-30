@@ -101,7 +101,7 @@ impl Layout {
     /// format's fields — and upgrading it would put that pad back on the glass, which
     /// is exactly what this launcher stopped shipping.
     pub fn load(path: &Path) -> Self {
-        let file = LayoutFile::load(path).filter(LayoutFile::is_the_shared_format);
+        let file = LayoutFile::load(path).filter(LayoutFile::is_current);
         if file.is_none() {
             log::info!(
                 "controls: no layout of the shared format at {}, using the default pad",
