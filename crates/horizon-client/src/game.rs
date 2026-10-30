@@ -10997,6 +10997,37 @@ impl ApplicationHandler for Game<'_> {
 }
 
 impl Game<'_> {
+    /// A mouse button from the touch pad, over a screen the game draws itself.
+    ///
+    /// It is delivered as the window event a real mouse would send, because that is the
+    /// only path those screens have: `window_event` is where every menu's click handling
+    /// lives, and a second implementation of it would drift the first time either
+    /// changed. The cursor is already where the player pointed it, so the screen
+    /// hit-tests the right thing.
+    #[cfg(target_os = "android")]
+    pub(super) fn menu_mouse(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        button: MouseButton,
+        down: bool,
+    ) -> Result<()> {
+        self.handle_window_event(
+            event_loop,
+            id,
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: if down {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button,
+            },
+        );
+        Ok(())
+    }
+
     /// One window event, from winit or from the touch pad.
     ///
     /// It is a plain method rather than only the trait's, because the pad's mouse
@@ -11004,7 +11035,7 @@ impl Game<'_> {
     /// `MouseInput` event and nothing else, and a second copy of that dispatch would
     /// drift the first time either changed.
     #[allow(clippy::too_many_lines)]
-    fn handle_window_event(
+    pub(super) fn handle_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         id: WindowId,
@@ -11683,7 +11714,7 @@ impl Game<'_> {
                     // a thumb that has left the glass should not have the character keep
                     // running for another frame to find out.
                     #[cfg(target_os = "android")]
-                    self.touch_frame()?;
+                    self.touch_frame(event_loop)?;
                     #[cfg(target_os = "android")]
                     self.overlay_line();
                     // Arrow-key camera controls belong to gameplay; chat and
@@ -11882,9 +11913,7 @@ impl Game<'_> {
             event_loop.exit();
         }
     }
-}
 
-impl ApplicationHandler for Game<'_> {
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         if self.pending_save.is_none()
             && self.captured
@@ -13381,37 +13410,6 @@ impl Loading {
         #[cfg(not(target_os = "android"))]
         let _ = event_loop;
     }
-    /// A mouse button from the touch pad, over a screen the game draws itself.
-    ///
-    /// It is delivered as the window event a real mouse would send, because that is the
-    /// only path those screens have: `window_event` is where every menu's click handling
-    /// lives, and a second implementation of it would drift the first time either
-    /// changed. The cursor is already where the player pointed it, so the screen
-    /// hit-tests the right thing.
-    #[cfg(target_os = "android")]
-    pub(super) fn menu_mouse(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        id: WindowId,
-        button: MouseButton,
-        down: bool,
-    ) -> Result<()> {
-        self.handle_window_event(
-            event_loop,
-            id,
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: if down {
-                    ElementState::Pressed
-                } else {
-                    ElementState::Released
-                },
-                button,
-            },
-        );
-        Ok(())
-    }
-
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;

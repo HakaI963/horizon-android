@@ -39,7 +39,10 @@ impl Game<'_> {
     /// What the fingers did since the last frame. Called where the game reads its
     /// keyboard, before anything moves, so a press is in the simulation the frame it
     /// was made and not one after it.
-    pub(super) fn touch_frame(&mut self) -> Result<()> {
+    pub(super) fn touch_frame(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<()> {
         // The keyboard before anything else: the screen has just changed, and nobody
         // should wait a frame for the keys to come up when they have opened chat.
         let typing = typing(self);
@@ -67,7 +70,7 @@ impl Game<'_> {
             return Ok(());
         };
         for (action, down) in edges {
-            self.touch_action(action, down)?;
+            self.touch_action(action, down, event_loop)?;
         }
         self.touch_look(look);
         self.touch_cursor(cursor);
@@ -268,7 +271,12 @@ impl Game<'_> {
     }
 
     /// One button of the layout, as the mapping the player bound to it.
-    fn touch_action(&mut self, action: Action, down: bool) -> Result<()> {
+    fn touch_action(
+        &mut self,
+        action: Action,
+        down: bool,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<()> {
         match action {
             // Escape, with the same care the controller's B takes: a screen has to close
             // before the game does.
