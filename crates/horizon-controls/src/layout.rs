@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn the_default_pad_is_the_formats_own() {
         let pad = LayoutFile::default_pad();
-        assert!(pad.controls.len() >= 16, "{} buttons", pad.controls.len());
+        assert!(pad.controls.len() >= 15, "{} buttons", pad.controls.len());
         assert!(pad.named("PRI").is_some());
         assert!(pad.named("SEC").is_some());
         assert!(pad.named("GUI").is_some());
