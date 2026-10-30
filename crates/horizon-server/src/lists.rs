@@ -164,7 +164,16 @@ mod tests {
 
     #[test]
     fn edits_the_lists_while_stopped() {
-        let dir = std::env::temp_dir().join(format!("horizon-server-lists-{}", std::process::id()));
+        // A unique directory per test run: the process id is the same for every test in
+        // the binary, so two tests that share a name raced and one deleted the other's
+        // file between the write and the read.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-lists-{}-{unique}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(config::FILE), config::TEMPLATE).unwrap();
