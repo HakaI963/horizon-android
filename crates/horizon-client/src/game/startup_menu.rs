@@ -665,7 +665,6 @@ impl Loading {
             (Vec::new(), None)
         };
         let accounts = self.launcher_accounts();
-        let controls_preset = self.launcher_controls_preset();
         // Turn the Skins model before the model is built, so the frame drawn is the
         // frame the angle belongs to. A still figure reads as a drawing, and the point
         // of the page is that this is the player.
@@ -691,7 +690,6 @@ impl Loading {
             skins,
             chosen_skin: chosen_skin.clone(),
             accounts,
-            controls_preset,
             hosting: self.hosting_address(),
             sign_in_waiting: matches!(self.sign_in, Some(SignInState::Waiting(_))),
             news: news_stories(),
@@ -747,12 +745,18 @@ impl Loading {
             if !uploaded
                 && let Some(r) = &self.renderer
             {
-                horizon_overlay::with(|o| {
+                // The overlay answers whether it actually put a texture in the slot. A
+                // skin that failed to decode must not be remembered as uploaded: the
+                // page would keep an empty card, and a restart was the only cure.
+                let done = horizon_overlay::with(|o| {
                     o.set_launcher_skin_bytes(&r.device, &r.queue, path.as_deref(), fallback)
-                });
-                self.uploaded_skin = path;
-                self.skin_uploaded = true;
-                self.skin_from_pack = from_pack;
+                })
+                .unwrap_or(false);
+                if done {
+                    self.uploaded_skin = path;
+                    self.skin_uploaded = true;
+                    self.skin_from_pack = from_pack;
+                }
             }
         }
         if page == LauncherPage::Mods {
@@ -1181,7 +1185,16 @@ impl Loading {
                         horizon_client::msa::CANCELLED.to_string(),
                     ));
                 }
-                LauncherEvent::SetControls(preset) => self.set_controls_preset(&preset),
+                LauncherEvent::OpenControls => {
+                    // The pad is drawn over the world, so arranging it from the
+                    // launcher would show the player a page they cannot drag. The
+                    // editor is opened and the launcher closes behind it, which is
+                    // also where the panel's own "Move the buttons" lives.
+                    horizon_overlay::with(|o| o.open_controls_editor());
+                    self.menu.launcher_page = None;
+                    self.menu.launcher_notice =
+                        Some("Drag the buttons where you want them, then Save.".into());
+                }
                 // Only reachable on the bring-up card, which has its own handler.
                 LauncherEvent::Install | LauncherEvent::Restart => {}
                 // Settings travel as one archive in the folder a file manager can
@@ -1507,35 +1520,6 @@ impl Loading {
         self.menu.queue_entry(Action::Play { folder: world.folder }, "Host".into());
     }
 
-    /// Switch the built-in touch layout.
-    ///
-    /// `controls.json` carries the buttons; the preset is a key in it, so the choice
-    /// survives a restart and the engine reads the same file it always did. A layout
-    /// the player has arranged themselves keeps its buttons and only changes the key.
-    #[cfg(target_os = "android")]
-    fn set_controls_preset(&mut self, preset: &str) {
-        let path = horizon_client::gfx::controls_path();
-        let mut layout = if preset == "bedrock" {
-            bedrock_layout()
-        } else {
-            java_layout()
-        };
-        layout.preset = preset.to_string();
-        if let Err(error) = layout.save(&path) {
-            log::warn!("launcher: could not save the touch layout: {error}");
-            self.menu.launcher_notice = Some(format!("Could not save the layout: {error}"));
-            return;
-        }
-        // The HUD reads the layout once at start, so a preset saved here would only
-        // appear after a restart. Re-reading it is what makes the button do what it
-        // says.
-        horizon_overlay::with(|o| o.reload_layout());
-        self.menu.launcher_notice = Some(format!(
-            "Touch controls: {}",
-            if preset == "bedrock" { "Bedrock PE" } else { "Java Classic" }
-        ));
-    }
-
     /// The accounts the launcher offers: the signed-in one when there is one, plus
     /// every offline name this device has used.
     ///
@@ -1585,17 +1569,6 @@ impl Loading {
             }
         }
         accounts
-    }
-
-    /// The built-in touch layout in force, as the Profile page names it.
-    #[cfg(target_os = "android")]
-    fn launcher_controls_preset(&self) -> String {
-        let path = horizon_client::gfx::controls_path();
-        let preset = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value.get("preset")?.as_str().map(str::to_owned));
-        preset.unwrap_or_else(|| "java".to_string())
     }
 
     /// The address friends join on while this device hosts, if it does.
@@ -1769,7 +1742,10 @@ impl Loading {
             l("launcherBackground", "Animated launcher"),
             l("launcherBattery", "Battery saver"),
             d("launcherResolution", "Render resolution", "DEVICE", "%", 50.0, 200.0, 5.0),
-            d("launcherFps", "Frame limit", "DEVICE", "fps", 30.0, 120.0, 10.0),
+            // The same range the game's own Options screen offers, with its top end
+            // meaning "no cap". A launcher that stopped at 120 was capping a phone that
+            // can draw faster, and doing it where the player could not undo it.
+            d("launcherFps", "Frame limit", "DEVICE", "fps", 10.0, 260.0, 10.0),
             d("launcherScale", "Interface scale", "DEVICE", "%", 70.0, 140.0, 5.0),
             // The launcher's own page is the end of the list, so the game's options are
             // reached where they belong: in the game.
@@ -1842,7 +1818,7 @@ impl Loading {
                 // The frame limit is the game's own option, so it is written where the
                 // game reads it: a launcher slider that only changed a launcher number
                 // would be a control with nothing behind it.
-                self.settings.max_fps = value.round().clamp(30.0, 120.0) as u32;
+                self.settings.max_fps = value.round().clamp(10.0, 260.0) as u32;
                 self.apply_launcher_option("maxFps", self.settings.max_fps as f32);
             }
             "launcherScale" => {
@@ -2740,21 +2716,6 @@ fn local_address() -> Option<String> {
     socket.connect("8.8.8.8:80").ok()?;
     let address = socket.local_addr().ok()?.ip();
     (!address.is_loopback() && !address.is_unspecified()).then(|| address.to_string())
-}
-
-/// The Java Classic touch layout: the cross on the left, the two mouse buttons and
-/// jump on the right, the hotbar across the top. This is the layout Horizon shipped
-/// before the choice existed.
-#[cfg(target_os = "android")]
-fn java_layout() -> horizon_controls::Layout {
-    horizon_controls::Layout::java()
-}
-
-/// The Bedrock-style pad, which lives in the layout crate because it is a conversion
-/// of a documented format rather than a hand-placed arrangement.
-#[cfg(target_os = "android")]
-fn bedrock_layout() -> horizon_controls::Layout {
-    horizon_controls::Layout::bedrock()
 }
 
 /// The PNG's pixel size, read from its IHDR without decoding the pixels: the Skins

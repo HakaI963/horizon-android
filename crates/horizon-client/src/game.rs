@@ -11664,7 +11664,7 @@ impl ApplicationHandler for Game<'_> {
                     // a thumb that has left the glass should not have the character keep
                     // running for another frame to find out.
                     #[cfg(target_os = "android")]
-                    self.touch_frame()?;
+                    self.touch_frame(event_loop)?;
                     #[cfg(target_os = "android")]
                     self.overlay_line();
                     // Arrow-key camera controls belong to gameplay; chat and

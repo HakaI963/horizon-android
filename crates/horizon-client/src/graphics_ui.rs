@@ -405,7 +405,13 @@ impl H {
         let g = &mut s.horizon;
         match self {
             H::LodDistance => {
-                g.lod_distance = step(&[0, 64, 128, 256, 512, 1024], g.lod_distance, back)
+                // 8 and 16 and 32 first: a phone has the VRAM for a short far-terrain
+                // range and not for a long one, and the old list started at 64.
+                g.lod_distance = step(
+                    &[0, 8, 16, 32, 64, 128, 256, 512, 1024],
+                    g.lod_distance,
+                    back,
+                )
             }
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
@@ -954,7 +960,10 @@ mod tests {
                 .unwrap();
             assert_eq!(items[render + 1], item);
         }
-        for distance in [64, 128, 256, 512, 1024, 0] {
+        // The Android default is 96, which is not a member of the list, so the first
+        // step lands on the nearest one after it.
+        s.horizon.lod_distance = 0;
+        for distance in [8, 16, 32, 64, 128, 256, 512, 1024, 0] {
             item.cycle(&mut s, false, [854, 480]);
             assert_eq!(s.horizon.lod_distance, distance);
             assert_eq!(s.render_distance, near);

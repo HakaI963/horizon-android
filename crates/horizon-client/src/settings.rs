@@ -202,9 +202,11 @@ impl Default for Settings {
             gui_scale: 0,
             view_bobbing: true,
             gamma: 0.5,
-            // Vanilla's default, as for an options.txt without the key: a
-            // capped frame rate leaves the cores idle when VSync is off.
-            max_fps: 120,
+            // Unlimited. A phone's display is the limit worth having, and the option
+            // already knows that 260 means "no cap"; starting anywhere below it caps a
+            // device that could draw faster and hides the cost of a bad frame behind a
+            // number that never moves.
+            max_fps: 260,
             vsync: true,
             fullscreen: false,
             smooth_lighting: true,
@@ -657,7 +659,7 @@ mod tests {
     #[test]
     fn no_options_txt_paces_frames_like_an_empty_one() {
         let (fresh, empty) = (Settings::default(), Settings::parse(""));
-        assert_eq!(fresh.max_fps, 120);
+        assert_eq!(fresh.max_fps, 260);
         assert_eq!(fresh.max_fps, empty.max_fps);
         assert_eq!(fresh.vsync, empty.vsync);
         assert_eq!(fresh.inactivity_fps_limit, empty.inactivity_fps_limit);

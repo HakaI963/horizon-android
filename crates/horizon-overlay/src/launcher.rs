@@ -236,7 +236,6 @@ pub struct LauncherModel {
     /// The chosen skin's pixel size.
     pub skin_size: [u32; 2],
     /// Which built-in touch layout is in force: `"java"` or `"bedrock"`.
-    pub controls_preset: String,
     /// While a world is hosted: the address friends join on.
     pub hosting: Option<String>,
     /// A Microsoft sign-in is waiting on the browser.
@@ -321,7 +320,8 @@ pub enum LauncherEvent {
     RemoveAccount(u32),
     SignInMicrosoft,
     CancelSignIn,
-    SetControls(String),
+    /// Open the pad's arrange mode: the buttons become draggable.
+    OpenControls,
 }
 
 /// The "Blocks" palette, straight from `horizon_theme::BLOCKS_DARK`: the same
@@ -716,18 +716,11 @@ fn wrap(ui: &Ui, text: &str, max_w: f32) -> Vec<String> {
 /// The events a page may raise this frame.
 struct Sink<'a> {
     events: &'a mut Vec<LauncherEvent>,
-    live: bool,
 }
 
 impl<'a> Sink<'a> {
     fn push(&mut self, event: LauncherEvent) {
-        if self.live {
-            self.events.push(event);
-        }
-    }
-
-    fn live(&self) -> bool {
-        self.live
+        self.events.push(event);
     }
 }
 /// The whole launcher, edge to edge.
@@ -753,8 +746,12 @@ pub fn draw(
         NAV_GLOW.with(|g| g.set([0.0; NAV_ROWS]));
         NAV_HOVER.with(|h| h.set(None));
     }
-    let live = !matches!(opening, Some(t) if t < 1.0);
-    let mut sink = Sink { events: out, live };
+    // A tap is always a tap. The opening is a reveal, not a modal: the buttons are on
+    // the glass from the first frame, and a player who taps one before the animation
+    // has finished means it. Gating on the animation is what made the first launch
+    // look broken — the Play button and every tab did nothing until a restart, because
+    // the model recorded the tap and the event was thrown away.
+    let mut sink = Sink { events: out };
     let g = Grid::new(width, dpi);
     let rise = match opening {
         Some(t) => horizon_theme::RISE * (1.0 - horizon_theme::ease_out_cubic(t)) * dpi,
@@ -886,7 +883,7 @@ pub fn draw(
                 }
             }
         });
-    if model.editing && live {
+    if model.editing {
         rename_dialog(ui, model, fonts, c, dpi, width, height, &mut sink);
     }
 }
@@ -1007,9 +1004,9 @@ fn top_bar(
             hovered = Some(page);
         }
         if clicked {
-            if sink.live() {
-                model.page = page;
-            }
+            // The model is written here as well as the event pushed, so the page the
+            // glass shows changes on this frame rather than the next model report.
+            model.page = page;
             sink.push(LauncherEvent::Goto(page));
         }
         x += w;
@@ -2647,24 +2644,21 @@ fn profile_page(
             draw.add_text([x, y], rgba(c.muted, 1.0), "TOUCH CONTROLS");
         }
         y += 26.0 * dpi;
-        let java = model.controls_preset != "bedrock";
-        if secondary_button(ui, fonts, c, dpi, x, y, 140.0 * dpi, 32.0 * dpi, "Java classic") && !java
-        {
-            sink.push(LauncherEvent::SetControls("java".into()));
-        }
+        // One pad, and one way into it. The pad is the layout file, so there is no
+        // preset to choose between: what a player can change is where its buttons
+        // are, and that is the arrange mode the in-game panel opens.
         if secondary_button(
             ui,
             fonts,
             c,
             dpi,
-            x + 148.0 * dpi,
+            x,
             y,
-            120.0 * dpi,
+            200.0 * dpi,
             32.0 * dpi,
-            "Bedrock PE",
-        ) && java
-        {
-            sink.push(LauncherEvent::SetControls("bedrock".into()));
+            "Arrange the buttons",
+        ) {
+            sink.push(LauncherEvent::OpenControls);
         }
         y += 44.0 * dpi;
     }
@@ -3825,20 +3819,6 @@ fn skin_figure(
             ]),
         },
     ];
-    // The shadow the figure stands on, so the player is grounded rather than floating.
-    // It stays on the ground plane while the model tilts: the feet lift off it a little
-    // when the figure is tipped, and a shadow that followed them would slide up the
-    // card with them.
-    {
-        let feet = [cx, mid + 16.0 * u];
-        let rx = 7.0 * u;
-        draw.add_circle([feet[0], feet[1]], rx, rgba(0x000000, 0.30))
-            .filled(true)
-            .build();
-        draw.add_circle([feet[0], feet[1]], rx * 0.62, rgba(0x000000, 0.22))
-            .filled(true)
-            .build();
-    }
     struct Face {
         depth: f32,
         layer: u8,
@@ -3939,6 +3919,34 @@ fn skin_figure(
     }
 }
 
+/// The hotbar strip, drawn while the pad is being arranged.
+///
+/// It is invisible while playing: the game draws its own bar there, and a second row
+/// of nine squares over it was the bar drawn twice. But a player arranging their pad
+/// has to know where the strip is, because it is the one part of the layout that does
+/// not stay where they put it — it follows the game's own bar, and therefore the GUI
+/// scale.
+pub fn draw_hotbar_hint(ui: &Ui, strip: Option<crate::Rect>, dpi: f32) {
+    let Some(strip) = strip else {
+        return;
+    };
+    let draw = ui.get_window_draw_list();
+    draw.add_rect(
+        [strip.x, strip.y],
+        [strip.x + strip.width, strip.y + strip.height],
+        rgba(0x22d3ee, 0.85),
+    )
+    .thickness(1.5 * dpi)
+    .build();
+    // One tick per slot boundary, so the nine slots are countable.
+    for slot in 1..9 {
+        let x = strip.x + strip.width * (slot as f32 / 9.0);
+        draw.add_line([x, strip.y], [x, strip.y + strip.height], rgba(0x22d3ee, 0.45))
+            .thickness(1.0 * dpi)
+            .build();
+    }
+}
+
 /// The virtual mouse's cursor: a small arrow, drawn where the finger last put it.
 ///
 /// A phone has no pointer, and every Minecraft screen that is not the world hit-tests
@@ -3946,30 +3954,30 @@ fn skin_figure(
 /// the same shape over the world, over a menu and over a chest, and so that it is
 /// visibly *ours*: a player who cannot see a cursor has no way to know the mouse is
 /// on.
-pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
+pub fn draw_cursor(ui: &Ui, at: [f32; 2], scale: f32) {
     let draw = ui.get_window_draw_list();
-    // The arrow: a filled triangle with a tail, white with a black edge, which is the
-    // one pair of colours that reads on snow and on the Nether.
-    // Big enough to find on a phone's glass, which is what a cursor is for.
-    let s = 11.0 * dpi;
+    // A white arrow with a black outline, drawn as shapes rather than shipped as an
+    // image: crisp at every size, no texture, no atlas, and the same shape on every
+    // screen. The tip is the cursor's own point, which is what makes a click land
+    // where the player aimed rather than where the middle of the arrow is.
+    let s = 14.0 * scale.max(0.3);
     let [x, y] = at;
     let points = [
         [x, y],
         [x, y + s * 2.0],
-        [x + s * 0.55, y + s * 1.45],
-        [x + s * 0.9, y + s * 2.0],
-        [x + s * 1.2, y + s * 1.85],
-        [x + s * 0.85, y + s * 1.3],
-        [x + s * 1.5, y + s * 1.3],
+        [x + s * 0.52, y + s * 1.42],
+        [x + s * 0.86, y + s * 1.96],
+        [x + s * 1.16, y + s * 1.80],
+        [x + s * 0.82, y + s * 1.26],
+        [x + s * 1.44, y + s * 1.26],
     ];
-    // The outline first, as a slightly larger shape under the fill, and in the accent
-    // rather than black: the arrow is drawn over grass, stone, snow and the Nether, and
-    // a black arrow on a black menu is a cursor nobody can find.
+    // The outline first, a little wider than the fill, so the arrow reads on snow and
+    // on the Nether alike.
     for i in 0..points.len() {
         let a = points[i];
         let b = points[(i + 1) % points.len()];
-        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba(0xff8a22, 1.0))
-            .thickness(4.0 * dpi)
+        draw.add_line([a[0], a[1]], [b[0], b[1]], rgba(0x000000, 0.95))
+            .thickness(3.2 * scale.max(0.3))
             .build();
     }
     for i in 1..points.len() - 1 {
@@ -3977,75 +3985,6 @@ pub fn draw_cursor(ui: &Ui, at: [f32; 2], dpi: f32) {
             .filled(true)
             .build();
     }
-}
-
-/// The floating panel: the frame rate, the memory in use, and the way into the
-/// arrange mode.
-///
-/// It is a small window a player can drag by its title, not a full screen. That is the
-/// whole point of it: the numbers are worth glancing at while playing, and a screen
-/// that covers the game to show them is a screen nobody opens twice.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_info_panel(
-    ui: &Ui,
-    pos: &mut Option<[f32; 2]>,
-    dpi: f32,
-    width: f32,
-    height: f32,
-    status: &str,
-    edit: &mut bool,
-    close: &mut bool,
-    reset: &mut bool,
-    save: &mut bool,
-) {
-    // Wide enough for the longest line the engine reports, and tall enough for four
-    // buttons and the frame line. The panel is sized to its own text rather than to a
-    // guess: a status line clipped at the edge is a number a player cannot read.
-    let w = 250.0 * dpi;
-    let at = pos.get_or_insert([width - w - 16.0 * dpi, 64.0 * dpi]);
-    // Kept on the glass: a panel dragged past the edge can never be dragged back.
-    at[0] = at[0].clamp(0.0, (width - w).max(0.0));
-    at[1] = at[1].clamp(0.0, (height - 90.0 * dpi).max(0.0));
-    let mut moved = *at;
-    let _ = ui
-        .window("##info")
-        .flags(
-            WindowFlags::NO_COLLAPSE
-                | WindowFlags::NO_SCROLLBAR
-                | WindowFlags::NO_SCROLL_WITH_MOUSE
-                | WindowFlags::ALWAYS_AUTO_RESIZE
-                | WindowFlags::NO_SAVED_SETTINGS,
-        )
-        .position([at[0], at[1]], Condition::Always)
-        .size([w, 0.0], Condition::Always)
-        .build(|| {
-            if let Some([x, y]) = ui.window_pos().into() {
-                moved = [x, y];
-            }
-            ui.text("Horizon");
-            ui.separator();
-            // The frame line the engine reports: frame rate, memory, fingers.
-            ui.text_wrapped(status);
-            ui.separator();
-            // Full width, so the four of them read as one column of actions.
-            let bw = ui.content_region_avail()[0];
-            if ui.button_with_size(
-                if *edit { "Done arranging" } else { "Move the buttons" },
-                [bw, 26.0 * dpi],
-            ) {
-                *edit = !*edit;
-            }
-            if ui.button_with_size("Save layout", [bw, 26.0 * dpi]) {
-                *save = true;
-            }
-            if ui.button_with_size("Reset layout", [bw, 26.0 * dpi]) {
-                *reset = true;
-            }
-            if ui.button_with_size("Close", [bw, 26.0 * dpi]) {
-                *close = true;
-            }
-        });
-    *pos = Some(moved);
 }
 
 /// The name field, on a pass of its own over the whole screen.

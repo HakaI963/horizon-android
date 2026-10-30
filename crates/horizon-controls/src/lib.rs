@@ -3,154 +3,30 @@
 //!
 //! A phone has no keyboard and one pointer per finger, and the game is written
 //! against a keyboard and a mouse that is captured in the middle of the screen.
-//! Everything between those two shapes is here: where a button is, what pressing
-//! it means, how a drag on the empty glass becomes a camera turn, and nothing of
-//! the engine's. Keeping the model free of imgui is what lets the same layout be
-//! drawn as live widgets while it is being edited and as solid quads while it is
-//! being used, and let a test compare a tap against a button without a renderer.
+//! Everything between those two shapes is here: where a button is, what pressing it
+//! means, how a drag on the empty glass becomes a camera turn, and nothing of the
+//! engine's. Keeping the model free of imgui is what lets a layout be tested against
+//! a tap without a renderer.
+//!
+//! The layout itself is not invented here. It is read from the file format control
+//! pads have used for years — formulas over the screen's own numbers, sizes in dp,
+//! Android key codes — so a pad a player already has opens as it is.
+
+pub mod expr;
+pub mod keys;
+pub mod layout;
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+pub use layout::{
+    action_for_key, key_for_action, Action, ControlData, LayoutFile, SPECIAL_KEYBOARD,
+    SPECIAL_MENU, SPECIAL_MOUSE_MIDDLE, SPECIAL_MOUSE_PRIMARY, SPECIAL_MOUSE_SECONDARY,
+    SPECIAL_SCROLL_DOWN, SPECIAL_SCROLL_UP, SPECIAL_TOGGLE_CONTROLS, SPECIAL_VIRTUAL_MOUSE,
+};
 
-/// A request the game understands, named the way the engine names it. The wiring
-/// from this to the engine's own key and mouse state is a match over this list,
-/// which is the whole reason the list exists: a phone cannot send `KeyCode::Space`,
-/// but it can send `Jump`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-pub enum Action {
-    Forward,
-    Back,
-    Left,
-    Right,
-    Jump,
-    Sneak,
-    Sprint,
-    /// Creative flight, and the two buttons flight replaces: up and down.
-    Fly,
-    Up,
-    Down,
-    /// The two mouse buttons, held: mining and placing.
-    Mine,
-    Use,
-    /// Middle click: the creative inventory's picker.
-    Pick,
-    Inventory,
-    Drop,
-    /// The F key: the item in the main hand and the off hand trade places.
-    SwapOffhand,
-    Chat,
-    Command,
-    TabList,
-    Debug,
-    Pause,
-    /// The view bobbing and third-person toggle the F5 key carries.
-    View,
-    /// The F2 key: a screenshot, written to the instance's `screenshots` folder.
-    Screenshot,
-    /// Not a key at all: the button that opens the overlay's own settings panel.
-    /// It is in the layout because it has to be draggable like everything else, and
-    /// the overlay answers it instead of the game.
-    Menu,
-    /// The floating panel that shows the frame rate and the memory in use, and holds
-    /// the way into the arrange mode. Its own button, apart from `Menu`, because a
-    /// player wants the panel while the pad is still out of the way.
-    Panel,
-    /// The virtual mouse: a cursor the player moves with a finger, which the two mouse
-    /// buttons then click at. A toggle rather than a hold, because a hand that has to
-    /// keep one finger on it has no thumb left for the click.
-    Mouse,
-    /// F1: everything the game draws over the world goes away and comes back.
-    HideGui,
-    /// The phone's own keyboard, for the chat line and the command line.
-    Keyboard,
-    /// Leave the world and go back to the launcher.
-    ExitWorld,
-    Hotbar(u8),
-}
-
-impl Action {
-    /// The legend on the button. ASCII only: the font imgui ships is, and a
-    /// missing glyph is a box on screen.
-    pub fn label(self) -> &'static str {
-        match self {
-            Action::Forward => "W",
-            Action::Back => "S",
-            Action::Left => "A",
-            Action::Right => "D",
-            Action::Jump => "JUMP",
-            Action::Sneak => "SNEAK",
-            Action::Sprint => "RUN",
-            Action::Fly => "FLY",
-            Action::Up => "UP",
-            Action::Down => "DOWN",
-            Action::Mine => "MINE",
-            Action::Use => "USE",
-            Action::Pick => "PICK",
-            Action::Inventory => "BAG",
-            Action::Drop => "DROP",
-            Action::SwapOffhand => "F",
-            Action::Chat => "CHAT",
-            Action::Command => "CMD",
-            Action::TabList => "TAB",
-            Action::Debug => "F3",
-            Action::Pause => "ESC",
-            Action::View => "F5",
-            Action::Screenshot => "F2",
-            Action::Menu => "MENU",
-            Action::Panel => "INFO",
-            Action::Mouse => "MOUSE",
-            Action::HideGui => "HIDE",
-            Action::Keyboard => "KEY",
-            Action::ExitWorld => "BACK",
-            Action::Hotbar(_) => "",
-        }
-    }
-
-    /// Whether the button is the overlay's own business rather than the game's.
-    /// Handing these to the engine would be wrong twice over: there is no key for a
-    /// settings panel, and a player who cannot close it has no way back out.
-    ///
-    /// The virtual mouse is not in this list: it does not stop a key reaching the
-    /// game, it changes what a drag on the glass means, so the overlay reads it and
-    /// the game never hears of it.
-    pub fn is_overlay(self) -> bool {
-        matches!(self, Action::Menu | Action::Panel | Action::Mouse)
-    }
-
-    /// The number on a hotbar button, or the legend of anything else.
-    pub fn text(self) -> String {
-        match self {
-            Action::Hotbar(slot) => slot.to_string(),
-            other => other.label().to_owned(),
-        }
-    }
-
-    /// A tap is a keystroke: it is held until the finger lifts. Anything the game
-    /// treats as a toggle is a tap of its own, and the button lets go at once, so
-    /// that a player can leave flight on and still see the button release.
-    pub fn momentary(self) -> bool {
-        !matches!(
-            self,
-            Action::Forward
-                | Action::Back
-                | Action::Left
-                | Action::Right
-                | Action::Jump
-                | Action::Sneak
-                | Action::Sprint
-                | Action::Mine
-                | Action::Use
-                | Action::Up
-                | Action::Down
-        )
-    }
-}
-
-/// A place on the glass, in the same top-left pixel coordinates winit reports
-/// touch in.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// A rectangle on the glass, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -163,537 +39,144 @@ impl Rect {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 
-    /// Where the button is, and how big it is on this screen.
     pub fn center(self) -> [f32; 2] {
         [self.x + self.width / 2.0, self.y + self.height / 2.0]
     }
-
-    /// The rounded corner, and the line weight, both off the button's own size: a
-    /// layout scaled down to a small phone still reads.
-    pub fn rounding(self) -> f32 {
-        self.width.min(self.height) * 0.18
-    }
 }
 
-/// One button: what it sends, where it sits, and how large it is relative to the
-/// screen it was placed on.
-///
-/// A button is a rectangle, not a square. A touch pad is built out of wide tabs, tall
-/// D-pad arms and circles, and a square-only model cannot express any of them: the
-/// shape has to come from the layout, not from the button's own idea of what a button
-/// looks like.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub struct Control {
+/// A button of the layout, placed on a particular screen.
+#[derive(Clone, Debug)]
+pub struct Placed {
     pub action: Action,
-    /// The button's rectangle as fractions of the screen: left, top, width, height.
-    ///
-    /// This is the shape a layout file gives, and it is the one that is used when it is
-    /// present. `center`/`size` below are what an older file carries, and are read only
-    /// when this is absent, so a layout written by a previous build still loads.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bounds: Option<[f32; 4]>,
-    /// The middle of the button, as a fraction of the width and the height. A
-    /// phone rotates and a virtual display is not the size of the next one, so
-    /// nothing in a layout is stored in pixels.
-    #[serde(default)]
-    pub center: [f32; 2],
-    /// The side of the button as a fraction of the screen's shorter edge, so that
-    /// the same layout keeps its proportions in both orientations.
-    #[serde(default = "default_size")]
-    pub size: f32,
-    /// This button's own opacity, or `None` to follow the layout's. A player who
-    /// wants a barely-there movement pad and a solid mine button can have both.
-    /// Absent from a file written before it existed, so the layout's opacity wins.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opacity: Option<f32>,
-    /// The glyph drawn instead of the legend: `attack`, `jump`, `sneak`, `sprint`,
-    /// `inventory`, `swap`, `chat`, `pause`, `keyboard`, `perspective`, `forward`,
-    /// `back`, `left`, `right`, `mouse`, `gui`, `panel`. A button with none draws its
-    /// text, which is what the Java-style preset wants.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-    /// A circle rather than a rounded rectangle: Bedrock's own buttons are round.
-    #[serde(default)]
-    pub round: bool,
+    pub rect: Rect,
+    /// Which entry of the layout file it came from, for its colours and its corner.
+    pub index: usize,
 }
 
-fn default_size() -> f32 {
-    0.1
-}
-
-impl Control {
-    /// Where this button is on a `width`x`height` screen.
-    pub fn rect(&self, width: f32, height: f32, scale: f32) -> Rect {
-        if let Some([left, top, w, h]) = self.bounds {
-            // A rectangle scales about its own middle, so a button keeps the place it
-            // was put at while it grows: scaling from the top-left corner would walk
-            // the whole pad across the screen as the player turned the size up.
-            let (cx, cy) = (left + w / 2.0, top + h / 2.0);
-            let (bw, bh) = (w * width * scale, h * height * scale);
-            return Rect {
-                x: cx * width - bw / 2.0,
-                y: cy * height - bh / 2.0,
-                width: bw,
-                height: bh,
-            };
-        }
-        let side = width.min(height) * self.size * scale;
-        Rect {
-            x: self.center[0] * width - side / 2.0,
-            y: self.center[1] * height - side / 2.0,
-            width: side,
-            height: side,
-        }
-    }
-}
-
-/// The whole touch surface: buttons, the drag-anywhere area that turns the camera,
-/// and the two numbers the player can set without a keyboard.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The pad: the file, and the few numbers the player can change without editing it.
+#[derive(Clone, Debug)]
 pub struct Layout {
+    pub file: LayoutFile,
     /// Every button's size, multiplied by this.
     pub scale: f32,
-    /// How solid the buttons are drawn. A HUD that hides the world is worse than
-    /// no HUD.
+    /// How solid the buttons are drawn. A HUD that hides the world is worse than no
+    /// HUD.
     pub opacity: f32,
-    /// Pixels of glass per degree of camera turn. High for a thumb, which cannot
-    /// sweep far, and it is the one number a player notices within a minute.
+    /// Pixels of glass per degree of camera turn.
     pub look_sensitivity: f32,
-    /// Whether a drag on empty glass turns the camera at all. Off, a button is the
-    /// only way to look, which is what a Bluetooth mouse user wants.
+    /// Whether a drag on empty glass turns the camera at all.
     pub drag_to_look: bool,
-    /// Which built-in arrangement this is: `"java"` or `"bedrock"`. Kept in the file
-    /// so the launcher's own page can light the preset in force, and so a save from
-    /// the arrange panel does not forget which one the player picked.
-    #[serde(default = "default_preset")]
-    pub preset: String,
-    pub controls: Vec<Control>,
-}
-
-fn default_preset() -> String {
-    "java".to_string()
-}
-
-/// A button at a fraction of the screen and a fraction of its short edge.
-fn control(action: Action, x: f32, y: f32, size: f32) -> Control {
-    Control {
-        action,
-        bounds: None,
-        center: [x, y],
-        size,
-        opacity: None,
-        icon: None,
-        round: false,
-    }
-}
-
-/// A button from a shaped layout: a rectangle in fractions of the screen, an icon and
-/// a shape, with no centre or size of its own.
-fn shaped(
-    action: Action,
-    bounds: [f32; 4],
-    icon: Option<&str>,
-    round: bool,
-) -> Control {
-    Control {
-        action,
-        bounds: Some(bounds),
-        center: [bounds[0] + bounds[2] / 2.0, bounds[1] + bounds[3] / 2.0],
-        size: bounds[2].max(bounds[3]),
-        opacity: None,
-        icon: icon.map(str::to_owned),
-        round,
-    }
+    /// The density the layout is drawn at: dp to pixels. A phone's own, so a button
+    /// that is 50 dp is the same physical size on every screen.
+    pub density: f32,
 }
 
 impl Default for Layout {
-    /// The arrangement every launcher of this kind converged on, because a thumb
-    /// resting on the bottom-left corner reaches a cross of four buttons without
-    /// moving, and the one on the right reaches a cluster of them: movement left,
-    /// the two mouse buttons and jump right, the hotbar and the key row along the
-    /// top, and the two buttons nobody presses while playing in the corners.
-    ///
-    /// The numbers are the landscape a phone is held in, and they are chosen so that
-    /// no button's middle falls inside another's: a row of hotbar squares in the same
-    /// band as the inventory row swallows the taps meant for the row behind it, which
-    /// is the one mistake a HUD layout cannot be recovered from by a player who
-    /// cannot see why the bag will not open.
     fn default() -> Self {
-        Self::mojo()
+        Self::new(LayoutFile::default_pad())
     }
 }
 
 impl Layout {
-    /// The Pocket Edition pad: round buttons with icons, and a tall D-pad.
-    ///
-    /// Converted from that layout file's own scale. It stores a position as a fraction
-    /// of the space left over after the button — so `x = 0` is flush left and `10000`
-    /// flush right — and a size as a fraction of the screen's short edge. Both are
-    /// turned into the fractions this layout uses: `left = (1 - w) * x / 10000` and
-    /// `w = pct / 10000 * short / width`, with the phone's own 16:9 aspect taken as the
-    /// screen the file was drawn on.
-    ///
-    /// The shape is the point. Bedrock's buttons are round and its D-pad arms are tall,
-    /// and a square-only layout cannot look like it however the squares are placed.
-    pub fn bedrock() -> Self {
-        const ASPECT: f32 = 9.0 / 16.0;
-        let mut controls = Vec::new();
-        let mut put = |action: Action, x: f32, y: f32, pct: f32, icon: &str, round: bool| {
-            // `pct` is a fraction of the short edge, which on a landscape phone is the
-            // height; `x`/`y` are fractions of the room the button leaves behind.
-            let tall = pct / 10_000.0;
-            let wide = tall * ASPECT;
-            let left = (1.0 - wide) * (x / 10_000.0);
-            let top = (1.0 - tall) * (y / 10_000.0);
-            controls.push(Control {
-                action,
-                bounds: Some([left, top, wide, tall]),
-                center: [left + wide / 2.0, top + tall / 2.0],
-                size: wide.max(tall),
-                opacity: None,
-                icon: Some(icon.to_owned()),
-                round,
-            });
-        };
-        // The top bar: the Bedrock keys, and the keyboard on the far left.
-        put(Action::Screenshot, 447.0, 19.0, 1014.0, "perspective", true);
-        put(Action::Pause, 5541.0, 19.0, 1083.0, "pause", true);
-        put(Action::Chat, 5000.0, 19.0, 1083.0, "chat", true);
-        // The movement pad: four tall arms around a centre, sneak under the thumb.
-        put(Action::Forward, 1467.0, 4684.0, 1708.0, "forward", true);
-        put(Action::Back, 1465.0, 8792.0, 1681.0, "back", true);
-        put(Action::Left, 577.0, 6749.0, 1722.0, "left", true);
-        put(Action::Right, 2355.0, 6761.0, 1708.0, "right", true);
-        put(Action::Sneak, 1468.0, 6756.0, 1722.0, "sneak", true);
-        // The right thumb: attack and use under it, jump above, sprint between.
-        put(Action::Mine, 8219.0, 6884.0, 1903.0, "attack", true);
-        put(Action::Use, 9429.0, 8501.0, 1722.0, "use", true);
-        put(Action::Sprint, 8218.0, 4061.0, 1986.0, "sprint", true);
-        put(Action::Jump, 9480.0, 2792.0, 1972.0, "jump", true);
-        put(Action::Inventory, 6785.0, 10000.0, 1014.0, "inventory", true);
-        put(Action::SwapOffhand, 7850.0, 9985.0, 1000.0, "swap", true);
-        // The pick button doubles as the debug overlay, which is the only way a phone
-        // reaches F3.
-        put(Action::Pick, 317.0, 25.0, 1028.0, "debug", true);
-        // The menu button is Horizon's own: the launcher's overlay panel.
-        put(Action::Menu, 44.0, 19.0, 1014.0, "keyboard", true);
+    pub fn new(file: LayoutFile) -> Self {
         Self {
+            file,
             scale: 1.0,
-            opacity: 0.42,
+            opacity: 0.85,
             look_sensitivity: 6.0,
             drag_to_look: true,
-            preset: "bedrock".to_string(),
-            controls,
+            density: 1.0,
         }
     }
 
-    /// The default pad: a D-pad, the two mouse buttons, and the key row.
-    ///
-    /// The GUI button is the one a player presses to get the controls out of the way,
-    /// so it is `HideGui` here: hiding everything the game draws over the world is what
-    /// that button means once there is nothing to switch to.
-    pub fn mojo() -> Self {
-        let mut controls = Vec::new();
-        // A button in screen fractions, with its own icon and shape.
-        let mut put = |action: Action, bounds: [f32; 4], icon: Option<&str>, round: bool| {
-            controls.push(Control {
-                action,
-                bounds: Some(bounds),
-                center: [bounds[0] + bounds[2] / 2.0, bounds[1] + bounds[3] / 2.0],
-                size: bounds[2].max(bounds[3]),
-                opacity: None,
-                icon: icon.map(str::to_owned),
-                round,
-            });
-        };
-        // The top row: five wide tabs and the mouse, spread across the width. They are
-        // placed as fractions of the screen rather than copied from a layout drawn for
-        // a wider one, where the same numbers leave the tabs overlapping each other on
-        // a phone that is nearly square.
-        let tab = [0.0, 0.0, 0.115, 0.105];
-        put(Action::Debug, tab, Some("debug"), false);
-        put(Action::View, [0.118, 0.0, 0.115, 0.105], Some("perspective"), false);
-        put(Action::Chat, [0.236, 0.0, 0.115, 0.105], Some("chat"), false);
-        put(Action::Keyboard, [0.354, 0.0, 0.121, 0.105], Some("keyboard"), false);
-        put(Action::TabList, [0.478, 0.0, 0.115, 0.105], None, false);
-        put(Action::Mouse, [0.878, 0.0, 0.115, 0.105], Some("mouse"), false);
-        // The movement cross: four arms around a centre, on the left where a thumb
-        // rests. Sneak is the centre, which is where a thumb that is already on the
-        // pad can reach it without leaving the direction it is holding.
-        put(Action::Forward, [0.120, 0.400, 0.095, 0.165], Some("forward"), false);
-        put(Action::Left, [0.020, 0.570, 0.095, 0.165], Some("left"), false);
-        put(Action::Right, [0.220, 0.570, 0.095, 0.165], Some("right"), false);
-        put(Action::Back, [0.120, 0.740, 0.095, 0.165], Some("back"), false);
-        put(Action::Sneak, [0.120, 0.570, 0.095, 0.165], Some("sneak"), false);
-        // The two mouse buttons, out of the cross's way: mining above the pad and
-        // placing below it, so neither sits under a finger that is walking.
-        put(Action::Mine, [0.020, 0.400, 0.095, 0.165], Some("attack"), false);
-        put(Action::Use, [0.020, 0.740, 0.095, 0.165], Some("use"), false);
-        // The right thumb: jump and the bag.
-        put(Action::Jump, [0.870, 0.560, 0.105, 0.190], Some("jump"), false);
-        put(Action::Inventory, [0.870, 0.770, 0.095, 0.165], Some("inventory"), false);
-        // GUI: everything the game draws goes away, and comes back.
-        put(Action::HideGui, [0.330, 0.740, 0.085, 0.150], Some("gui"), true);
-        // The floating panel's handle, out of the way of every thumb.
-        put(Action::Panel, [0.905, 0.115, 0.040, 0.082], Some("panel"), true);
-        // The hotbar: nine slots, invisible, placed by the GUI scale rather than by
-        // this list. They are here so the layout has them to place; these rectangles
-        // are only what a frame with no scale yet falls back to.
-        for slot in 1..=9u8 {
-            let i = f32::from(slot - 1);
-            controls.push(Control {
-                action: Action::Hotbar(slot),
-                bounds: Some([0.345 + i * 0.0345, 0.905, 0.030, 0.052]),
-                center: [0.345 + i * 0.0345 + 0.015, 0.905 + 0.026],
-                size: 0.052,
-                opacity: Some(0.0),
-                icon: None,
-                round: false,
-            });
-        }
-        Self {
-            scale: 1.0,
-            opacity: 0.42,
-            look_sensitivity: 6.0,
-            drag_to_look: true,
-            preset: "mojo".to_string(),
-            controls,
-        }
-    }
-
-    /// The Java-style pad: a cross of four keys, the mouse buttons, and the key row.
-    pub fn java() -> Self {
-        let mut controls = vec![
-            control(Action::Forward, 0.10, 0.70, 0.105),
-            control(Action::Left, 0.045, 0.815, 0.105),
-            control(Action::Right, 0.155, 0.815, 0.105),
-            control(Action::Back, 0.10, 0.93, 0.105),
-            control(Action::Sneak, 0.235, 0.93, 0.095),
-            control(Action::Sprint, 0.235, 0.80, 0.09),
-            control(Action::Mine, 0.855, 0.885, 0.155),
-            control(Action::Use, 0.70, 0.885, 0.125),
-            control(Action::Jump, 0.925, 0.72, 0.12),
-            control(Action::Up, 0.80, 0.66, 0.09),
-            control(Action::Down, 0.945, 0.60, 0.09),
-            control(Action::Fly, 0.675, 0.72, 0.09),
-            control(Action::Pick, 0.96, 0.47, 0.08),
-            control(Action::Menu, 0.045, 0.05, 0.075),
-            // The two keys that fit in the gap between the menu button and the
-            // hotbar: the off hand and a screenshot, which vanilla reaches with F
-            // and F2 and a finger would otherwise have no way to press.
-            control(Action::SwapOffhand, 0.18, 0.05, 0.05),
-            control(Action::Screenshot, 0.24, 0.05, 0.05),
-            control(Action::Pause, 0.045, 0.155, 0.075),
-            control(Action::Inventory, 0.55, 0.155, 0.08),
-            control(Action::Drop, 0.63, 0.155, 0.08),
-            control(Action::Chat, 0.71, 0.155, 0.08),
-            control(Action::Command, 0.79, 0.155, 0.08),
-            control(Action::TabList, 0.87, 0.155, 0.08),
-            control(Action::Debug, 0.95, 0.155, 0.08),
-            control(Action::View, 0.95, 0.05, 0.075),
-        ];
-        for slot in 1..=9u8 {
-            controls.push(control(
-                Action::Hotbar(slot),
-                0.30 + f32::from(slot - 1) * 0.05,
-                0.05,
-                0.05,
-            ));
-        }
-        Self {
-            scale: 1.0,
-            opacity: 0.42,
-            look_sensitivity: 6.0,
-            drag_to_look: true,
-            preset: "java".to_string(),
-            controls,
-        }
-    }
-
-    /// The layout on disk, if there is one and it still has buttons in it. A file
-    /// from an older build, or one a player dragged every button out of, is not a
-    /// layout.
-    pub fn load(path: &Path) -> Option<Self> {
-        let text = std::fs::read_to_string(path).ok()?;
-        let layout: Self = serde_json::from_str(&text).ok()?;
-        if layout.controls.is_empty() {
-            log::warn!("controls: {} has no buttons, using the default layout", path.display());
-            return None;
-        }
-        let mut layout = layout;
-        layout.clamp();
-        log::info!(
-            "controls: read {} buttons from {}",
-            layout.controls.len(),
-            path.display()
-        );
-        Some(layout)
+    /// Read the pad from disk, or the compiled-in default when there is none.
+    pub fn load(path: &Path) -> Self {
+        Self::new(LayoutFile::load(path).unwrap_or_else(LayoutFile::default_pad))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let text = serde_json::to_string_pretty(self)
-            .map_err(|error| std::io::Error::other(format!("controls.json: {error}")))?;
-        std::fs::write(path, text)
+        self.file.save(path)
     }
 
-    /// Nothing that would make the HUD unusable is allowed to survive a read or an
-    /// edit: a zero-sized button cannot be pressed, and a button off the screen
-    /// cannot be dragged back by a finger that cannot see it.
-    fn clamp(&mut self) {
-        self.scale = self.scale.clamp(0.5, 2.0);
-        self.opacity = self.opacity.clamp(0.05, 1.0);
-        self.look_sensitivity = self.look_sensitivity.clamp(0.5, 40.0);
-        for control in &mut self.controls {
-            control.center = [
-                control.center[0].clamp(0.02, 0.98),
-                control.center[1].clamp(0.02, 0.98),
-            ];
-            control.size = control.size.clamp(0.03, 0.4);
-            // Zero is a real value, not a mistake: the hotbar row is invisible on
-            // purpose, because the game draws its own hotbar underneath it and the
-            // buttons only exist to make the slots tappable.
-            control.opacity = control
-                .opacity
-                .map(|opacity| if opacity <= 0.0 { 0.0 } else { opacity.clamp(0.05, 1.0) });
-            if let Some(bounds) = &mut control.bounds {
-                // A button has to keep its middle on the glass: a rectangle that has
-                // been pushed past the edge can still be dragged back, but one whose
-                // centre is gone cannot be seen to drag.
-                // A side is bounded by the glass it is on, not by a minimum that would
-                // flatten the shape: a tab scaled right down is still a tab, and the
-                // minimum size is enforced on the longest side by `set_control_size`.
-                let (w, h) = (bounds[2].clamp(0.001, 1.0), bounds[3].clamp(0.001, 1.0));
-                let cx = (bounds[0] + bounds[2] / 2.0).clamp(0.01, 0.99);
-                let cy = (bounds[1] + bounds[3] / 2.0).clamp(0.01, 0.99);
-                *bounds = [cx - w / 2.0, cy - h / 2.0, w, h];
-                control.center = [cx, cy];
-            }
-        }
-    }
-
-    /// Where every button is on this screen. Buttons that have been dragged off the
-    /// glass are left in the list — they come back when the screen grows — but they
-    /// cannot be pressed and are not drawn.
-    pub fn buttons(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
-        self.controls
+    /// Where every button is on a `width`x`height` screen.
+    pub fn buttons(&self, width: f32, height: f32) -> Vec<Placed> {
+        self.file
+            .controls
             .iter()
-            .map(|control| (control.action, control.rect(width, height, self.scale)))
-            .filter(|(_, rect)| {
-                rect.x > -rect.width
-                    && rect.y > -rect.height
-                    && rect.x < width
-                    && rect.y < height
+            .enumerate()
+            .map(|(index, control)| {
+                let [x, y] = control.position(width, height, self.density);
+                let w = control.px_width(self.density) * self.scale;
+                let h = control.px_height(self.density) * self.scale;
+                // Scaling about the middle, so a button keeps the place it was put at
+                // while it grows.
+                let cx = x + control.px_width(self.density) / 2.0;
+                let cy = y + control.px_height(self.density) / 2.0;
+                let action = control.action();
+                Placed {
+                    action,
+                    rect: Rect {
+                        x: cx - w / 2.0,
+                        y: cy - h / 2.0,
+                        width: w,
+                        height: h,
+                    },
+                    index,
+                }
             })
             .collect()
     }
 
-    /// The same rectangles front to back: the smallest first, so that the first one a
-    /// finger is matched against is the one it can see most of, and the one it gets.
-    /// Painting walks the list backwards for the same reason — the button that wins
-    /// the tap has to be the one drawn on top.
-    pub fn front_to_back(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
-        let mut buttons = self.buttons(width, height);
-        buttons.sort_by(|a, b| {
-            a.1.width
-                .partial_cmp(&b.1.width)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        buttons
+    /// The button a point lands on, topmost first. Later entries are drawn over
+    /// earlier ones, so they win the tap.
+    pub fn hit(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Placed> {
+        self.buttons(width, height)
+            .into_iter()
+            .rev()
+            .find(|placed| placed.rect.contains(x, y))
     }
 
-    /// The same list, with the hotbar row placed over the bar the game actually draws.
-    ///
-    /// The hotbar is the one part of the layout that cannot be a fixed fraction of the
-    /// screen: its position and size come from the GUI scale and the window, and both
-    /// are the player's to change. So its nine buttons are worked out from the same
-    /// numbers the HUD uses — a 182x22 bar centred at the bottom, one 20-pixel slot per
-    /// item — and converted back to glass pixels. Move the scale and the taps move with
-    /// the bar; there is no second layout to keep in step.
-    pub fn buttons_with_hotbar(&self, width: f32, height: f32, gui: f32) -> Vec<(Action, Rect)> {
-        let mut buttons = self.front_to_back(width, height);
-        if gui <= 0.0 {
-            return buttons;
-        }
-        // `HudBatch` works in GUI pixels: the bar is 182 wide and 22 tall, its left
-        // edge is the centre minus 91, and the selection box starts one pixel out.
-        let (gw, gh) = (width / gui, height / gui);
-        let left = (gw / 2.0).floor() - 91.0;
-        let top = gh - 22.0;
-        for (action, rect) in &mut buttons {
-            let Action::Hotbar(slot) = action else {
-                continue;
-            };
-            let slot = f32::from(*slot);
-            if !(1.0..=9.0).contains(&slot) {
-                continue;
-            }
-            // Slot n covers the 20-pixel column the game draws it in, and the whole
-            // height of the bar so a thumb that lands high still selects it.
-            *rect = Rect {
-                x: (left + (slot - 1.0) * 20.0) * gui,
-                y: (top - 1.0) * gui,
-                width: 20.0 * gui,
-                height: 24.0 * gui,
-            };
-        }
-        // Smallest first, the same order `front_to_back` gives: the hotbar is the
-        // narrowest thing in its band, so it wins the taps meant for it and a wider
-        // button behind it cannot swallow them.
-        buttons.sort_by(|a, b| {
-            a.1.width
-                .partial_cmp(&b.1.width)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        buttons
+    pub fn control(&self, index: usize) -> Option<&ControlData> {
+        self.file.controls.get(index)
     }
 
-    /// A button's icon and shape, when the layout gave it one.
-    pub fn control_look(&self, action: Action) -> Option<(Option<String>, bool)> {
-        self.controls
-            .iter()
-            .find(|control| control.action == action)
-            .map(|control| (control.icon.clone(), control.round))
-    }
-
-    /// The opacity a button is drawn at: its own, if it has one, else the layout's.
-    pub fn opacity_of(&self, action: Action) -> f32 {
-        self.controls
-            .iter()
-            .find(|control| control.action == action)
-            .and_then(|control| control.opacity)
-            .unwrap_or(self.opacity)
+    /// The label a button draws, from its own name in the file.
+    pub fn label(&self, index: usize) -> &str {
+        self.file
+            .controls
+            .get(index)
+            .map(|control| control.name.as_str())
+            .unwrap_or("")
     }
 }
 
-/// One finger on the glass, and what it was doing when it landed.
+/// A finger on the glass.
+#[derive(Clone, Debug)]
 struct Finger {
-    /// winit's touch id, which is the hardware slot number on Android.
     id: u64,
-    x: f32,
-    y: f32,
-    /// The button it pressed, if it landed on one. It keeps pressing that button
-    /// even after sliding off it, which is what a player expects from a D-pad and
-    /// what Minecraft's own touch controls do.
+    /// The button it landed on, if any.
     control: Option<Action>,
-    /// Whether it is turning the camera, and where the drag started.
+    /// Which entry of the file that button was.
+    index: Option<usize>,
+    /// Whether it is turning the camera.
     looking: bool,
     /// Whether it is dragging the virtual mouse's cursor.
     pointing: bool,
+    /// Whether the button it holds is a toggle that this press turned on.
+    toggled: bool,
+    /// Whether it has left the button it started on. A finger that slides off a
+    /// held button releases it, the way a physical button does.
+    slipped: bool,
 }
 
-/// The touch state of one frame: which buttons are held, and how far the camera
-/// has been asked to turn since the game last looked.
+/// The pad, and every finger on it.
 pub struct Hud {
     pub layout: Layout,
     /// The layout is on screen as live widgets, so a finger can drag it. While this
-    /// is set nothing is sent to the game: editing a HUD should not mine a block.
+    /// is set nothing is sent to the game.
     pub edit: bool,
-    /// The button the editor is pointed at. Tapping a button while editing selects
-    /// it, and the panel then changes that one button's own size and opacity.
-    selected: Option<Action>,
+    /// The button the editor is pointed at.
+    selected: Option<usize>,
     fingers: Vec<Finger>,
     held: BTreeSet<Action>,
     /// Edges to hand to the engine: `true` is a press, `false` a release. They
@@ -701,26 +184,32 @@ pub struct Hud {
     /// ticks and a tap can begin and end inside one frame at 120 fps.
     edges: Vec<(Action, bool)>,
     look: [f32; 2],
-    /// The GUI scale in force, as the platform last drew a HUD. The hotbar row is
-    /// placed from it, because that is the one part of the layout that follows the
-    /// game's own bar rather than the screen's edge. `0` means the platform has not
-    /// said yet, and the row stays where the layout put it.
+    /// The pad is on the glass. The GUI button flips this, and while it is off every
+    /// button goes except the two that can bring it back: the GUI button itself and
+    /// the virtual mouse. That exception is the format's own rule, and without it the
+    /// button that hides the pad would hide its own way back.
+    pub visible: bool,
+    /// The GUI scale in force, as the platform last drew a HUD. The hotbar strip is
+    /// placed from it.
     gui_scale: f32,
-    /// The virtual mouse is out: a finger on bare glass moves a cursor instead of
-    /// turning the camera, and the two mouse buttons click at it.
-    ///
-    /// A phone has no pointer, and a game written for one puts its inventory, its
-    /// furnaces and its creative menu behind a cursor position. Without this, a player
-    /// can open the bag and then not press anything in it.
+    /// The virtual mouse is out.
     pub mouse: bool,
-    /// Where that cursor is, in the same pixels the buttons are in, and how far it has
-    /// moved since the game last read it. The engine adds the movement to its own
-    /// pointer, so the two cannot drift apart when a screen changes the GUI scale.
     cursor: [f32; 2],
     cursor_moved: [f32; 2],
-    /// Whether the cursor has been placed at all. The first drag of a fresh mouse
-    /// starts where the finger landed rather than sweeping in from the corner.
     cursor_placed: bool,
+    /// How far the cursor travels per pixel of finger, and how large it is drawn. Both
+    /// are the player's: a thumb that sweeps the glass and a cursor that crosses the
+    /// screen in one flick is a mouse that cannot be aimed.
+    pub mouse_speed: f32,
+    pub mouse_scale: f32,
+    /// The hotbar slot the last touch on the strip selected, so sliding along it
+    /// sends one key per slot crossed rather than one per frame.
+    hotbar_slot: Option<u8>,
+    /// When the strip was last tapped, and on which slot: a double tap swaps hands.
+    hotbar_tap: Option<(u8, std::time::Instant)>,
+    /// Where each looking finger was last frame, so a drag is the movement since
+    /// then rather than the whole sweep from where it landed.
+    positions: Vec<(u64, f32, f32)>,
 }
 
 impl Default for Hud {
@@ -739,147 +228,287 @@ impl Hud {
             held: BTreeSet::new(),
             edges: Vec::new(),
             look: [0.0, 0.0],
+            visible: true,
             gui_scale: 0.0,
             mouse: false,
             cursor: [0.0, 0.0],
             cursor_moved: [0.0, 0.0],
             cursor_placed: false,
+            mouse_speed: 1.0,
+            mouse_scale: 1.0,
+            hotbar_slot: None,
+            hotbar_tap: None,
+            positions: Vec::new(),
         }
     }
 
-    /// A layout dropped onto a phone that is not the one it was drawn on: nothing
-    /// to do but read it back.
     pub fn load(path: &Path) -> Self {
-        Self::new(Layout::load(path).unwrap_or_default())
+        Self::new(Layout::load(path))
     }
 
     pub fn save(&self, path: &Path) {
         if let Err(error) = self.layout.save(path) {
-            log::error!("controls: cannot write {}: {error}", path.display());
-        } else {
-            log::info!("controls: wrote {}", path.display());
+            log::warn!("controls: could not save {}: {error}", path.display());
         }
     }
 
-    /// A finger went down at `x`x`y` on a `width`x`height` screen, and says whether a
-    /// button of the layout caught it. Which button, if any, it landed on is decided
-    /// here and never revisited: a finger that slides off keeps the button it pressed,
-    /// and one that lands on nothing is free to turn the camera. The glass it landed on
-    /// nothing with is otherwise the game's to have, so whoever is told about the
-    /// finger needs the answer to that question, not just the button.
+    /// Tell the layout how many glass pixels one GUI pixel is worth this frame. The
+    /// hotbar strip is placed from it, so the taps land on the slots the game drew.
+    pub fn set_gui_scale(&mut self, scale: f32) {
+        self.gui_scale = scale.max(0.0);
+    }
+
+    /// Where the game draws its hotbar, in glass pixels.
+    ///
+    /// The numbers are the game's own: a 182x22 bar centred at the bottom, one
+    /// 20-pixel slot per item, all in GUI pixels and therefore multiplied by the
+    /// scale. This is why the strip follows the GUI scale and the window rather than
+    /// a fixed fraction of the screen.
+    pub fn hotbar_rect(&self, width: f32, height: f32) -> Option<Rect> {
+        if self.gui_scale <= 0.0 {
+            return None;
+        }
+        let (gw, gh) = (width / self.gui_scale, height / self.gui_scale);
+        let left = (gw / 2.0).floor() - 91.0;
+        let top = gh - 22.0;
+        Some(Rect {
+            x: left * self.gui_scale,
+            y: (top - 1.0) * self.gui_scale,
+            width: 182.0 * self.gui_scale,
+            height: 24.0 * self.gui_scale,
+        })
+    }
+
+    /// A finger went down. Returns whether the pad took it: `false` means it is the
+    /// game's, and a drag on it turns the camera.
     pub fn down(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) -> bool {
-        let hit = self
-            .buttons(width, height)
-            .into_iter()
-            .find(|(_, rect)| rect.contains(x, y))
-            .map(|(action, _)| action);
-        // While the layout is being arranged a finger picks its button up instead of
-        // pressing it, and turns nothing: editing a HUD must not mine a block. The
-        // panel's own button is the exception: it is the only way back to the switch
-        // that ends the arranging, and a MENU that can only be dragged puts the panel
-        // behind a door with no handle.
-        let editing = self.edit;
-        // A finger on bare glass does one of two things, and which one is the mouse
-        // toggle's whole job: it turns the camera, or it drags the cursor.
-        let pointing = !editing && self.mouse && hit.is_none();
-        let looking = !editing && !self.mouse && hit.is_none() && self.layout.drag_to_look;
-        if pointing {
-            // The cursor starts under the finger that first drags it, and then follows
-            // the finger's own movement. It does not jump to where the finger landed:
-            // a player who taps a corner to move the cursor a little would otherwise
-            // send it across the screen.
-            self.cursor = [x, y];
-            self.cursor_placed = true;
-        }
-        if editing {
-            // The button a finger lands on becomes the one the panel edits; landing
-            // on bare glass selects nothing.
-            self.selected = hit;
-        }
-        if !editing || hit.is_some_and(Action::is_overlay) {
-            if let Some(action) = hit {
-                self.press(action);
+        // The hotbar strip first: it sits over the game's own bar, and it is the one
+        // place a tap means a slot rather than a key.
+        if let Some(strip) = self.hotbar_rect(width, height)
+            && strip.contains(x, y)
+            && !self.edit
+        {
+            let slot = hotbar_slot(strip, x);
+            self.hotbar_slot = Some(slot);
+            self.press(Action::Hotbar(slot));
+            // A second tap on the same slot swaps hands, which is what a player
+            // expects from a hotbar they can touch.
+            let now = std::time::Instant::now();
+            if let Some((last, at)) = self.hotbar_tap
+                && last == slot
+                && now.duration_since(at) < std::time::Duration::from_millis(300)
+            {
+                self.press(Action::SwapOffhand);
+                self.hotbar_tap = None;
+            } else {
+                self.hotbar_tap = Some((slot, now));
             }
+            self.fingers.push(Finger {
+                id,
+                control: None,
+                index: None,
+                looking: false,
+                pointing: false,
+                toggled: false,
+                slipped: false,
+            });
+            return true;
+        }
+
+        let hit = self.layout.hit(x, y, width, height);
+        if self.edit {
+            // While arranging, a finger picks its button up instead of pressing it:
+            // editing a HUD must not mine a block.
+            if let Some(placed) = hit {
+                self.selected = Some(placed.index);
+                self.fingers.push(Finger {
+                    id,
+                    control: Some(placed.action),
+                    index: Some(placed.index),
+                    looking: false,
+                    pointing: false,
+                    toggled: false,
+                    slipped: false,
+                });
+                return true;
+            }
+            self.fingers.push(Finger {
+                id,
+                control: None,
+                index: None,
+                looking: false,
+                pointing: false,
+                toggled: false,
+                slipped: false,
+            });
+            return false;
+        }
+        if let Some(placed) = hit {
+            let toggle = self
+                .layout
+                .control(placed.index)
+                .is_some_and(|control| control.is_toggle);
+            // A toggle flips on the press and stays flipped: the finger lifts, the key
+            // does not. That is what makes sneak and sprint usable with a thumb.
+            if toggle {
+                if self.held.contains(&placed.action) {
+                    self.release(placed.action);
+                } else {
+                    self.press(placed.action);
+                }
+            } else {
+                self.press(placed.action);
+            }
+            self.fingers.push(Finger {
+                id,
+                control: Some(placed.action),
+                index: Some(placed.index),
+                looking: false,
+                pointing: false,
+                toggled: toggle,
+                slipped: false,
+            });
+            return true;
+        }
+        // Bare glass: the cursor when the mouse is out, the camera otherwise. The
+        // cursor does not jump to the finger — a touchpad drag moves the pointer by the
+        // distance the finger went, which is the whole difference between a mouse and a
+        // finger pressed on the thing it wants to click.
+        let pointing = self.mouse;
+        if pointing {
+            if !self.cursor_placed {
+                self.cursor = [x, y];
+                self.cursor_placed = true;
+            }
+            self.remember_position(id, x, y);
         }
         self.fingers.push(Finger {
             id,
-            x,
-            y,
-            control: hit,
-            looking,
+            control: None,
+            index: None,
+            looking: !pointing && self.layout.drag_to_look,
             pointing,
+            toggled: false,
+            slipped: false,
         });
-        log::info!(
-            "controls: finger {id} down at {x:.0}x{y:.0} on {}",
-            match hit {
-                Some(action) if editing => format!("{} being moved", action.text()),
-                Some(action) => format!("{}", action.text()),
-                None if looking => "the look area".to_owned(),
-                None => "nothing".to_owned(),
-            }
-        );
-        hit.is_some()
+        false
     }
 
-    /// Slide a finger that is already down. While the layout is being edited this
-    /// moves the button the finger picked up; otherwise where it lands matters only
-    /// if it is still on a button, and how far it travelled is what turns the camera.
+    /// A finger moved.
     pub fn drag(&mut self, id: u64, x: f32, y: f32, width: f32, height: f32) {
-        if self.edit {
-            if let Some(action) = self
-                .fingers
-                .iter()
-                .find(|finger| finger.id == id)
-                .and_then(|finger| finger.control)
-            {
-                self.move_button(action, [x, y], width, height);
+        // Sliding along the hotbar strip sweeps the slots, one key per slot crossed.
+        if let Some(strip) = self.hotbar_rect(width, height)
+            && strip.contains(x, y)
+            && self.hotbar_slot.is_some()
+            && !self.edit
+        {
+            let slot = hotbar_slot(strip, x);
+            if self.hotbar_slot != Some(slot) {
+                self.hotbar_slot = Some(slot);
+                self.press(Action::Hotbar(slot));
             }
             return;
         }
-        let Some(finger) = self.fingers.iter_mut().find(|finger| finger.id == id) else {
+        let Some(index) = self.fingers.iter().position(|finger| finger.id == id) else {
             return;
         };
-        let dx = x - finger.x;
-        let dy = y - finger.y;
-        finger.x = x;
-        finger.y = y;
-        if finger.pointing {
-            self.cursor = [x, y];
-            self.cursor_moved[0] += dx;
-            self.cursor_moved[1] += dy;
-        } else if finger.looking {
+        let (looking, pointing) = {
+            let finger = &self.fingers[index];
+            (finger.looking, finger.pointing)
+        };
+        if self.edit {
+            // Dragging the button the editor has selected moves it, and the move is
+            // written back as a formula so it survives a different screen.
+            if let Some(button) = self.selected {
+                self.move_button(button, x, y, width, height);
+            }
+            return;
+        }
+        if pointing {
+            // Relative: the movement since the last frame, times the player's own speed.
+            // The cursor is clamped to the glass so it cannot be lost off an edge, and
+            // the delta the game sees is the clamped movement, not the finger's.
+            let last = self.last_position(id).unwrap_or((x, y));
+            let speed = self.mouse_speed.max(0.05);
+            let (mx, my) = ((x - last.0) * speed, (y - last.1) * speed);
+            let before = self.cursor;
+            self.cursor[0] = (self.cursor[0] + mx).clamp(0.0, width.max(1.0));
+            self.cursor[1] = (self.cursor[1] + my).clamp(0.0, height.max(1.0));
+            self.cursor_moved[0] += self.cursor[0] - before[0];
+            self.cursor_moved[1] += self.cursor[1] - before[1];
+            self.remember_position(id, x, y);
+        }
+        if looking {
+            // The movement since the last frame, not the sweep from where the finger
+            // landed: a drag that jumped the whole distance at once would turn the
+            // camera by the distance travelled rather than by the speed.
+            let last = self.last_position(id).unwrap_or((x, y));
+            let (mx, my) = (x - last.0, y - last.1);
             let sensitivity = self.layout.look_sensitivity.max(0.01);
-            self.look[0] += dx / sensitivity;
-            self.look[1] += dy / sensitivity;
+            self.look[0] += mx / sensitivity;
+            self.look[1] += my / sensitivity;
+            self.remember_position(id, x, y);
+        }
+        // A finger that leaves the button it was holding lets go of it, unless the
+        // button is one that is meant to be swiped across.
+        let control = self.fingers[index].control;
+        let slipped = self.fingers[index].slipped;
+        if let Some(action) = control
+            && !slipped
+            && let Some(placed) = self
+                .layout
+                .buttons(width, height)
+                .into_iter()
+                .find(|placed| placed.action == action)
+            && !placed.rect.contains(x, y)
+            && !self
+                .layout
+                .control(placed.index)
+                .is_some_and(|control| control.is_swipeable)
+        {
+            // A hold releases; a toggle keeps the state the press gave it, because
+            // that is the point of one.
+            let toggled = self.fingers[index].toggled;
+            self.fingers[index].slipped = true;
+            if !toggled {
+                self.release(action);
+            }
         }
     }
 
+    /// A finger lifted.
     pub fn up(&mut self, id: u64) {
         let Some(index) = self.fingers.iter().position(|finger| finger.id == id) else {
             return;
         };
         let finger = self.fingers.remove(index);
-        if let Some(action) = finger.control {
+        if let Some(action) = finger.control
+            && !finger.toggled
+            && !finger.slipped
+        {
             self.release(action);
+        }
+        if finger.looking {
+            self.forget_position(id);
+        }
+        if self.fingers.is_empty() {
+            self.hotbar_slot = None;
         }
     }
 
-    /// The activity lost the window under its fingers: every button has to be let
-    /// go, or the player comes back to a character running into a wall forever.
+    /// Nothing is held any more: a surface going away sends no lifts.
     pub fn release_all(&mut self) {
         for action in std::mem::take(&mut self.held) {
             self.edges.push((action, false));
         }
         self.fingers.clear();
+        self.hotbar_slot = None;
+        self.hotbar_tap = None;
     }
 
     fn press(&mut self, action: Action) {
         if self.held.insert(action) {
             self.edges.push((action, true));
-        }
-        if action.momentary() {
-            self.edges.push((action, false));
-            self.held.remove(&action);
         }
     }
 
@@ -889,27 +518,16 @@ impl Hud {
         }
     }
 
-    /// The buttons held right now, for drawing.
-    pub fn held(&self) -> impl Iterator<Item = Action> + '_ {
-        self.held.iter().copied()
-    }
-
-    pub fn is_held(&self, action: Action) -> bool {
-        self.held.contains(&action)
-    }
-
-    /// The presses and releases since the last call, oldest first. The engine
-    /// applies these to its own key and mouse state.
+    /// The edges since the last call.
     pub fn take_edges(&mut self) -> Vec<(Action, bool)> {
         std::mem::take(&mut self.edges)
     }
 
-    /// Degrees since the last call: x is a turn to the right, y a pitch down.
+    /// Degrees the camera has been asked to turn since the last call.
     pub fn take_look(&mut self) -> [f32; 2] {
         std::mem::replace(&mut self.look, [0.0, 0.0])
     }
 
-    /// Where the virtual mouse's cursor is, in the glass's own pixels.
     pub fn cursor(&self) -> [f32; 2] {
         self.cursor
     }
@@ -920,17 +538,12 @@ impl Hud {
     }
 
     /// Turn the virtual mouse on or off, and say which it is now.
-    ///
-    /// Turning it on places the cursor where the screen's middle is, so the first
-    /// look at it is not a cursor in a corner the player has to find.
     pub fn set_mouse(&mut self, on: bool, width: f32, height: f32) -> bool {
         if on && !self.mouse {
             if !self.cursor_placed {
                 self.cursor = [width / 2.0, height / 2.0];
                 self.cursor_placed = true;
             }
-            // A finger that was turning the camera is not a finger on the cursor: it
-            // keeps doing what it started, and the next one points.
             self.mouse = true;
         } else if !on {
             self.mouse = false;
@@ -938,8 +551,6 @@ impl Hud {
         self.mouse
     }
 
-    /// Move the cursor from something other than a finger: the game's own menus read a
-    /// position, and a screen that has just opened wants the cursor inside it.
     pub fn place_cursor(&mut self, x: f32, y: f32) {
         self.cursor_moved[0] += x - self.cursor[0];
         self.cursor_moved[1] += y - self.cursor[1];
@@ -947,130 +558,154 @@ impl Hud {
         self.cursor_placed = true;
     }
 
-    pub fn buttons(&self, width: f32, height: f32) -> Vec<(Action, Rect)> {
-        if self.gui_scale > 0.0 {
-            return self
-                .layout
-                .buttons_with_hotbar(width, height, self.gui_scale);
+    /// Where every button is, for drawing. A hidden pad keeps the two buttons that
+    /// can bring it back, which is the format's own rule.
+    pub fn buttons(&self, width: f32, height: f32) -> Vec<Placed> {
+        let mut buttons = self.layout.buttons(width, height);
+        if !self.visible {
+            buttons.retain(|placed| keeps_its_place_when_hidden(placed.action));
         }
-        self.layout.front_to_back(width, height)
+        buttons
     }
 
-    /// Tell the layout how many glass pixels one GUI pixel is worth this frame.
-    pub fn set_gui_scale(&mut self, scale: f32) {
-        self.gui_scale = scale.max(0.0);
+    /// Whether the pad is showing, for the panel's own switch.
+    pub fn visible(&self) -> bool {
+        self.visible
     }
 
-    /// The button the layout is being dragged by, if a finger has hold of one. The
-    /// overlay draws that one brighter, because a picked-up button that looks like
-    /// every other one reads as a control that is not answering.
-    pub fn grabbed(&self) -> Option<Action> {
-        self.fingers.iter().find_map(|finger| finger.control)
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
     }
 
-    /// Put a button's centre at `center`, in the pixels of this screen. Fractions come
-    /// back out of it, and nonsense is clamped: a button dragged off the glass can be
-    /// dragged back, but one that is nowhere cannot.
-    pub fn move_button(&mut self, action: Action, center: [f32; 2], width: f32, height: f32) {
-        if let Some(control) = self
-            .layout
-            .controls
-            .iter_mut()
-            .find(|control| control.action == action)
-        {
-            let at = [center[0] / width.max(1.0), center[1] / height.max(1.0)];
-            control.center = at;
-            // A shaped button moves as a rectangle: its own width and height are kept
-            // and only the middle is placed, or dragging one would also resize it.
-            if let Some([_, _, w, h]) = control.bounds {
-                control.bounds = Some([at[0] - w / 2.0, at[1] - h / 2.0, w, h]);
+    /// Show or hide the pad, and say which it is now.
+    pub fn toggle_visible(&mut self) -> bool {
+        self.visible = !self.visible;
+        // A button that is no longer on the glass must not stay held: the finger on it
+        // has nowhere to lift from.
+        if !self.visible {
+            let keep: BTreeSet<Action> = self
+                .held
+                .iter()
+                .copied()
+                .filter(|action| keeps_its_place_when_hidden(*action))
+                .collect();
+            for action in std::mem::replace(&mut self.held, keep.clone()) {
+                if !keep.contains(&action) {
+                    self.edges.push((action, false));
+                }
             }
         }
-        self.layout.clamp();
+        self.visible
     }
 
-    /// The button the editor is pointed at, if any.
-    pub fn selected(&self) -> Option<Action> {
+    pub fn grabbed(&self) -> Option<usize> {
         self.selected
     }
 
-    /// Point the editor at a button, or at none.
-    pub fn set_selected(&mut self, action: Option<Action>) {
-        self.selected = action;
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
     }
 
-    /// A button's own size, or `None` when there is no such button.
-    pub fn control_size(&self, action: Action) -> Option<f32> {
-        self.layout
-            .controls
-            .iter()
-            .find(|control| control.action == action)
-            .map(|control| match control.bounds {
-                // A shaped button reports its longest side, which is the number the
-                // slider sets and the one a player sees it grow by.
-                Some([_, _, w, h]) => w.max(h),
-                None => control.size,
-            })
+    pub fn set_selected(&mut self, index: Option<usize>) {
+        self.selected = index;
     }
 
-    /// A button's own opacity, or the layout's when it has none of its own.
-    pub fn control_opacity(&self, action: Action) -> Option<f32> {
-        self.layout
-            .controls
-            .iter()
-            .find(|control| control.action == action)
-            .map(|control| control.opacity.unwrap_or(self.layout.opacity))
-    }
-
-    /// Set a button's own size, clamped like every other edit.
+    /// Move a button to where the finger has it, written back as a formula.
     ///
-    /// A shaped button is resized about its own middle and keeps its proportions: the
-    /// A layout draws a wide tab and a tall D-pad arm on purpose, and a size slider
-    /// that squared them off would throw that away.
-    pub fn set_control_size(&mut self, action: Action, size: f32) {
-        if let Some(control) = self
-            .layout
-            .controls
-            .iter_mut()
-            .find(|control| control.action == action)
-        {
-            control.size = size;
-            if let Some([left, top, w, h]) = control.bounds {
-                let (cx, cy) = (left + w / 2.0, top + h / 2.0);
-                let longest = w.max(h).max(0.0001);
-                // A shaped button is bounded by the same range as a square one: a
-                // button larger than the glass is not a control a player can use, and
-                // clamping the factor rather than the result keeps the shape.
-                let target = size.clamp(0.03, 0.4);
-                let factor = (target / longest).clamp(0.05, 20.0);
-                let (nw, nh) = (w * factor, h * factor);
-                control.bounds = Some([cx - nw / 2.0, cy - nh / 2.0, nw, nh]);
-            }
-        }
-        self.layout.clamp();
+    /// The formula is anchored the way the format's own editor anchors it: a button
+    /// past the middle of the screen is measured from the far edge, so it stays on
+    /// that edge when the screen changes, and one before it is measured from the
+    /// near edge.
+    pub fn move_button(&mut self, index: usize, x: f32, y: f32, width: f32, height: f32) {
+        let Some(control) = self.layout.file.controls.get_mut(index) else {
+            return;
+        };
+        let (w, h) = (
+            control.px_width(self.layout.density),
+            control.px_height(self.layout.density),
+        );
+        let left = (x - w / 2.0).clamp(0.0, (width - w).max(0.0));
+        let top = (y - h / 2.0).clamp(0.0, (height - h).max(0.0));
+        control.dynamic_x = anchor_x(left, width);
+        control.dynamic_y = anchor_y(top, height);
     }
 
-    /// Give a button an opacity of its own, away from the layout's.
-    pub fn set_control_opacity(&mut self, action: Action, opacity: f32) {
-        if let Some(control) = self
-            .layout
-            .controls
-            .iter_mut()
-            .find(|control| control.action == action)
-        {
-            control.opacity = Some(opacity);
-        }
-        self.layout.clamp();
+    pub fn control_opacity(&self, index: usize) -> Option<f32> {
+        self.layout.control(index).map(|control| control.opacity)
     }
 
-    /// The buttons held right now, in press order.
+    /// Change one button's own opacity. The layout's slider multiplies this, so a
+    /// button set to half stays half of whatever the pad is set to.
+    pub fn set_control_opacity(&mut self, index: usize, opacity: f32) {
+        if let Some(control) = self.layout.file.controls.get_mut(index) {
+            control.opacity = opacity.clamp(0.0, 1.0);
+        }
+    }
+
+    /// The selected button's name, for the panel's own line.
+    pub fn selected_label(&self) -> Option<&str> {
+        self.selected.map(|index| self.layout.label(index))
+    }
+
+    /// The actions a finger is holding right now.
     pub fn pressed_actions(&self) -> Vec<Action> {
         self.held.iter().copied().collect()
     }
 
-    /// How many fingers are down, which is what the diagnostic line reports.
+    pub fn is_held(&self, action: Action) -> bool {
+        self.held.contains(&action)
+    }
+
     pub fn fingers(&self) -> usize {
         self.fingers.len()
+    }
+
+    /// The last drag position of a looking finger, kept beside the fingers rather
+    /// than inside them so a `&mut self` move of the layout cannot alias it.
+    fn last_position(&self, id: u64) -> Option<(f32, f32)> {
+        self.positions.iter().find(|(finger, ..)| *finger == id).map(|(_, x, y)| (*x, *y))
+    }
+
+    fn remember_position(&mut self, id: u64, x: f32, y: f32) {
+        match self.positions.iter_mut().find(|(finger, ..)| *finger == id) {
+            Some(entry) => {
+                entry.1 = x;
+                entry.2 = y;
+            }
+            None => self.positions.push((id, x, y)),
+        }
+    }
+
+    fn forget_position(&mut self, id: u64) {
+        self.positions.retain(|(finger, ..)| *finger != id);
+    }
+}
+
+/// Which buttons survive the pad being hidden: the two that can bring it back.
+fn keeps_its_place_when_hidden(action: Action) -> bool {
+    matches!(action, Action::ToggleControls | Action::MouseVirtual)
+}
+
+/// Which slot of the strip a point is over.
+fn hotbar_slot(strip: Rect, x: f32) -> u8 {
+    let fraction = ((x - strip.x) / strip.width).clamp(0.0, 0.999_9);
+    (fraction * 9.0) as u8 + 1
+}
+
+/// A position on the left half is a fraction of the screen's width from the left.
+fn anchor_x(left: f32, width: f32) -> String {
+    if left + 1.0 > width / 2.0 {
+        format!("{} * ${{screen_width}} - ${{width}}", left / width)
+    } else {
+        format!("{} * ${{screen_width}}", left / width)
+    }
+}
+
+fn anchor_y(top: f32, height: f32) -> String {
+    if top + 1.0 > height / 2.0 {
+        format!("{} * ${{screen_height}} - ${{height}}", top / height)
+    } else {
+        format!("{} * ${{screen_height}}", top / height)
     }
 }
 
@@ -1078,520 +713,154 @@ impl Hud {
 mod tests {
     use super::*;
 
-    /// The screen of the phone this was written for, in the landscape the game
-    /// asks the activity for.
-    const WIDTH: f32 = 1280.0;
-    const HEIGHT: f32 = 720.0;
+    const W: f32 = 1920.0;
+    const H: f32 = 953.0;
 
     fn hud() -> Hud {
-        Hud::default()
+        let mut layout = Layout::default();
+        layout.density = 1.3236;
+        Hud::new(layout)
+    }
+
+    /// The middle of a named button, as a finger would aim at it.
+    fn at(hud: &Hud, name: &str) -> [f32; 2] {
+        let index = hud
+            .layout
+            .file
+            .controls
+            .iter()
+            .position(|control| control.name == name)
+            .unwrap_or_else(|| panic!("no button called {name}"));
+        hud.buttons(W, H)[index].rect.center()
     }
 
     #[test]
-    fn a_finger_on_a_button_presses_it_and_lets_go() {
+    fn a_hold_sends_a_press_and_a_release() {
         let mut hud = hud();
-        let (jump, rect) = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .expect("the default layout has a jump button");
-        assert_eq!(jump, Action::Jump);
-        let [x, y] = rect.center();
-        assert!(
-            hud.down(1, x, y, WIDTH, HEIGHT),
-            "a finger on the jump button is the layout's, not the screen behind it"
-        );
-        assert!(hud.is_held(Action::Jump));
-        assert_eq!(hud.take_edges(), vec![(Action::Jump, true)]);
+        let pri = at(&hud, "PRI");
+        assert!(hud.down(1, pri[0], pri[1], W, H));
+        assert_eq!(hud.take_edges(), vec![(Action::MousePrimary, true)]);
         hud.up(1);
-        assert!(!hud.is_held(Action::Jump));
-        assert_eq!(hud.take_edges(), vec![(Action::Jump, false)]);
+        assert_eq!(hud.take_edges(), vec![(Action::MousePrimary, false)]);
     }
 
     #[test]
-    fn a_tap_on_a_toggle_fires_once_and_leaves_the_button() {
+    fn a_toggle_stays_on_after_the_finger_lifts() {
         let mut hud = hud();
-        let rect = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Inventory)
-            .map(|(_, rect)| rect)
-            .expect("the default layout has an inventory button");
-        let [x, y] = rect.center();
-        hud.down(1, x, y, WIDTH, HEIGHT);
+        // The default pad's sneak is the only toggle in it.
+        let sneak = at(&hud, "◇");
+        hud.down(1, sneak[0], sneak[1], W, H);
+        assert_eq!(hud.take_edges(), vec![(Action::Sneak, true)]);
         hud.up(1);
-        assert_eq!(hud.take_edges(), vec![(Action::Inventory, true), (Action::Inventory, false)]);
-        assert!(!hud.is_held(Action::Inventory));
-    }
-
-    #[test]
-    fn two_fingers_press_two_buttons_at_once() {
-        let mut hud = hud();
-        let buttons = hud.buttons(WIDTH, HEIGHT);
-        let forward = buttons.iter().find(|(a, _)| *a == Action::Forward).unwrap().1;
-        let mine = buttons.iter().find(|(a, _)| *a == Action::Mine).unwrap().1;
-        hud.down(1, forward.x + 1.0, forward.y + 1.0, WIDTH, HEIGHT);
-        hud.down(2, mine.x + 1.0, mine.y + 1.0, WIDTH, HEIGHT);
-        assert!(hud.is_held(Action::Forward) && hud.is_held(Action::Mine));
-        // An imgui widget driven by a mouse would have taken the second finger for
-        // a click on whatever the first finger is already holding.
-        assert_eq!(hud.fingers(), 2);
-        hud.up(1);
-        assert!(hud.is_held(Action::Mine) && !hud.is_held(Action::Forward));
-    }
-
-    #[test]
-    fn a_drag_off_the_button_keeps_pressing_it() {
-        let mut hud = hud();
-        let rect = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Forward)
-            .map(|(_, rect)| rect)
-            .unwrap();
-        hud.down(1, rect.x + 1.0, rect.y + 1.0, WIDTH, HEIGHT);
-        hud.drag(1, rect.x + 4000.0, rect.y + 4000.0, WIDTH, HEIGHT);
-        assert!(hud.is_held(Action::Forward));
-        assert_eq!(hud.take_look(), [0.0, 0.0]);
-        hud.up(1);
-        assert!(!hud.is_held(Action::Forward));
-    }
-
-    #[test]
-    fn no_two_buttons_of_the_default_pad_share_a_pixel() {
-        // Two buttons in the same band pass every other check and still steal each
-        // other's taps, and on a phone there is no right-click to find out which one a
-        // player pressed. This is the one mistake a pad cannot recover from.
-        let layout = Layout::mojo();
-        let buttons = layout.buttons(WIDTH, HEIGHT);
-        for (i, (a, ra)) in buttons.iter().enumerate() {
-            for (b, rb) in buttons.iter().skip(i + 1) {
-                // The hotbar row is deliberately invisible and sits over the game's own
-                // bar; it is the one row allowed to overlap nothing else but itself.
-                if matches!(a, Action::Hotbar(_)) || matches!(b, Action::Hotbar(_)) {
-                    continue;
-                }
-                let apart = ra.x + ra.width <= rb.x
-                    || rb.x + rb.width <= ra.x
-                    || ra.y + ra.height <= rb.y
-                    || rb.y + rb.height <= ra.y;
-                assert!(apart, "{a:?} {ra:?} overlaps {b:?} {rb:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn every_button_of_the_default_pad_is_on_the_glass() {
-        let layout = Layout::mojo();
-        for (action, rect) in layout.buttons(WIDTH, HEIGHT) {
-            assert!(
-                rect.x >= -1.0
-                    && rect.y >= -1.0
-                    && rect.x + rect.width <= WIDTH + 1.0
-                    && rect.y + rect.height <= HEIGHT + 1.0,
-                "{action:?} hangs off the screen: {rect:?}"
-            );
-            assert!(
-                rect.width >= 24.0 && rect.height >= 24.0,
-                "{action:?} is too small to press: {rect:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_default_pad_has_a_way_back_out_of_the_arranging() {
-        let mut hud = hud();
-        hud.edit = true;
-        let panel = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Panel)
-            .map(|(_, rect)| rect.center())
-            .expect("the default pad has a panel button");
-        assert!(hud.down(1, panel[0], panel[1], WIDTH, HEIGHT));
-        hud.up(1);
-        assert_eq!(
-            hud.take_edges(),
-            vec![(Action::Panel, true), (Action::Panel, false)],
-            "a pad with no MENU still needs a door out of the arranging"
-        );
+        assert!(hud.take_edges().is_empty(), "a toggle must not release itself");
+        // And the next tap turns it off.
+        hud.down(2, sneak[0], sneak[1], W, H);
+        assert_eq!(hud.take_edges(), vec![(Action::Sneak, false)]);
     }
 
     #[test]
     fn a_drag_on_empty_glass_turns_the_camera() {
         let mut hud = hud();
-        // The middle of the screen: nothing is there in the default layout.
-        assert!(
-            !hud.down(1, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT),
-            "a finger on bare glass belongs to the game"
-        );
-        assert_eq!(hud.pressed_actions(), vec![]);
-        hud.drag(1, WIDTH * 0.5 + 30.0, HEIGHT * 0.5 + 12.0, WIDTH, HEIGHT);
-        hud.up(1);
-        let [yaw, pitch] = hud.take_look();
-        assert!(
-            yaw > pitch && yaw > 0.0 && pitch > 0.0,
-            "a drag right and down should turn right and pitch down, got {yaw} {pitch}"
-        );
-        let expected = 30.0 / hud.layout.look_sensitivity;
-        assert!((yaw - expected).abs() < 0.01, "{yaw} should be {expected} degrees");
-        assert_eq!(hud.take_look(), [0.0, 0.0], "the turn is taken once");
+        assert!(!hud.down(1, 1200.0, 300.0, W, H));
+        hud.drag(1, 1260.0, 320.0, W, H);
+        let look = hud.take_look();
+        assert!(look[0] > 0.0 && look[1] > 0.0, "{look:?}");
     }
 
     #[test]
-    fn editing_the_layout_moves_buttons_and_sends_nothing() {
+    fn a_drag_off_a_held_button_releases_it() {
+        let mut hud = hud();
+        let pri = at(&hud, "PRI");
+        hud.down(1, pri[0], pri[1], W, H);
+        assert_eq!(hud.take_edges(), vec![(Action::MousePrimary, true)]);
+        hud.drag(1, 1200.0, 200.0, W, H);
+        assert_eq!(hud.take_edges(), vec![(Action::MousePrimary, false)]);
+    }
+
+    #[test]
+    fn the_virtual_mouse_moves_the_cursor_instead_of_the_camera() {
+        let mut hud = hud();
+        hud.set_mouse(true, W, H);
+        assert!(!hud.down(1, 1000.0, 400.0, W, H));
+        hud.drag(1, 1040.0, 430.0, W, H);
+        assert_eq!(hud.take_look(), [0.0, 0.0]);
+        assert_eq!(hud.cursor(), [1040.0, 430.0]);
+    }
+
+    #[test]
+    fn a_hotbar_tap_picks_the_slot_under_the_finger() {
+        let mut hud = hud();
+        hud.set_gui_scale(2.0);
+        let strip = hud.hotbar_rect(W, H).unwrap();
+        // The middle of the third slot.
+        let x = strip.x + strip.width * (2.5 / 9.0);
+        let y = strip.y + strip.height / 2.0;
+        assert!(hud.down(1, x, y, W, H));
+        assert_eq!(hud.take_edges(), vec![(Action::Hotbar(3), true)]);
+    }
+
+    #[test]
+    fn sliding_along_the_hotbar_sweeps_the_slots() {
+        let mut hud = hud();
+        hud.set_gui_scale(2.0);
+        let strip = hud.hotbar_rect(W, H).unwrap();
+        let y = strip.y + strip.height / 2.0;
+        hud.down(1, strip.x + strip.width * (0.5 / 9.0), y, W, H);
+        hud.take_edges();
+        for slot in 2..=9u8 {
+            let x = strip.x + strip.width * ((f32::from(slot) - 0.5) / 9.0);
+            hud.drag(1, x, y, W, H);
+            assert_eq!(hud.take_edges(), vec![(Action::Hotbar(slot), true)]);
+        }
+    }
+
+    #[test]
+    fn the_hotbar_follows_the_gui_scale() {
+        let mut hud = hud();
+        hud.set_gui_scale(1.0);
+        let one = hud.hotbar_rect(W, H).unwrap();
+        hud.set_gui_scale(3.0);
+        let three = hud.hotbar_rect(W, H).unwrap();
+        assert!(three.width > one.width * 2.5);
+        assert!(three.y < one.y, "a bigger scale draws the bar higher");
+    }
+
+    #[test]
+    fn a_double_tap_on_the_same_slot_swaps_hands() {
+        let mut hud = hud();
+        hud.set_gui_scale(2.0);
+        let strip = hud.hotbar_rect(W, H).unwrap();
+        let x = strip.x + strip.width * (0.5 / 9.0);
+        let y = strip.y + strip.height / 2.0;
+        hud.down(1, x, y, W, H);
+        hud.up(1);
+        hud.take_edges();
+        hud.down(2, x, y, W, H);
+        assert_eq!(hud.take_edges(), vec![(Action::SwapOffhand, true)]);
+    }
+
+    #[test]
+    fn moving_a_button_writes_a_formula_that_puts_it_back() {
         let mut hud = hud();
         hud.edit = true;
-        let jump = |hud: &Hud| {
-            hud.buttons(WIDTH, HEIGHT)
-                .into_iter()
-                .find(|(action, _)| *action == Action::Jump)
-                .map(|(_, rect)| rect.center())
-                .unwrap()
-        };
-        let before = jump(&hud);
-        hud.down(1, before[0], before[1], WIDTH, HEIGHT);
-        assert_eq!(hud.grabbed(), Some(Action::Jump));
-        assert_eq!(hud.take_edges(), vec![], "picking a button up is not pressing it");
-        hud.drag(1, 100.0, 100.0, WIDTH, HEIGHT);
-        hud.up(1);
-        assert_eq!(hud.take_edges(), vec![], "letting go of a button is not pressing it");
-        assert_eq!(hud.grabbed(), None);
-        let after = jump(&hud);
-        assert!(
-            (after[0] - 100.0).abs() < 1.0 && (after[1] - 100.0).abs() < 1.0,
-            "the button should have followed the finger from {before:?} to [100,100], got {after:?}"
-        );
-        assert_eq!(hud.take_look(), [0.0, 0.0], "editing never turns the camera");
-    }
-
-    #[test]
-    fn the_menu_button_answers_even_while_the_layout_is_being_arranged() {
-        // The panel button is the one the default pad has; a layout without a MENU
-        // still has to have a way back to the switch that ends the arranging.
-        let mut hud = Hud::new(Layout::java());
-        hud.edit = true;
-        let menu = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Menu)
-            .map(|(_, rect)| rect.center())
-            .unwrap();
-        assert!(hud.down(1, menu[0], menu[1], WIDTH, HEIGHT));
-        hud.up(1);
-        assert_eq!(
-            hud.take_edges(),
-            vec![(Action::Menu, true), (Action::Menu, false)],
-            "the panel is the only door back to the switch that ends the arranging"
-        );
-    }
-
-    #[test]
-    fn a_layout_survives_a_round_trip_through_disk() {
-        let dir = std::env::temp_dir().join("horizon-controls-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("controls.json");
-        let mut layout = Layout::java();
-        layout.scale = 1.4;
-        layout.opacity = 0.2;
-        layout.look_sensitivity = 9.5;
-        layout.controls[0].center = [0.12, 0.7];
-        layout.save(&path).unwrap();
-        let read = Layout::load(&path).expect("the file we just wrote reads back");
-        assert_eq!(read.scale, 1.4);
-        assert_eq!(read.opacity, 0.2);
-        assert_eq!(read.look_sensitivity, 9.5);
-        assert_eq!(read.controls.len(), layout.controls.len());
-        assert_eq!(read.controls[0].center, [0.12, 0.7]);
-        std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn nonsense_in_a_layout_file_is_clamped_not_trusted() {
-        let dir = std::env::temp_dir().join("horizon-controls-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("bad.json");
-        std::fs::write(
-            &path,
-            r#"{"scale":99.0,"opacity":-3.0,"look_sensitivity":0.0,"drag_to_look":true,
-               "controls":[{"action":"Jump","center":[7.0,-2.0],"size":0.0}]}"#,
-        )
-        .unwrap();
-        let layout = Layout::load(&path).expect("one button is a layout");
-        assert_eq!(layout.scale, 2.0);
-        assert_eq!(layout.opacity, 0.05);
-        assert_eq!(layout.look_sensitivity, 0.5);
-        assert_eq!(layout.controls[0].center, [0.98, 0.02]);
-        assert_eq!(layout.controls[0].size, 0.03);
-        std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn an_empty_or_unreadable_file_is_no_layout_at_all() {
-        let dir = std::env::temp_dir().join("horizon-controls-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.json");
-        std::fs::write(&path, r#"{"scale":1.0,"opacity":0.5,"look_sensitivity":6.0,
-             "drag_to_look":true,"controls":[]}"#)
-            .unwrap();
-        assert!(Layout::load(&path).is_none());
-        assert!(Layout::load(&dir.join("missing.json")).is_none());
-        std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn every_button_of_the_java_layout_is_reachable_and_labeled() {
-        let layout = Layout::java();
-        let buttons = layout.buttons(WIDTH, HEIGHT);
-        assert_eq!(buttons.len(), layout.controls.len(), "nothing off the screen");
-        let mut actions: Vec<Action> = buttons.iter().map(|(action, _)| *action).collect();
-        actions.sort_unstable();
-        actions.dedup();
-        assert_eq!(actions.len(), layout.controls.len(), "no button twice");
-        for (action, rect) in &buttons {
-            assert!(rect.width > 24.0, "{action:?} is too small to press: {rect:?}");
-            assert!(
-                rect.x >= 0.0 && rect.y >= 0.0 && rect.x + rect.width <= WIDTH + 0.01,
-                "{action:?} hangs off the screen: {rect:?}"
-            );
-            assert!(rect.y + rect.height <= HEIGHT + 0.01, "{action:?}: {rect:?}");
-            assert!(!action.text().is_empty(), "{action:?} has no legend");
-        }
-        // The middle of every button has to answer to that button. Two rows in the
-        // same band pass every check above and still steal each other's taps, and on a
-        // phone there is no right-click to find out which one a player pressed.
-        let front = layout.front_to_back(WIDTH, HEIGHT);
-        for (action, rect) in &buttons {
-            let [x, y] = rect.center();
-            let hit = front
-                .iter()
-                .find(|(_, other)| other.contains(x, y))
-                .map(|(other, _)| *other);
-            assert_eq!(hit, Some(*action), "{action:?} loses its own middle at {x:.0}x{y:.0}");
-        }
-        for slot in 1..=9u8 {
-            assert!(
-                buttons.iter().any(|(action, _)| *action == Action::Hotbar(slot)),
-                "hotbar slot {slot} is missing"
-            );
-        }
-    }
-
-    #[test]
-    fn a_shaped_button_is_the_rectangle_the_file_asked_for() {
-        let layout = Layout {
-            scale: 1.0,
-            opacity: 0.5,
-            look_sensitivity: 6.0,
-            drag_to_look: true,
-            preset: "bedrock".into(),
-            controls: vec![
-                // A square in pixels: the same fraction of the short edge in both
-                // axes is what a round button has to be, and the fractions differ
-                // because the screen's two edges do.
-                shaped(
-                    Action::Jump,
-                    [0.80, 0.20, 0.10 * 9.0 / 16.0, 0.10],
-                    Some("jump"),
-                    true,
-                ),
-                // A wide tab: the shape a square cannot be.
-                shaped(Action::Chat, [0.10, 0.02, 0.20, 0.05], Some("chat"), false),
-            ],
-        };
-        let buttons = layout.buttons(WIDTH, HEIGHT);
-        let jump = buttons
+        let index = hud
+            .layout
+            .file
+            .controls
             .iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .map(|(_, rect)| *rect)
+            .position(|control| control.name == "PRI")
             .unwrap();
-        assert!((jump.width - jump.height).abs() < 0.01, "{jump:?}");
-        assert!((jump.x - 0.80 * WIDTH).abs() < 0.01, "{jump:?}");
-        assert!((jump.y - 0.20 * HEIGHT).abs() < 0.01, "{jump:?}");
-        let chat = buttons
-            .iter()
-            .find(|(action, _)| *action == Action::Chat)
-            .map(|(_, rect)| *rect)
-            .unwrap();
-        // Four times as wide as it is tall in pixels, which is the whole point of a
-        // tab. The bounds are fractions of two different edges, so the ratio has to
-        // be taken after the conversion, not before it.
-        assert!((chat.width - 0.20 * WIDTH).abs() < 0.01, "{chat:?}");
-        assert!((chat.height - 0.05 * HEIGHT).abs() < 0.01, "{chat:?}");
-        assert!((chat.width / chat.height - 7.111).abs() < 0.05, "{chat:?}");
+        hud.move_button(index, 300.0, 500.0, W, H);
+        let placed = hud.buttons(W, H)[index].rect.center();
+        assert!((placed[0] - 300.0).abs() < 2.0, "{placed:?}");
+        assert!((placed[1] - 500.0).abs() < 2.0, "{placed:?}");
     }
 
     #[test]
-    fn scaling_a_shaped_button_keeps_its_proportions_and_its_middle() {
-        let mut hud = Hud::new(Layout {
-            scale: 1.0,
-            opacity: 0.5,
-            look_sensitivity: 6.0,
-            drag_to_look: true,
-            preset: "bedrock".into(),
-            controls: vec![shaped(
-                Action::Chat,
-                [0.10, 0.10, 0.20, 0.05],
-                Some("chat"),
-                false,
-            )],
-        });
-        let before = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
-        hud.set_control_size(Action::Chat, 0.30);
-        let after = hud.layout.buttons(WIDTH, HEIGHT)[0].1;
-        // The tab keeps the proportions it was drawn with: the slider changes how big
-        // it is, never what shape it is.
-        assert!(
-            (after.width / after.height - before.width / before.height).abs() < 0.05,
-            "{before:?} -> {after:?}"
-        );
-        // And it grows about its own middle, so it stays where the player put it.
-        assert!((after.center()[0] - before.center()[0]).abs() < 0.5, "{after:?}");
-        assert!((after.center()[1] - before.center()[1]).abs() < 0.5, "{after:?}");
-        assert!(after.width > before.width, "{before:?} -> {after:?}");
-    }
-
-    #[test]
-    fn a_layout_written_before_shapes_still_loads() {
-        // The old file has no `bounds`, `icon` or `round`: it is centre-and-size only,
-        // and it must keep working rather than loading as an empty layout.
-        let dir = std::env::temp_dir().join("horizon-controls-legacy");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("legacy.json");
-        std::fs::write(
-            &path,
-            r#"{"scale":1.0,"opacity":0.4,"look_sensitivity":6.0,"drag_to_look":true,
-               "controls":[{"action":"Jump","center":[0.9,0.7],"size":0.12}]}"#,
-        )
-        .unwrap();
-        let layout = Layout::load(&path).expect("an old layout is still a layout");
-        assert_eq!(layout.controls.len(), 1);
-        assert!(layout.controls[0].bounds.is_none());
-        assert!(layout.controls[0].icon.is_none());
-        assert!(!layout.controls[0].round);
-        let rect = layout.buttons(WIDTH, HEIGHT)[0].1;
-        assert!(rect.width > 0.0 && rect.contains(rect.center()[0], rect.center()[1]));
-        std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn the_layout_reads_the_same_in_both_orientations() {
-        let layout = Layout::java();
-        let portrait = layout.buttons(720.0, 1280.0);
-        assert_eq!(portrait.len(), layout.controls.len(), "rotating loses buttons");
-        let jump = layout
-            .buttons(720.0, 1280.0)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .map(|(_, rect)| rect)
-            .unwrap();
-        // A thumb on a 720-wide screen still has something 68 pixels across to press.
-        assert!(jump.width > 60.0, "{jump:?}");
-    }
-
-    #[test]
-    fn releasing_every_finger_lets_every_button_go() {
-        let mut hud = hud();
-        let held: Vec<(Action, Rect)> = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .filter(|(action, _)| !action.momentary())
-            .take(4)
-            .collect();
-        assert_eq!(held.len(), 4, "the default layout has four buttons to hold");
-        for (index, (action, rect)) in held.iter().enumerate() {
-            let [x, y] = rect.center();
-            hud.down(index as u64, x, y, WIDTH, HEIGHT);
-            assert!(hud.is_held(*action), "{action:?}");
+    fn every_control_has_an_action() {
+        let hud = hud();
+        for placed in hud.buttons(W, H) {
+            assert_ne!(placed.action, Action::Raw(0), "{}", hud.layout.label(placed.index));
         }
-        // The presses themselves are the game's business and it has taken them; what
-        // is left after the window goes away is the question.
-        assert_eq!(hud.take_edges().len(), 4, "each finger pressed once");
-        hud.release_all();
-        assert_eq!(hud.pressed_actions(), vec![]);
-        assert_eq!(hud.fingers(), 0);
-        let edges = hud.take_edges();
-        assert_eq!(edges.len(), 4, "every held button was let go");
-        assert!(
-            edges.iter().all(|(_, down)| !down),
-            "everything released, nothing pressed"
-        );
-    }
-
-    #[test]
-    fn a_button_can_have_its_own_size_and_opacity() {
-        let mut hud = hud();
-        hud.set_selected(Some(Action::Jump));
-        assert_eq!(hud.selected(), Some(Action::Jump));
-        assert_eq!(
-            hud.control_opacity(Action::Jump),
-            Some(hud.layout.opacity),
-            "with none of its own a button follows the layout"
-        );
-        hud.set_control_opacity(Action::Jump, 0.9);
-        assert_eq!(hud.layout.opacity_of(Action::Jump), 0.9);
-        assert_eq!(
-            hud.layout.opacity_of(Action::Mine),
-            hud.layout.opacity,
-            "an untouched button still follows the layout"
-        );
-    }
-
-    #[test]
-    fn a_button_size_edit_is_clamped_like_every_other() {
-        let mut hud = Hud::new(Layout::java());
-        hud.set_control_size(Action::Jump, 9.0);
-        assert_eq!(hud.control_size(Action::Jump), Some(0.4));
-        hud.set_control_size(Action::Jump, 0.0);
-        assert_eq!(hud.control_size(Action::Jump), Some(0.03));
-    }
-
-    #[test]
-    fn a_shaped_button_is_clamped_without_losing_its_shape() {
-        let mut hud = Hud::new(Layout::bedrock());
-        let before = hud.control_size(Action::Jump).unwrap();
-        hud.set_control_size(Action::Jump, 9.0);
-        assert_eq!(hud.control_size(Action::Jump), Some(0.4));
-        hud.set_control_size(Action::Jump, 0.0);
-        assert_eq!(hud.control_size(Action::Jump), Some(0.03));
-        // And it is still round: the long and short sides keep the ratio they had.
-        hud.set_control_size(Action::Jump, before);
-        let [_, _, w, h] = hud.layout.controls.iter()
-            .find(|c| c.action == Action::Jump)
-            .and_then(|c| c.bounds)
-            .unwrap();
-        assert!((w / h - 9.0 / 16.0).abs() < 0.02, "{w} x {h}");
-    }
-
-    #[test]
-    fn tapping_a_button_while_editing_selects_it_and_glass_deselects() {
-        let mut hud = hud();
-        hud.edit = true;
-        let jump = hud
-            .buttons(WIDTH, HEIGHT)
-            .into_iter()
-            .find(|(action, _)| *action == Action::Jump)
-            .map(|(_, rect)| rect.center())
-            .unwrap();
-        assert_eq!(hud.selected(), None);
-        hud.down(1, jump[0], jump[1], WIDTH, HEIGHT);
-        assert_eq!(hud.selected(), Some(Action::Jump));
-        hud.up(1);
-        hud.down(2, WIDTH * 0.5, HEIGHT * 0.5, WIDTH, HEIGHT);
-        assert_eq!(hud.selected(), None, "bare glass takes the selection away");
-    }
-
-    #[test]
-    fn a_button_opacity_survives_the_round_trip_and_absent_means_the_layout() {
-        let dir = std::env::temp_dir().join("horizon-controls-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("per-button.json");
-        let mut layout = Layout::java();
-        layout.controls[0].opacity = Some(0.8);
-        layout.save(&path).unwrap();
-        let read = Layout::load(&path).expect("the file we just wrote reads back");
-        assert_eq!(read.controls[0].opacity, Some(0.8));
-        assert_eq!(read.controls[1].opacity, None);
-        std::fs::remove_file(&path).unwrap();
     }
 }

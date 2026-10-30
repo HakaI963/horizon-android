@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use horizon_controls::{Action, Hud, Layout, Rect};
+
+pub mod menu;
 use imgui::{
     Condition, ConfigFlags, Context, DrawListMut, ImColor32, MouseButton, Ui, WindowFlags,
 };
@@ -30,8 +32,23 @@ mod art;
 mod launcher;
 pub use launcher::{
     LauncherAccount, LauncherEvent, LauncherMod, LauncherModel, LauncherPage, LauncherRow,
-    LauncherSetting, LauncherStory, LoadingScreen, draw_cursor, draw_info_panel,
+    LauncherSetting, LauncherStory, LoadingScreen, draw_cursor, draw_hotbar_hint,
 };
+
+/// What this process is holding resident, in MiB, where the system reports it.
+///
+/// The menu shows it: a phone close to its memory limit stutters before it dies, and
+/// that number is the only warning a player gets without a terminal. `/proc/self/status`
+/// is restricted on Android 12 and later, so the resident pages come from `statm`,
+/// which every app can still read for itself.
+pub fn memory_mib() -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let text = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = text.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages as f64 * 4096.0 / (1024.0 * 1024.0))
+}
 
 /// The default player skin: 64x64 RGBA, drawn from a palette rather than loaded.
 pub fn default_skin() -> (u32, u32, Vec<u8>) {
@@ -83,20 +100,22 @@ pub struct Overlay {
     pub hud: Hud,
     /// Where the layout is read from and written to.
     path: PathBuf,
+    /// The in-game menu's drawer is open. One flag for one menu: the gear tab at the
+    /// top edge is the only way in, and the list it opens is the only settings a
+    /// player needs over the world.
     panel: bool,
-    /// The floating info panel is open: frame rate, memory, and the way into the
-    /// arrange mode. It sits over the world and is dragged by its own handle.
-    info_open: bool,
-    /// Where that panel's corner is, so a player can move it away from the thumb they
-    /// hold the phone with. `None` until it is first placed.
-    info_pos: Option<[f32; 2]>,
     /// The virtual mouse, as its toggle last left it. `paint` hands it to the layout,
     /// which is where the cursor itself lives.
     mouse_pending: bool,
+    /// The frame rate the platform last measured, for the menu's own line.
+    fps: f32,
     /// Glass pixels per GUI pixel, as the platform last drew a HUD. The hotbar row is
     /// the one part of the layout that follows the game's own bar rather than the
     /// screen's edge, and this is what puts it there.
     gui_scale: f32,
+    /// Glass pixels per dp. The layout's own sizes are in dp, so this is what turns
+    /// them into pixels.
+    density: f32,
     /// The launcher's front page, drawn in place of the HUD at boot.
     launcher: bool,
     /// When the launcher came up, so its opening animation can run once per open.
@@ -197,10 +216,10 @@ impl Overlay {
             hud: Hud::new(layout),
             path,
             panel: false,
-            info_open: false,
-            info_pos: None,
             mouse_pending: false,
+            fps: 0.0,
             gui_scale: 0.0,
+            density: 1.0,
             launcher: false,
             launcher_since: None,
             background: None,
@@ -278,7 +297,7 @@ impl Overlay {
         log::info!(
             "overlay: imgui draws at {width}x{height} scale {}, {} buttons, {}",
             self.dpi,
-            self.hud.layout.controls.len(),
+            self.hud.layout.file.controls.len(),
             self.path.display()
         );
         self.resize(width, height);
@@ -288,6 +307,16 @@ impl Overlay {
     /// it. The context and the layout stay, and no finger is holding anything.
     pub fn detach(&mut self) {
         self.renderer = None;
+        // Every texture id this overlay holds belongs to the renderer that has just
+        // gone. Kept, they are ids into a registry that no longer has them, and imgui
+        // aborts the whole frame on the first one it cannot bind — which is what made
+        // the launcher go blank after the file picker took the surface away.
+        self.skin_texture = None;
+        self.skin_source = None;
+        self.background = None;
+        self.background_size = [0, 0];
+        self.stone = None;
+        self.stone_size = [0, 0];
         // imgui outlives the renderer, so its button has to be let go here too: a
         // finger that was down when the surface went away sends no lift, and a stale
         // `MouseDown` makes the first tap after the resume look like a duplicate and
@@ -315,6 +344,16 @@ impl Overlay {
     /// it is being dragged around.
     fn interactive(&self) -> bool {
         self.panel || self.hud.edit || self.launcher
+    }
+
+    /// Whether the menu's drawer is open, for the platform's own back button.
+    pub fn menu_open(&self) -> bool {
+        self.panel
+    }
+
+    /// Open or close the drawer from outside, which is what a tap on the gear does.
+    pub fn set_menu(&mut self, open: bool) {
+        self.panel = open;
     }
 
     /// A finger went down. It goes to the layout unless the panel already has it, and
@@ -410,21 +449,21 @@ impl Overlay {
                 Action::Menu => {
                     self.panel = !self.panel;
                     log::info!(
-                        "overlay: the settings panel is {}",
+                        "overlay: the in-game menu is {}",
                         if self.panel { "open" } else { "closed" }
                     );
                 }
-                Action::Panel => {
-                    self.info_open = !self.info_open;
+                Action::ToggleControls => {
+                    // The GUI button hides the pad, not the game's HUD: the two
+                    // buttons that can bring it back stay, which is the format's own
+                    // rule and the only way out of a pad with no GUI button on it.
+                    let visible = self.hud.toggle_visible();
                     log::info!(
-                        "overlay: the info panel is {}",
-                        if self.info_open { "open" } else { "closed" }
+                        "overlay: the pad is {}",
+                        if visible { "showing" } else { "hidden" }
                     );
                 }
-                Action::Mouse => {
-                    // The size is the last one drawn at: a toggle is read here, where
-                    // the frame's dimensions are not at hand, and the cursor is placed
-                    // by `paint` on the frame the toggle lands on.
+                Action::MouseVirtual => {
                     self.mouse_pending = !self.mouse_pending;
                     log::info!(
                         "overlay: the virtual mouse is {}",
@@ -454,6 +493,8 @@ impl Overlay {
         // tree but not the same crate, so the number is handed in rather than looked
         // up: the hotbar row is placed from it.
         let gui_scale = self.gui_scale;
+        let density = self.density;
+        let fps = self.fps;
         // Read before the destructure below: the opening needs `&self`, and that borrow
         // cannot be alive while every field is borrowed at once.
         let opening = self.launcher_opening();
@@ -482,8 +523,6 @@ impl Overlay {
             launcher_fonts,
             skin_texture,
             panel_rect,
-            info_open,
-            info_pos,
             mouse_pending,
             panorama: _panorama,
             dpi,
@@ -516,59 +555,55 @@ impl Overlay {
         // the layout needs the same scale the HUD was drawn at, which the platform
         // knows and hands in before the frame.
         hud.set_gui_scale(gui_scale);
+        // The layout's own sizes are in dp, so it needs the screen's density: 50 dp is
+        // the same physical button on a phone and on a tablet, which is what makes a
+        // pad a player arranged stay arranged on the next device.
+        hud.layout.density = *density;
         let cursor = hud.cursor();
         let mut edit = hud.edit;
         let mut opacity = hud.layout.opacity;
         let mut scale = hud.layout.scale;
         let mut sensitivity = hud.layout.look_sensitivity;
         let mut drag_to_look = hud.layout.drag_to_look;
-        let mut save = false;
-        let mut reset = false;
-        let mut close = false;
-        let panel_open = *panel;
         let selected = hud.selected();
-        let selected_label = selected.map(|action| action.text());
-        let mut sel_size = selected
-            .and_then(|action| hud.control_size(action))
-            .unwrap_or(1.0);
-        let mut sel_opacity = selected
-            .and_then(|action| hud.control_opacity(action))
-            .unwrap_or(opacity);
-        // Whether the panel's per-button sliders actually moved this frame.
-        let mut sel_touched = false;
-        // What the floating panel's own buttons asked for this frame.
-        let mut info_edit = edit;
-        let mut info_close = false;
-        let mut info_reset = false;
-        let mut info_save = false;
-        let buttons: Vec<(Action, Rect, f32, Option<String>, bool)> = hud
+        // What the menu asked for this frame. Read after the imgui block, because the
+        // closure holds the borrow imgui just handed over.
+        let mut menu_open = *panel;
+        let mut choice = menu::MenuChoice::Nothing;
+        // Every button the pad is showing, with the file's own name, colours and
+        // corner for each: the pad is the layout file's, not this layer's idea of one.
+        let buttons: Vec<DrawButton> = hud
             .buttons(width, height)
             .into_iter()
-            .map(|(action, rect)| {
-                // `control_look` answers the icon and the shape together; the icon is
-                // already an `Option<String>`, so it is taken as it comes rather than
-                // wrapped again.
-                let (icon, round) = hud
-                    .layout
-                    .control_look(action)
-                    .unwrap_or((None, false));
-                (
-                    action,
-                    rect,
-                    hud.layout.opacity_of(action),
-                    icon,
-                    round,
-                )
+            .filter_map(|placed| {
+                let control = hud.layout.control(placed.index)?;
+                Some(DrawButton {
+                    action: placed.action,
+                    index: placed.index,
+                    rect: placed.rect,
+                    label: control.name.clone(),
+                    opacity: control.opacity * hud.layout.opacity,
+                    bg: control.bg_color,
+                    stroke: control.stroke_color,
+                    stroke_width: control.stroke(1.0) * scale,
+                    corner: control.corner(1.0) * scale,
+                    toggle: control.is_toggle,
+                })
             })
             .collect();
         // What is lit this frame: the buttons a finger holds while playing, and while
         // the layout is being arranged the one button a finger has picked up.
-        let lit = if edit {
-            hud.grabbed().into_iter().collect::<Vec<_>>()
+        // What is lit this frame: the buttons a finger holds, by the index of the
+        // file entry they came from, and while arranging the one a finger picked up.
+        let lit: Vec<usize> = if edit {
+            hud.grabbed().into_iter().collect()
         } else {
-            hud.pressed_actions()
+            hud.buttons(width, height)
+                .into_iter()
+                .filter(|placed| hud.is_held(placed.action))
+                .map(|placed| placed.index)
+                .collect()
         };
-        let mut panel_now: Option<Rect> = None;
 
         {
             let ui = imgui.new_frame();
@@ -610,50 +645,39 @@ impl Overlay {
                     width,
                     height,
                 );
+                // The hotbar strip, drawn faintly only while arranging: a player who
+                // cannot see where the strip is cannot tell why a tap near the bottom
+                // of the world changes their item.
+                if edit {
+                    launcher::draw_hotbar_hint(ui, hud.hotbar_rect(width, height), *dpi);
+                }
                 // The virtual mouse's cursor, over the world and over whatever screen
                 // is open: a pointer nobody can see is not a pointer.
                 if mouse_on {
-                    launcher::draw_cursor(ui, cursor, *dpi);
+                    launcher::draw_cursor(ui, cursor, hud.mouse_scale * *dpi);
                 }
-                // The floating panel, when it is up. It is the only place a player can
-                // read the frame rate without a terminal, and the only way into the
-                // arrange mode without a menu button in the layout.
-                if *info_open {
-                    launcher::draw_info_panel(
+                // The in-game menu: the gear tab, and the list it opens. It is the
+                // only settings a player needs over the world, and it is drawn last so
+                // nothing of the pad covers it.
+                if !*launcher {
+                    let memory = crate::memory_mib();
+                    choice = menu::draw(
                         ui,
-                        info_pos,
-                        *dpi,
+                        &mut menu_open,
+                        if edit {
+                            menu::MenuMode::Arrange
+                        } else {
+                            menu::MenuMode::Game
+                        },
                         width,
                         height,
-                        status.as_str(),
-                        &mut info_edit,
-                        &mut info_close,
-                        &mut info_reset,
-                        &mut info_save,
-                    );
-                }
-                // The panel comes after the buttons, so it is drawn on top of them: a
-                // slider you cannot see because a "MINE" is over it is a slider you
-                // cannot find on a phone, where there is no hover to discover it with.
-                if *panel {
-                    panel_now = Some(settings(
-                        ui,
-                        status.as_str(),
-                        &mut scale,
-                        &mut opacity,
-                        &mut sensitivity,
-                        &mut drag_to_look,
-                        &mut edit,
-                        show_status,
-                        selected_label.as_deref(),
-                        &mut sel_size,
-                        &mut sel_opacity,
-                        &mut sel_touched,
-                        &mut save,
-                        &mut reset,
-                        &mut close,
                         *dpi,
-                    ));
+                        *show_status,
+                        fps,
+                        memory,
+                        &mut hud.mouse_speed,
+                        &mut hud.mouse_scale,
+                    );
                 }
             }
             // The loading surface is drawn last, over whichever of the two is up. Play
@@ -691,36 +715,45 @@ impl Overlay {
             self.loading_fade = None;
         }
 
-        // The floating panel's answers, applied after the imgui block for the same
-        // reason as the settings window's: the fields are borrowed apart in there.
-        if info_edit != edit {
-            edit = info_edit;
+        // The menu's answers, applied after the imgui block: the fields are borrowed
+        // apart in there.
+        *panel = menu_open;
+        match choice {
+            menu::MenuChoice::Nothing => {}
+            menu::MenuChoice::ToggleFrameLine => {
+                *show_status = !*show_status;
+            }
+            menu::MenuChoice::ArrangeControls => {
+                edit = true;
+                *panel = false;
+                log::info!("overlay: arranging the pad");
+            }
+            menu::MenuChoice::SaveLayout => {
+                hud.save(path);
+                edit = false;
+                *panel = false;
+                log::info!("overlay: the pad is saved");
+            }
+            menu::MenuChoice::ResetLayout => {
+                hud.layout = Layout::default();
+                log::info!("overlay: the pad is the one the build ships with");
+            }
+            menu::MenuChoice::CloseEditor => {
+                edit = false;
+                *panel = false;
+                log::info!("overlay: left the arrange mode");
+            }
+            menu::MenuChoice::Quit => {
+                // The platform reads this: a phone's home screen is the launcher.
+                QUIT.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
-        if info_close {
-            *info_open = false;
-        }
-        if info_reset {
-            hud.layout = Layout::default();
-            *info_open = false;
-        }
-        if info_save {
-            hud.save(path);
-        }
-
+        // The old panel's sliders are gone; the layout's own numbers come from the
+        // menu, and these are written back so a reload keeps them.
         hud.layout.scale = scale;
         hud.layout.opacity = opacity;
         hud.layout.look_sensitivity = sensitivity;
         hud.layout.drag_to_look = drag_to_look;
-        if edit && panel_open && sel_touched {
-            // The panel edited the selected button's own size and opacity; commit them
-            // back. Only when a slider actually moved, and only while editing with the
-            // panel up: a write on every frame would pin the button to whatever the
-            // layout opacity was when it was selected, and restyle it while playing.
-            if let Some(action) = selected {
-                hud.set_control_size(action, sel_size);
-                hud.set_control_opacity(action, sel_opacity);
-            }
-        }
         if hud.edit != edit {
             // Changing the mode under a finger that was pressing something has to let
             // it go, or the player arranges the layout with a character walking into a
@@ -728,18 +761,9 @@ impl Overlay {
             hud.release_all();
         }
         hud.edit = edit;
-        if reset {
-            hud.layout = Layout::default();
-            log::info!("overlay: the layout is the one the build ships with");
-        }
-        if save {
-            hud.save(path);
-        }
-        if close {
-            *panel = false;
-            log::info!("overlay: the settings panel is closed from its Close button");
-        }
-        *panel_rect = panel_now;
+        // The menu is a drawer, not a floating window: it claims no pixels on the
+        // glass, so a finger over the world is never mistaken for a finger in it.
+        *panel_rect = None;
 
         let draw_data = imgui.render();
         renderer
@@ -803,6 +827,22 @@ impl Overlay {
         self.hud.set_gui_scale(self.gui_scale);
     }
 
+    /// Tell the overlay what the platform measured this second, for the menu's line.
+    pub fn set_fps(&mut self, fps: f32) {
+        self.fps = fps;
+    }
+
+    /// Whether the player asked to leave the world, which the platform carries out.
+    pub fn take_quit(&self) -> bool {
+        QUIT.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Tell the overlay how many glass pixels one dp is worth on this device.
+    pub fn set_density(&mut self, density: f32) {
+        self.density = density.max(0.5);
+        self.hud.layout.density = self.density;
+    }
+
     /// The line in the corner. Empty turns the "Show the frame line" checkbox off
     /// as far as the screen is concerned.
     pub fn set_status(&mut self, text: impl Into<String>) {
@@ -829,7 +869,7 @@ impl Overlay {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: Option<&Path>,
-    ) {
+    ) -> bool {
         self.set_launcher_skin_bytes(device, queue, path, None)
     }
 
@@ -844,7 +884,7 @@ impl Overlay {
         queue: &wgpu::Queue,
         path: Option<&Path>,
         fallback: Option<(u32, u32, Vec<u8>)>,
-    ) {
+    ) -> bool {
         // The fallback is not one texture but two: the pack's own player, and the drawn
         // stand-in the bring-up card shows before the pack has loaded. They have the
         // same "no file" name, so a key of just "fallback" would keep the drawn one in
@@ -861,48 +901,52 @@ impl Overlay {
             })
         });
         if key == self.skin_source && self.skin_texture.is_some() {
-            return;
+            return self.skin_texture.is_some();
         }
-        self.skin_source = key;
-        // Everything the renderer is needed for happens in this block; the slot is
-        // written after it, because `renderer` borrows `self`.
-        let old = self.skin_texture.take();
-        let id = {
-            let Some(renderer) = self.renderer.as_mut() else {
-                return;
-            };
-            if let Some(old) = old {
-                renderer.textures.remove(old);
+        // The fallback is uploaded first, so the slot is never empty: a page that shows
+        // a player is better than a page that shows nothing while a PNG is read.
+        if let Some((width, height, pixels)) = fallback.clone() {
+            let id = self.renderer.as_mut().map(|renderer| {
+                launcher_texture(device, queue, renderer, "launcher skin", width, height, &pixels)
+            });
+            if let Some(id) = id {
+                self.swap_skin(id);
             }
-            if let Some((width, height, pixels)) = fallback {
-                Some(launcher_texture(device, queue, renderer, "launcher skin", width, height, &pixels))
-            } else {
-                None
-            }
-        };
-        if let Some(id) = id {
-            self.skin_texture = Some(id);
-            return;
         }
         let Some(path) = path else {
-            return;
+            // Nothing chosen and no fallback: the drawn stand-in, so the page is never
+            // empty even on a build with no pack.
+            if self.skin_texture.is_none() {
+                let (width, height, pixels) = crate::default_skin();
+                let id = self.renderer.as_mut().map(|renderer| {
+                    launcher_texture(device, queue, renderer, "launcher skin", width, height, &pixels)
+                });
+                if let Some(id) = id {
+                    self.swap_skin(id);
+                    self.skin_source = key;
+                }
+            }
+            return self.skin_texture.is_some();
         };
         let Ok(file) = std::fs::File::open(path) else {
-            return;
+            log::warn!("overlay: could not open the skin {}", path.display());
+            return self.skin_texture.is_some();
         };
         let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
         // Skins are indexed, greyscale or RGBA; let the decoder hand back RGBA8
         // whichever it is, so the texture's format is one thing.
         decoder.set_transformations(png::Transformations::normalize_to_color8());
         let Ok(mut reader) = decoder.read_info() else {
-            return;
+            log::warn!("overlay: the skin {} is not a readable PNG", path.display());
+            return self.skin_texture.is_some();
         };
         let Some(size) = reader.output_buffer_size() else {
-            return;
+            return self.skin_texture.is_some();
         };
         let mut buffer = vec![0; size];
         let Ok(info) = reader.next_frame(&mut buffer) else {
-            return;
+            log::warn!("overlay: the skin {} has no readable frame", path.display());
+            return self.skin_texture.is_some();
         };
         // The texture is RGBA8 whatever the PNG was: expand three channels, add an
         // opaque alpha to a greyscale image, and read an indexed one through its
@@ -925,7 +969,7 @@ impl Overlay {
             png::ColorType::Indexed => {
                 let Some(palette) = reader.info().palette.as_ref() else {
                     log::warn!("overlay: the skin is indexed but carries no palette");
-                    return;
+                    return self.skin_texture.is_some();
                 };
                 // `normalize_to_color8` leaves an indexed image one byte per pixel and
                 // its palette as RGB triples, with an optional alpha table beside it.
@@ -960,13 +1004,33 @@ impl Overlay {
                 info.height,
                 expected
             );
-            return;
+            return self.skin_texture.is_some();
         }
         // The renderer is borrowed again here, and dropped before the slot is written.
         let id = self.renderer.as_mut().map(|renderer| {
             launcher_texture(device, queue, renderer, "launcher skin", info.width, info.height, &pixels)
         });
-        self.skin_texture = id;
+        // Only now is the key recorded, and only if a texture was actually made. A file
+        // that failed to decode leaves the previous texture in place and the key unset,
+        // so the next frame tries again instead of showing an empty card forever.
+        if let Some(id) = id {
+            self.swap_skin(id);
+            self.skin_source = key;
+        }
+        self.skin_texture.is_some()
+    }
+
+    /// Put a new skin in the slot, and drop the texture it replaces.
+    ///
+    /// The old id is removed only after the new one exists: a frame in between that
+    /// could not bind either would be a frame with no launcher at all.
+    fn swap_skin(&mut self, id: imgui::TextureId) {
+        let old = self.skin_texture.replace(id);
+        if let Some(old) = old
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            renderer.textures.remove(old);
+        }
     }
 
     /// Tell the overlay whether the engine's title panorama is behind it. The
@@ -980,15 +1044,12 @@ impl Overlay {
     ///
     /// The layout is read once at start, which is right for a file the player edits
     /// outside the game. A preset chosen in the launcher is the same file written by
-    /// this program, so the HUD has to pick it up: without this, switching to the
-    /// Bedrock layout changed a file and nothing else, which is exactly what "the
-    /// button does nothing" looked like.
+    /// this program, so the HUD has to pick it up.
     pub fn reload_layout(&mut self) {
         self.hud.layout = Layout::load(&self.path).unwrap_or_default();
         log::info!(
-            "overlay: the touch layout is now {} ({} buttons)",
-            self.hud.layout.preset,
-            self.hud.layout.controls.len()
+            "overlay: the touch layout is now {} buttons",
+            self.hud.layout.file.controls.len()
         );
     }
 
@@ -1364,40 +1425,37 @@ fn launcher_texture(
 /// legend to read, so the text keeps a floor of its own under the layout's opacity —
 /// a see-through "MINE" is a button you cannot find again.
 #[allow(clippy::too_many_arguments)]
-fn draw_button(
-    draw: &DrawListMut<'_>,
-    ui: &Ui,
-    action: Action,
-    rect: Rect,
-    opacity: f32,
-    round: bool,
-    icon: Option<&str>,
-    pressed: bool,
-    selected: bool,
-) {
+fn draw_button(draw: &DrawListMut<'_>, ui: &Ui, button: &DrawButton, pressed: bool, selected: bool) {
+    let rect = button.rect;
     let min = [rect.x, rect.y];
     let max = [rect.x + rect.width, rect.y + rect.height];
     let [center_x, center_y] = rect.center();
-    // A round button is a circle, and a rectangle with a huge corner radius is not the
-    // same thing: imgui clamps the radius to half the shorter side, so this is exact.
-    let rounding = if round {
-        rect.width.min(rect.height) * 0.5
+    // The corner and the stroke are the file's own numbers, converted from dp, so a
+    // pad keeps the shape its author drew rather than this layer's idea of one.
+    let rounding = button.corner;
+    // The file's background is ARGB; a press lightens the same colour rather than
+    // replacing it, so a pad with its own palette still reads as pressed.
+    let alpha = button.opacity.clamp(0.0, 1.0);
+    let bg = if pressed {
+        lighten(button.bg, 0.45)
+    } else if button.toggle {
+        lighten(button.bg, 0.18)
     } else {
-        rect.rounding()
+        button.bg
     };
-    let fill = if pressed { PRESSED } else { IDLE };
-    let edge = if pressed { EDGE_ACTIVE } else { EDGE };
-    draw.add_rect(min, max, rgba(fill, opacity))
+    draw.add_rect(min, max, argb(bg, alpha))
         .filled(true)
         .rounding(rounding)
         .build();
-    draw.add_rect(min, max, rgba(edge, opacity * if pressed { 1.0 } else { 0.75 }))
-        .rounding(rounding)
-        .thickness(2.0)
-        .build();
+    if button.stroke_width > 0.0 {
+        draw.add_rect(min, max, argb(button.stroke, alpha * if pressed { 1.0 } else { 0.75 }))
+            .rounding(rounding)
+            .thickness(button.stroke_width)
+            .build();
+    }
     if selected {
-        // A gold ring, drawn outside the button so it reads as "this is the one the
-        // panel is editing" rather than "this is pressed".
+        // A gold ring, outside the button, so it reads as "this is the one the panel
+        // is editing" rather than "this is pressed".
         let pad = 3.0;
         draw.add_rect(
             [rect.x - pad, rect.y - pad],
@@ -1408,16 +1466,71 @@ fn draw_button(
         .thickness(2.0)
         .build();
     }
-    let color = rgba(LEGEND, opacity + 0.35);
-    if icon.is_none_or(|icon| !draw_icon(draw, icon, rect, color)) {
-        let text = action.text();
-        let [width, height] = ui.calc_text_size(&text);
+    // The file's own name for the button, which is what its author wrote on it.
+    if button.label.is_empty() {
+        return;
+    }
+    let color = rgba(LEGEND, (alpha + 0.35).min(1.0));
+    let [width, height] = ui.calc_text_size(&button.label);
+    // A long name is drawn smaller rather than spilling out of its button: a pad's
+    // buttons are as small as a thumb allows.
+    let scale = if width > rect.width - 8.0 {
+        ((rect.width - 8.0) / width).clamp(0.35, 1.0)
+    } else {
+        1.0
+    };
+    if scale < 1.0 {
+        let size = ui.current_font_size() * scale;
+        draw.add_text(
+            [center_x - width * scale / 2.0, center_y - height * scale / 2.0],
+            color,
+            &button.label,
+        )
+        .build();
+        let _ = size;
+    } else {
         draw.add_text(
             [center_x - width / 2.0, center_y - height / 2.0],
             color,
-            &text,
+            &button.label,
         );
     }
+}
+
+/// One button, as the pad is showing it this frame.
+struct DrawButton {
+    action: Action,
+    /// Which entry of the layout file this button is, so the pad's own state can be
+    /// matched to the entry it belongs to.
+    index: usize,
+    rect: Rect,
+    label: String,
+    opacity: f32,
+    /// ARGB, as the layout file stores it.
+    bg: u32,
+    stroke: u32,
+    stroke_width: f32,
+    corner: f32,
+    toggle: bool,
+}
+
+/// An ARGB colour with a separate alpha, for a pad whose buttons are drawn at a
+/// layout-wide opacity.
+fn argb(color: u32, alpha: f32) -> ImColor32 {
+    let a = ((color >> 24) & 0xff) as f32 / 255.0 * alpha.clamp(0.0, 1.0);
+    let r = ((color >> 16) & 0xff) as f32 / 255.0;
+    let g = ((color >> 8) & 0xff) as f32 / 255.0;
+    let b = (color & 0xff) as f32 / 255.0;
+    ImColor32::from_rgba_f32s(r, g, b, a)
+}
+
+/// The same colour, a little lighter: a pressed button keeps its own palette.
+fn lighten(color: u32, amount: f32) -> u32 {
+    let channel = |shift: u32| {
+        let value = ((color >> shift) & 0xff) as f32;
+        (value + (255.0 - value) * amount).round() as u32
+    };
+    (color & 0xff00_0000) | (channel(16) << 16) | (channel(8) << 8) | channel(0)
 }
 
 /// The glyph a layout names, drawn as shapes.
@@ -1618,12 +1731,11 @@ fn rgba(color: [u8; 3], alpha: f32) -> ImColor32 {
 /// The HUD: one window the size of the screen that takes no input at all, so that
 /// imgui is the painter and never the player. The fingers it answers to came from
 /// `horizon_controls`, and it is painted back to front — the list is front to back —
-/// which is why a small button on top of a big one is both visible and pressable.
 fn hud_buttons(
     ui: &Ui,
-    buttons: &[(Action, Rect, f32, Option<String>, bool)],
-    lit: &[Action],
-    selected: Option<Action>,
+    buttons: &[DrawButton],
+    lit: &[usize],
+    selected: Option<usize>,
     dpi: f32,
     show_status: bool,
     status: &str,
@@ -1633,7 +1745,8 @@ fn hud_buttons(
     // A window with no decoration cannot be collapsed, so its contents always run;
     // the `Option` imgui hands back is only that promise, and there is nothing to do
     // with it.
-    let _ = ui.window("Horizon controls")
+    let _ = ui
+        .window("Horizon controls")
         .flags(
             WindowFlags::NO_BACKGROUND
                 | WindowFlags::NO_DECORATION
@@ -1647,22 +1760,13 @@ fn hud_buttons(
         .size([width, height], Condition::Always)
         .build(|| {
             let draw = ui.get_window_draw_list();
-            for (action, rect, opacity, icon, round) in buttons.iter().rev() {
-                // A fully transparent button is not drawn at all: the hotbar row is
-                // there to be tapped, and the game draws the bar it sits on.
-                if *opacity <= 0.0 {
-                    continue;
-                }
+            for button in buttons.iter().rev() {
                 draw_button(
                     &draw,
                     ui,
-                    *action,
-                    *rect,
-                    *opacity,
-                    *round,
-                    icon.as_deref(),
-                    lit.contains(action),
-                    selected == Some(*action),
+                    button,
+                    lit.contains(&button.index),
+                    selected == Some(button.index),
                 );
             }
             if show_status {
@@ -1677,98 +1781,10 @@ fn hud_buttons(
         });
 }
 
-/// The settings panel. Everything a player can reach without a file manager and
-/// without this repository is behind one of these widgets.
-///
-/// The per-button sliders are only committed when they actually moved: `set_control_opacity`
-/// stores an explicit value, and writing one every frame a button happened to be selected
-/// pinned that button to the layout opacity it had at the moment of the tap and detached it
-/// from the layout-wide slider from then on.
-#[allow(clippy::too_many_arguments)]
-fn settings(
-    ui: &Ui,
-    status: &str,
-    scale: &mut f32,
-    opacity: &mut f32,
-    sensitivity: &mut f32,
-    drag_to_look: &mut bool,
-    edit: &mut bool,
-    show_status: &mut bool,
-    selected_label: Option<&str>,
-    sel_size: &mut f32,
-    sel_opacity: &mut f32,
-    sel_touched: &mut bool,
-    save: &mut bool,
-    reset: &mut bool,
-    close: &mut bool,
-    dpi: f32,
-) -> Rect {
-    // Where the panel is put and what it is when it has not been laid out: a window
-    // that never opened claims no pixels, so a finger cannot land inside it.
-    let unmeasured = Rect {
-        x: 12.0 * dpi,
-        y: 12.0 * dpi,
-        width: 0.0,
-        height: 0.0,
-    };
-    ui.window("Horizon")
-        .position([12.0 * dpi, 12.0 * dpi], Condition::Always)
-        .flags(WindowFlags::NO_COLLAPSE | WindowFlags::NO_FOCUS_ON_APPEARING)
-        .build(|| {
-            ui.text(status);
-            ui.separator();
-            if ui.checkbox("Move the buttons", edit) {
-                log::info!(
-                    "overlay: editing the layout is {}",
-                    if *edit { "on" } else { "off" }
-                );
-            }
-            ui.slider("Button size", 0.6, 1.8, scale);
-            ui.slider("Opacity", 0.08, 1.0, opacity);
-            ui.slider("Look sensitivity", 1.0, 30.0, sensitivity);
-            ui.checkbox("Drag the glass to look", drag_to_look);
-            ui.checkbox("Show the frame line", show_status);
-            if *edit {
-                ui.separator();
-                match selected_label {
-                    Some(label) => {
-                        let line = format!("Selected: {label}");
-                        ui.text(line.as_str());
-                        if ui.slider("This button size", 0.03, 0.4, sel_size) {
-                            *sel_touched = true;
-                        }
-                        if ui.slider("This button opacity", 0.08, 1.0, sel_opacity) {
-                            *sel_touched = true;
-                        }
-                    }
-                    None => {
-                        ui.text("Tap a button to edit it");
-                    }
-                }
-            }
-            ui.separator();
-            if ui.button("Save") {
-                *save = true;
-            }
-            ui.same_line();
-            if ui.button("Reset") {
-                *reset = true;
-            }
-            ui.same_line();
-            if ui.button("Close") {
-                *close = true;
-            }
-            let [x, y] = ui.window_pos();
-            let [width, height] = ui.window_size();
-            Rect {
-                x,
-                y,
-                width,
-                height,
-            }
-        })
-        .unwrap_or(unmeasured)
-}
+/// The player picked "Back to the launcher" from the in-game menu. A flag rather than a
+/// return value because the menu is drawn inside `paint`, whose answer is a render
+/// error: the platform polls this where it would handle a back button.
+static QUIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     /// The overlay of this thread, if the platform has installed one.

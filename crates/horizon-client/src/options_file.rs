@@ -150,7 +150,10 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
         def("debugGuiScale", O(LazyInt(-1)), V::Int(0)),
         i("maxAnisotropyBit", 1, 3, 2),
         id("textureFiltering", 3, 0),
-        def("maxFps", O(FrameLimit), V::Int(120)),
+        // Unlimited by default. 260 is the file format's "no cap", and a fresh
+        // options.txt that says 120 is a phone capped at 120 frames for no reason the
+        // player can see. The option still accepts any step of 10 up to 260.
+        def("maxFps", O(FrameLimit), V::Int(260)),
         b("improvedTransparency", false),
         n("inactivityFpsLimit", INACTIVITY, 1),
         i("mipmapLevels", 0, 4, 4),

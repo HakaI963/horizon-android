@@ -202,26 +202,69 @@ public class HorizonActivity extends NativeActivity {
             if (isFinishing() || isDestroyed()) {
                 return;
             }
+            // The dialog is drawn in the launcher's own palette rather than the
+            // platform's: a white Material alert over a dark launcher is the one screen
+            // in the app that looks like it belongs to a different program. Everything
+            // here is built in code, so there is no theme to inherit and no XML to keep
+            // in step with the rest of the interface.
+            float density = getResources().getDisplayMetrics().density;
+            int pad = Math.round(24 * density);
+
             LinearLayout layout = new LinearLayout(this);
             layout.setOrientation(LinearLayout.VERTICAL);
-            int padding = Math.round(20 * getResources().getDisplayMetrics().density);
-            layout.setPadding(padding, padding, padding, 0);
-            ProgressBar bar = new ProgressBar(this);
-            bar.setIndeterminate(true);
-            layout.addView(bar);
+            layout.setBackgroundColor(0xFF14131A);
+            layout.setPadding(pad, pad, pad, pad);
+
+            TextView title = new TextView(this);
+            title.setText("Minecraft Java");
+            title.setTextColor(0xFFF2F1F7);
+            title.setTextSize(20);
+            title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+            layout.addView(title);
+
             TextView text = new TextView(this);
             text.setText(message);
-            text.setPadding(0, padding / 2, 0, 0);
+            text.setTextColor(0xFFA9A6B8);
+            text.setTextSize(14);
+            text.setPadding(0, Math.round(6 * density), 0, Math.round(18 * density));
             layout.addView(text);
             installText = text;
-            AlertDialog dialog = new AlertDialog.Builder(
-                    this, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
-                    .setTitle("Minecraft Java")
+
+            ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            bar.setIndeterminate(true);
+            bar.setMax(1000);
+            android.graphics.drawable.GradientDrawable track = new android.graphics.drawable.GradientDrawable();
+            track.setCornerRadius(3 * density);
+            track.setColor(0xFF2A2833);
+            bar.setProgressDrawable(track);
+            layout.addView(bar, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, Math.round(6 * density)));
+
+            TextView hint = new TextView(this);
+            hint.setText("This takes a few minutes. Keep Horizon open.");
+            hint.setTextColor(0xFF6F6C7E);
+            hint.setTextSize(12);
+            hint.setPadding(0, Math.round(14 * density), 0, 0);
+            layout.addView(hint);
+
+            AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar)
                     .setView(layout)
                     .setCancelable(false)
                     .create();
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                dialog.getWindow().setDimAmount(0.72f);
+            }
             installDialog = dialog;
             dialog.show();
+            // The builder's own background is a light card; the layout above is the
+            // card, so the window behind it is made transparent to let it show.
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setLayout(
+                        Math.min(getResources().getDisplayMetrics().widthPixels - pad * 2,
+                                Math.round(420 * density)),
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+            }
         });
     }
 

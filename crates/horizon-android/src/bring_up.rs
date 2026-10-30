@@ -462,6 +462,15 @@ impl Screen {
             // what says the platform works, and it is worth looking at only until the
             // HUD is on top of it.
             overlay.set_status(status);
+            // The card has no game behind it, so the GUI scale is 1 and the density is
+            // the display's own: the pad on the card is the same size as the pad in the
+            // world, which is the point of showing it here at all.
+            overlay.set_gui_scale(1.0);
+            overlay.set_density(
+                self.window
+                    .as_ref()
+                    .map_or(1.0, |window| window.scale_factor() as f32),
+            );
             edges = overlay.frame(
                 &self.device,
                 &self.queue,
@@ -815,7 +824,11 @@ impl ApplicationHandler for BringUp {
                 // No game runs behind this card, so what a press did is written down
                 // and thrown away: the line is the proof that a tap reached a button.
                 for (action, down) in edges {
-                    log::info!("bring-up: {} {}", action.text(), if down { "down" } else { "up" });
+                    log::info!(
+                        "bring-up: {:?} {}",
+                        action,
+                        if down { "down" } else { "up" }
+                    );
                 }
                 if self.frames == 1 {
                     log::info!(

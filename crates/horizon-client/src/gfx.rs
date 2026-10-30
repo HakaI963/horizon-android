@@ -992,6 +992,11 @@ impl Renderer {
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
                 .ok_or("surface has no supported configuration")?;
             let caps = surface.get_capabilities(&adapter);
+            // Three images rather than wgpu's default two. At two, Mailbox presents at
+            // twice the display's refresh rate — 288-300 fps on a 144-150 Hz phone —
+            // and that is the ceiling players hit. Three or more is unlimited, so the
+            // GPU decides the frame rate rather than a number in the swapchain.
+            config.desired_maximum_frame_latency = 3;
             config.format = surface_format(&caps.formats, config.format);
             config.view_formats = vec![config.format.remove_srgb_suffix()];
             // Screenshots copy the presented frame back from the swapchain.
@@ -2937,8 +2942,13 @@ impl Renderer {
         // The scale the HUD was drawn at this frame: the touch hotbar is placed from
         // the same numbers the game's own bar is, so the taps land on its slots.
         let gui_scale = crate::hud::gui_scale([self.config.width, self.config.height]);
+        // And the density, for the layout's own sizes in dp. It is the display's, not
+        // the GUI scale's: a pad is as big as a thumb, and a thumb does not care what
+        // the game's GUI scale is set to.
+        let density = self.window.as_ref().map_or(1.0, |window| window.scale_factor() as f32);
         if let Some(Err(error)) = horizon_overlay::with(|overlay| {
             overlay.set_gui_scale(gui_scale);
+            overlay.set_density(density);
             overlay.paint(device, queue, &mut pass, width, height)
         }) {
             log::warn!("gfx: no controls this frame: {error}");

@@ -39,7 +39,7 @@ impl Game<'_> {
     /// What the fingers did since the last frame. Called where the game reads its
     /// keyboard, before anything moves, so a press is in the simulation the frame it
     /// was made and not one after it.
-    pub(super) fn touch_frame(&mut self) -> Result<()> {
+    pub(super) fn touch_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> Result<()> {
         // The keyboard before anything else: the screen has just changed, and nobody
         // should wait a frame for the keys to come up when they have opened chat.
         let typing = typing(self);
@@ -67,7 +67,7 @@ impl Game<'_> {
             return Ok(());
         };
         for (action, down) in edges {
-            self.touch_action(action, down)?;
+            self.touch_action(action, down, event_loop)?;
         }
         self.touch_look(look);
         self.touch_cursor(cursor);
@@ -250,54 +250,42 @@ impl Game<'_> {
     /// rate from, and a HUD that has stopped answering has to be visible as one: "0
     /// fingers" while a finger is on the glass says the touches never arrived.
     pub(super) fn overlay_line(&mut self) {
-        let Some((fingers, editing)) =
-            horizon_overlay::with(|overlay| (overlay.hud().fingers(), overlay.hud().edit))
-        else {
-            return;
-        };
-        // What the floating panel shows: the frame rate the loop measured, how much
-        // memory this process is holding, and the two numbers that say whether the
-        // phone is keeping up. Read here rather than in the overlay, because only the
-        // game knows them.
-        let memory = horizon_client::crash::rss_mib()
-            .map(|mib| format!("{mib:.0} MB"))
-            .unwrap_or_else(|| "memory n/a".to_string());
+        // The menu shows the frame rate the loop measured; the memory it reads itself,
+        // because that is a file and not a number this loop owns.
+        let fps = self.fps;
         horizon_overlay::with(|overlay| {
+            overlay.set_fps(fps);
             overlay.set_status(format!(
-                "{:.0} fps  ·  {memory}\n{fingers} finger(s){}",
-                self.fps,
-                if editing { ", editing" } else { "" }
+                "{fps:.0} fps · {} finger(s)",
+                overlay.hud().fingers()
             ));
         });
+        // "Back to the launcher" from the in-game menu: the platform carries it out
+        // here, where leaving a world already happens.
+        if horizon_overlay::with(|overlay| overlay.take_quit()).unwrap_or(false) {
+            self.pad_back();
+        }
     }
 
     /// One button of the layout, as the mapping the player bound to it.
-    fn touch_action(&mut self, action: Action, down: bool) -> Result<()> {
+    fn touch_action(
+        &mut self,
+        action: Action,
+        down: bool,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<()> {
         match action {
             // Escape, with the same care the controller's B takes: a screen has to close
             // before the game does.
             Action::Pause => return if down { self.pad_back() } else { Ok(()) },
-            Action::Fly => {
-                if down {
-                    self.touch_fly();
-                }
-                return Ok(());
-            }
-            // Vanilla's creative flight is a double tap of jump, and the default pad has
-            // no FLY button: without this a creative player could not leave the ground.
-            // The double tap is read here, before the key reaches the game, so the
-            // second tap does not also jump.
+            // Vanilla's creative flight is a double tap of jump, and the pad has no FLY
+            // button: without this a creative player could not leave the ground. The
+            // double tap is read here, before the key reaches the game, so the second
+            // tap does not also jump.
             Action::Jump if down && self.touch_double_jump() => return Ok(()),
-            // F1: the HUD and every overlay the game draws over the world.
-            Action::HideGui => {
-                if down {
-                    // F1 is a toggle in the game's own handler, so it is a whole press
-                    // and release here rather than a held key.
-                    self.mapped_key(KeyCode::F1, true, false)?;
-                    self.mapped_key(KeyCode::F1, false, false)?;
-                }
-                return Ok(());
-            }
+            // The pad's GUI button and its virtual mouse are the overlay's own; they
+            // never reach this far. The menu is the third.
+            Action::ToggleControls | Action::MouseVirtual | Action::Menu => return Ok(()),
             // The phone's own keyboard, for the chat line: the same thing the screen
             // does by itself when the chat screen opens.
             Action::Keyboard => {
@@ -306,20 +294,38 @@ impl Game<'_> {
                 }
                 return Ok(());
             }
-            // Back to the launcher, which is what leaving a world means on a phone.
-            Action::ExitWorld => {
+            // The three mouse buttons are clicks, not keys.
+            Action::MousePrimary | Action::MouseSecondary | Action::MouseMiddle => {
+                let button = match action {
+                    Action::MousePrimary => MouseButton::Left,
+                    Action::MouseSecondary => MouseButton::Right,
+                    _ => MouseButton::Middle,
+                };
+                // A click only exists in the world or over a screen that hit-tests a
+                // cursor, which is the same rule the engine's own mouse follows.
+                if self.title.is_none() && self.screen == Screen::Playing {
+                    self.play_mouse(button, down)?;
+                }
+                return Ok(());
+            }
+            Action::ScrollUp | Action::ScrollDown => {
                 if down {
-                    self.pad_back();
+                    // The wheel, through the engine's own handler rather than a second
+                    // implementation of one: a menu scrolls, a list moves, and the
+                    // hotbar steps exactly as they do for a real mouse.
+                    let lines = if action == Action::ScrollUp { 1.0 } else { -1.0 };
+                    self.wheel(lines, event_loop)?;
                 }
                 return Ok(());
             }
             _ => {}
         }
+        // The player's own binding, not the key the pad happens to carry: the layout
+        // follows the same options.txt the keyboard does, so rebinding `E` moves the
+        // bag button too.
         let Some(name) = mapping(action) else {
             return Ok(());
         };
-        // The player's binding rather than the default: the layout follows the same
-        // options.txt the keyboard does, so rebinding `E` moves the bag button too.
         let bound = self.settings.keys.get(&name).to_owned();
         if let Some(button) = mouse_button(&bound) {
             // Mining and placing are mouse buttons, and only exist in the world.
@@ -332,6 +338,28 @@ impl Game<'_> {
             return Ok(());
         };
         self.mapped_key(key, down, false)
+    }
+
+    /// One line of the mouse wheel, as if a real one had turned.
+    ///
+    /// The event goes to `window_event`, which is where every other input in this
+    /// game is already handled: a second implementation of scrolling would drift from
+    /// the first the moment either changed, and the hotbar, the creative menu and the
+    /// chat all scroll differently.
+    fn wheel(
+        &mut self,
+        lines: f32,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<()> {
+        let Some(window) = self.window.as_ref().map(|w| w.id()) else {
+            return Ok(());
+        };
+        let event = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        self.window_event(event_loop, window, event)
     }
 
     /// Whether this jump is the second of a double tap, and if so, the flight toggle.
@@ -398,12 +426,6 @@ fn mapping(action: Action) -> Option<String> {
         Action::Jump => "key.jump",
         Action::Sneak => "key.sneak",
         Action::Sprint => "key.sprint",
-        // While flying these are the ascend and descend keys flight replaces.
-        Action::Up => "key.jump",
-        Action::Down => "key.sneak",
-        Action::Mine => "key.attack",
-        Action::Use => "key.use",
-        Action::Pick => "key.pickItem",
         Action::Inventory => "key.inventory",
         Action::Drop => "key.drop",
         Action::SwapOffhand => "key.swapOffhand",
@@ -414,14 +436,18 @@ fn mapping(action: Action) -> Option<String> {
         Action::View => "key.togglePerspective",
         Action::Screenshot => "key.screenshot",
         Action::Hotbar(slot) => return Some(format!("key.hotbar.{slot}")),
-        Action::Fly
-        | Action::Pause
-        | Action::Menu
-        | Action::Panel
-        | Action::Mouse
-        | Action::HideGui
+        // Answered above, or by the overlay, or by neither.
+        Action::Pause
         | Action::Keyboard
-        | Action::ExitWorld => return None,
+        | Action::ToggleControls
+        | Action::MouseVirtual
+        | Action::MousePrimary
+        | Action::MouseSecondary
+        | Action::MouseMiddle
+        | Action::ScrollUp
+        | Action::ScrollDown
+        | Action::Menu
+        | Action::Raw(_) => return None,
     };
     Some(name.to_owned())
 }
