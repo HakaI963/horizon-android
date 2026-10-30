@@ -322,8 +322,15 @@ impl Overlay {
 
     /// Whether something on screen wants the finger: the panel, or the layout while
     /// it is being dragged around.
+    /// Whether imgui should be given the finger.
+    ///
+    /// The menu's gear tab is an imgui button and it is on the glass all the time, so
+    /// imgui always gets the press: without that the tab was drawn and could never be
+    /// tapped, because a closed drawer is not "interactive". A press that lands on no
+    /// imgui window costs nothing — imgui simply reports no item under the cursor —
+    /// and the pad has already had its chance above.
     fn interactive(&self) -> bool {
-        self.panel || self.hud.edit || self.launcher
+        true
     }
 
     /// Whether the menu's drawer is open, for the platform's own back button.
@@ -379,9 +386,12 @@ impl Overlay {
             io.add_mouse_pos_event([x, y]);
             io.add_mouse_button_event(MouseButton::Left, true);
         }
-        // Only while nothing of the overlay's own wants the screen: a finger that is
-        // arranging buttons must not click whatever is drawn behind them.
-        if !on_button && !self.interactive() && self.game_pointer.is_none() {
+        // A finger that pressed no button of the pad's is the game's, unless the
+        // overlay is doing something with the glass: the menu's drawer, or the pad
+        // being arranged. imgui is given every press now so the gear can be tapped,
+        // but a press that lands on nothing must still reach the game's own screens.
+        let overlay_wants_it = self.panel || self.hud.edit || self.launcher;
+        if !on_button && !overlay_wants_it && self.game_pointer.is_none() {
             self.game_pointer = Some(id);
         }
     }

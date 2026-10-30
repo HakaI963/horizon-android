@@ -13667,15 +13667,10 @@ impl ApplicationHandler for App {
                     Some(Err(e)) => Step::Failed(e.into()),
                     Some(Ok(loaded)) => {
                         // `finish` builds the renderer, opens the audio device and makes
-                        // the game, and it does all of it on this thread: nothing is
-                        // drawn until it returns. So the frame that was on the glass
-                        // when the player tapped Play is the frame they stare at for the
-                        // next two or three seconds — and that frame is the launcher.
-                        //
-                        // One loading frame first makes the wait the screen it belongs
-                        // to: "Starting Minecraft" is what is happening, and the player
-                        // reads a wait rather than a launcher that stopped answering.
-                        loading.draw();
+                        // the game, all on this thread. No frame is drawn here: the last
+                        // one on the glass is the launcher, and the next one is the
+                        // game's own title. A frame drawn in between is a screen the
+                        // player did not ask for, and it was the one that stayed up.
                         match loading.finish(loaded) {
                             Ok(Some(game)) => Step::Ready(Box::new(game)),
                             Ok(None) => Step::Done,

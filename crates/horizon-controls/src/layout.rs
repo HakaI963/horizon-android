@@ -226,13 +226,20 @@ impl LayoutFile {
     }
 
     /// Rewrite the key codes as Android's, whichever vocabulary the file used.
+    ///
+    /// The version alone is not enough to tell. The compiled-in pad is written in the
+    /// old vocabulary and is saved back out with version 9 after conversion, so a file
+    /// this build wrote says "Android" while its numbers may still be GLFW's if it was
+    /// ever saved before the conversion ran. The numbers are the honest answer, and
+    /// they are unambiguous: no Android key code above 255 is a key this pad uses, and
+    /// every GLFW special key is above it.
     fn normalize_keys(&mut self) {
-        let glfw = keys::is_glfw(
-            Some(self.version),
-            self.controls
-                .iter()
-                .flat_map(|control| control.keycodes.iter().copied()),
-        );
+        let codes: Vec<i32> = self
+            .controls
+            .iter()
+            .flat_map(|control| control.keycodes.iter().copied())
+            .collect();
+        let glfw = keys::is_glfw(None, codes.into_iter());
         if !glfw {
             return;
         }
