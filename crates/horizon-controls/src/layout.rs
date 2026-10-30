@@ -259,6 +259,32 @@ impl LayoutFile {
         std::fs::write(path, text)
     }
 
+    /// Whether this is a file of the shared format rather than one an older build of
+    /// this launcher wrote.
+    ///
+    /// The format's own marker is a button carrying one of its special key codes: a
+    /// private layout has none, because its buttons were actions and not keys. A file
+    /// that cannot say which button is the virtual mouse is not a file this launcher
+    /// can draw.
+    pub fn is_the_shared_format(&self) -> bool {
+        self.controls.iter().any(|control| {
+            control.keycodes.iter().any(|code| {
+                matches!(
+                    *code,
+                    SPECIAL_KEYBOARD
+                        | SPECIAL_TOGGLE_CONTROLS
+                        | SPECIAL_MOUSE_PRIMARY
+                        | SPECIAL_MOUSE_SECONDARY
+                        | SPECIAL_VIRTUAL_MOUSE
+                        | SPECIAL_MOUSE_MIDDLE
+                        | SPECIAL_SCROLL_UP
+                        | SPECIAL_SCROLL_DOWN
+                        | SPECIAL_MENU
+                )
+            })
+        })
+    }
+
     /// A button by the name the file gave it.
     pub fn named(&self, name: &str) -> Option<&ControlData> {
         self.controls.iter().find(|control| control.name == name)

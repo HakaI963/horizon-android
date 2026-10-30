@@ -95,8 +95,20 @@ impl Layout {
     }
 
     /// Read the pad from disk, or the compiled-in default when there is none.
+    ///
+    /// A file written by an older build is not read. It has the same name and a
+    /// different shape — a private model with 33 hand-placed buttons and none of the
+    /// format's fields — and upgrading it would put that pad back on the glass, which
+    /// is exactly what this launcher stopped shipping.
     pub fn load(path: &Path) -> Self {
-        Self::new(LayoutFile::load(path).unwrap_or_else(LayoutFile::default_pad))
+        let file = LayoutFile::load(path).filter(LayoutFile::is_the_shared_format);
+        if file.is_none() {
+            log::info!(
+                "controls: no layout of the shared format at {}, using the default pad",
+                path.display()
+            );
+        }
+        Self::new(file.unwrap_or_else(LayoutFile::default_pad))
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
